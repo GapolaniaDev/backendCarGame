@@ -22,7 +22,6 @@ import type {
   IStorageListRequest,
   IStorageObject,
   IStorageObjectAck,
-  IMultiUpdateOp,
   IMultiUpdateResult,
   INakama,
   IUser,
