@@ -540,6 +540,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     function setupStartedSession(
       size: 1 | 2 | 4 | 6 = 4,
       mode: 'quick' | 'ranked' | 'private' | 'time_trial' = 'quick',
+      opts: { overrideStartedAtMs?: number } = {},
     ): string {
       const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode, size }));
       if (!createEnv.ok) throw new Error('create failed');
@@ -561,14 +562,23 @@ describe('race_lifecycle (Chunk 5)', () => {
         callerUserId: HOST_ID,
       });
       if (!startEnv.ok) throw new Error('start failed');
+      if (opts.overrideStartedAtMs !== undefined) {
+        // Backdate startedAt so step-2 clock checks pass for reports
+        // claiming a multi-minute totalMs.
+        const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+        const obj = env.fakeNakama.store.get(storeKey);
+        if (obj) (obj.value as { startedAt: number }).startedAt = opts.overrideStartedAtMs;
+      }
       return sid;
     }
 
-    function makeReport(reporterId: string, totalMs = 90_000): Record<string, unknown> {
+    function makeReport(reporterId: string, totalMs = 120_000): Record<string, unknown> {
+      // quick/neon_blvd = 3 laps; B class min = 40_000/lap → min total 120_000.
+      // Default makeReport returns the threshold so step-2 (Chunk 8) passes.
       return {
         userId: reporterId,
         totalMs,
-        laps: [totalMs],
+        laps: [40_000, 40_000, totalMs - 80_000],
         isBotReport: false,
       };
     }
@@ -582,7 +592,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     }
 
     it('accepts a valid report from a roster member and bumps the session version', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const submitEnv = call<{ accepted: true; confidence: string }>(
         env,
         'race_submit_result',
@@ -601,12 +611,12 @@ describe('race_lifecycle (Chunk 5)', () => {
       if (!readEnv.ok) throw new Error('read failed');
       const entry = readEnv.data.session.roster.find((r) => r.userId === PLAYER_A);
       expect(entry?.reportedAt).toBeGreaterThan(0);
-      expect(entry?.totalMs).toBe(90_000);
-      expect(entry?.laps).toEqual([90_000]);
+      expect(entry?.totalMs).toBe(120_000);
+      expect(entry?.laps).toEqual([40_000, 40_000, 40_000]);
     });
 
     it('persists the report in the race_sessions/{sid}/reports/{userId} sub-key', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       call<{ accepted: true }>(
         env,
         'race_submit_result',
@@ -618,12 +628,12 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('replays the cached response on retry with the same (sessionId, userId)', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const first = call<{ accepted: true }>(
         env,
         'race_submit_result',
         null,
-        submitPayload(sid, makeReport(PLAYER_A, 90_000)),
+        submitPayload(sid, makeReport(PLAYER_A, 120_000)),
       );
       expect(first.ok).toBe(true);
       // Replay with the SAME totalMs should return cached (idempotent).
@@ -631,7 +641,7 @@ describe('race_lifecycle (Chunk 5)', () => {
         env,
         'race_submit_result',
         null,
-        submitPayload(sid, makeReport(PLAYER_A, 90_000)),
+        submitPayload(sid, makeReport(PLAYER_A, 120_000)),
       );
       expect(replay.ok).toBe(true);
       // Even with a different totalMs the cache wins — that's the point
@@ -640,7 +650,7 @@ describe('race_lifecycle (Chunk 5)', () => {
         env,
         'race_submit_result',
         null,
-        submitPayload(sid, makeReport(PLAYER_A, 95_000)),
+        submitPayload(sid, makeReport(PLAYER_A, 130_000)),
       );
       expect(replay2.ok).toBe(true);
       // Session version bumped exactly once (cache prevented the second).
@@ -650,11 +660,11 @@ describe('race_lifecycle (Chunk 5)', () => {
       });
       if (!readEnv.ok) throw new Error('read failed');
       const entry = readEnv.data.session.roster.find((r) => r.userId === PLAYER_A);
-      expect(entry?.totalMs).toBe(90_000);
+      expect(entry?.totalMs).toBe(120_000);
     });
 
     it('rejects an out-of-roster submission (INVALID_RESULT)', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const OUTSIDER = '99999999-9999-4999-8999-999999999999';
       const submitEnv = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(OUTSIDER), OUTSIDER));
       expect(submitEnv.ok).toBe(false);
@@ -663,7 +673,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a duplicate submission with CONFLICT / ALREADY_REPORTED', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       // First submission — clear the cache key after writing so the
       // duplicate test doesn't hit idempotency. Easiest: delete the
       // cache entry directly.
@@ -672,7 +682,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       );
       expect(first.ok).toBe(true);
       env.fakeNakama.cache.delete('submit_result:' + sid + ':' + PLAYER_A);
-      const second = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(PLAYER_A, 95_000)));
+      const second = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(PLAYER_A, 130_000)));
       expect(second.ok).toBe(false);
       if (second.ok) return;
       expect(second.error.code).toBe('CONFLICT');
@@ -701,7 +711,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects mismatched callerUserId vs report.userId (FORBIDDEN)', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
         submitPayload(sid, makeReport('44444444-4444-4444-8444-444444444444'), PLAYER_A));
       expect(submitEnv.ok).toBe(false);
@@ -710,7 +720,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects ctx.userId != callerUserId on socket calls (FORBIDDEN)', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const submitEnv = call<unknown>(env, 'race_submit_result', HOST_ID,
         submitPayload(sid, makeReport(PLAYER_A), PLAYER_A));
       expect(submitEnv.ok).toBe(false);
@@ -719,7 +729,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects malformed reports (BAD_REQUEST)', () => {
-      const sid = setupStartedSession();
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
       const bad = {
         sessionId: sid,
         callerUserId: PLAYER_A,
@@ -729,6 +739,156 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(submitEnv.ok).toBe(false);
       if (submitEnv.ok) return;
       expect(submitEnv.error.code).toBe('BAD_REQUEST');
+    });
+  });
+
+  describe('race_submit_result (Chunk 8: step-2 + bot-auth)', () => {
+    const PLAYER_A = '22222222-2222-4222-8222-222222222222';
+
+    function submitPayload(sid: string, report: Record<string, unknown>, caller = PLAYER_A): string {
+      return JSON.stringify({
+        sessionId: sid,
+        callerUserId: caller,
+        report,
+      });
+    }
+
+    /**
+     * Setup a quick/3-lap (neon_blvd) session with HOST + PLAYER_A in the
+     * roster. The bundle runs in a separate VM context, so we cannot use
+     * vi.setSystemTime — instead we rewrite the persisted session's
+     * startedAt to a known past instant, making step-2 clock checks
+     * deterministic.
+     */
+    function setupQuick3Lap(opts: { overrideStartedAtMs?: number } = {}): { sid: string } {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode: 'quick', size: 2 }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env, 'race_session_join', null,
+        {
+          sessionId: sid,
+          userId: PLAYER_A,
+          callerUserId: PLAYER_A,
+          loadout: { classId: 'B', bodyId: 'coupe' },
+        },
+      );
+      if (!joinEnv.ok) throw new Error('join failed');
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+
+      if (opts.overrideStartedAtMs !== undefined) {
+        // Mutate the persisted session value so the bundle reads the
+        // overridden startedAt on the next readSession.
+        const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+        const obj = env.fakeNakama.store.get(storeKey);
+        if (obj) {
+          (obj.value as { startedAt: number }).startedAt = opts.overrideStartedAtMs;
+        }
+      }
+      return { sid };
+    }
+
+    it('accepts a well-formed report (within clock, at-or-above min-time, sum matches)', () => {
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      // quick/neon_blvd = 3 laps; B class min = 40_000/lap → min total 120_000.
+      const submitEnv = call<{ accepted: true; confidence: string }>(
+        env, 'race_submit_result', null,
+        submitPayload(sid, { userId: PLAYER_A, totalMs: 120_000, laps: [40_000, 40_000, 40_000], isBotReport: false }),
+      );
+      expect(submitEnv.ok).toBe(true);
+    });
+
+    it('rejects a report whose totalMs exceeds the wall clock (TIME_EXCEEDS_CLOCK)', () => {
+      // Get the server's current time so we can backdate startedAt to a
+      // known small elapsed window. With startedAt 10s ago and totalMs
+      // 10 minutes, step-2 clock must fire (the lap-sum is consistent
+      // at 600_000ms so we don't trip the next check first).
+      const cfg = call<{ serverTimeMs: number }>(env, 'config_get', null, '{}');
+      expect(cfg.ok).toBe(true);
+      if (!cfg.ok) return;
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: cfg.data.serverTimeMs - 10_000 });
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, { userId: PLAYER_A, totalMs: 600_000, laps: [200_000, 200_000, 200_000], isBotReport: false }));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('INVALID_RESULT');
+      expect((submitEnv.error.details as { reason?: string }).reason).toBe('TIME_EXCEEDS_CLOCK');
+    });
+
+    it('rejects a report below the per-class min-time (BELOW_MIN_TIME)', () => {
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      // B class min = 120_000. totalMs = 30_000 is well below; min-time
+      // fires before lap-count.
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, { userId: PLAYER_A, totalMs: 30_000, laps: [30_000], isBotReport: false }));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('INVALID_RESULT');
+      expect((submitEnv.error.details as { reason?: string }).reason).toBe('BELOW_MIN_TIME');
+    });
+
+    it('rejects a report with the wrong number of laps (LAP_COUNT_MISMATCH)', () => {
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      // quick/neon_blvd = 3 laps; submit 2 laps. totalMs ≥ min so
+      // min-time passes; lap-count fires.
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, { userId: PLAYER_A, totalMs: 150_000, laps: [75_000, 75_000], isBotReport: false }));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('INVALID_RESULT');
+      expect((submitEnv.error.details as { reason?: string }).reason).toBe('LAP_COUNT_MISMATCH');
+    });
+
+    it('rejects a report whose laps do not sum to totalMs (LAP_SUM_MISMATCH)', () => {
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      // Lap sum 120_000 but totalMs claims 130_000. Min-time and
+      // lap-count pass; lap-sum fires.
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, { userId: PLAYER_A, totalMs: 130_000, laps: [40_000, 40_000, 40_000], isBotReport: false }));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('INVALID_RESULT');
+      expect((submitEnv.error.details as { reason?: string }).reason).toBe('LAP_SUM_MISMATCH');
+    });
+
+    it('rejects a bot report submitted by a non-host caller (FORBIDDEN)', () => {
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      // PLAYER_A is not the host. isBotReport=true requires the caller
+      // to be the host.
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, { userId: 'bot-1', totalMs: 120_000, laps: [40_000, 40_000, 40_000], isBotReport: true }, PLAYER_A));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('FORBIDDEN');
+      expect(submitEnv.error.message).toMatch(/host/);
+    });
+
+    it('accepts a bot report submitted by the host (host = caller = report.userId)', () => {
+      // 1-player time_trial session; only the host is in the roster.
+      // Bots are relay-pure — the host reports on their own behalf with
+      // isBotReport=true.
+      const createEnv = call<CreateData>(env, 'race_session_create', null,
+        makeCreatePayload({ mode: 'time_trial', size: 1, hostLoadout: { classId: 'C', bodyId: 'coupe' } }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      // Backdate startedAt so the clock check is comfortably within
+      // tolerance for a 60s totalMs.
+      const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+      const obj = env.fakeNakama.store.get(storeKey);
+      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+
+      const submitEnv = call<{ accepted: true }>(env, 'race_submit_result', HOST_ID,
+        submitPayload(sid, { userId: HOST_ID, totalMs: 60_000, laps: [60_000], isBotReport: true }, HOST_ID));
+      expect(submitEnv.ok).toBe(true);
     });
   });
 });

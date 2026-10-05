@@ -39,7 +39,7 @@ import {
   readSession,
   submitReport,
 } from './session_repo';
-import { validateSubmissionStep1 } from './validation';
+import { validateSubmissionStep1, validateSubmissionStep2 } from './validation';
 import type {
   ConfigGetOutput,
   CarClassId,
@@ -674,20 +674,28 @@ function race_submit_result_impl(
   if (!reportV.ok) return toJson(reportV);
   const report = reportV.data;
 
-  // Caller authz: the RPC caller must be the reporter themselves.
-  // - ctx.userId (socket) wins; payload.callerUserId is fallback for HTTP
-  // - the report itself also carries userId; ctx.userId must match it
+  // Caller authz:
+  //   1. Socket ctx.userId (when set) MUST equal declaredCaller
+  //   2. For HUMAN reports, caller (ctx.userId ?? declaredCaller) must
+  //      equal report.userId — clients can't impersonate.
+  //   3. For BOT reports, the host is the actual submitter; we defer
+  //      the host-check until after the session read because we need
+  //      session.host.
   if (typeof parsed.data.callerUserId !== 'string' || parsed.data.callerUserId.length === 0) {
     return toJson(err('BAD_REQUEST', 'callerUserId is required'));
   }
   const declaredCaller = parsed.data.callerUserId;
-  const reporterId = ctx.userId ?? declaredCaller;
+  const callerId = ctx.userId ?? declaredCaller;
   if (ctx.userId && declaredCaller !== ctx.userId) {
     return toJson(err('FORBIDDEN', 'callerUserId does not match ctx.userId'));
   }
-  if (reporterId !== report.userId) {
+  if (!report.isBotReport && callerId !== report.userId) {
     return toJson(err('FORBIDDEN', 'reporterId must match report.userId'));
   }
+  // The reporterId recorded in the roster is always the report's userId
+  // (which is the bot's roster-slot id for bot reports, or the human's
+  // userId for human reports). This is what the storage write targets.
+  const reporterId = report.userId;
 
   const sessionId =
     typeof parsed.data.sessionId === 'string' && parsed.data.sessionId.length > 0
@@ -711,7 +719,7 @@ function race_submit_result_impl(
 
   const rl = checkRateLimit(nk, {
     rpcName: 'race_submit_result',
-    userId: reporterId,
+    userId: callerId,
     ...RATE_LIMITS.race_submit_result,
   });
   if (!rl.allowed) {
@@ -723,9 +731,42 @@ function race_submit_result_impl(
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
+  // Bot-auth gate (Chunk 8): only the host may submit reports on
+  // behalf of bots. Bots are relay-pure so the host is the only auth'd
+  // user that can attest their finish time.
+  if (report.isBotReport && callerId !== cur.session.host) {
+    logger.warn(
+      'race_submit_result sid=%s bot report by non-host caller=%s host=%s',
+      sessionId,
+      callerId,
+      cur.session.host,
+    );
+    return toJson(err('FORBIDDEN', 'only the host may submit bot reports'));
+  }
+
   // Step-1: roster / state / dup
   const v1 = validateSubmissionStep1({ session: cur.session, reporterId });
   if (!v1.ok) return toJson(v1);
+  const rosterEntry = cur.session.roster.find((e) => e.userId === reporterId);
+  if (!rosterEntry) {
+    // Defensive — step-1 should have caught this; treat as INTERNAL.
+    return toJson(err('INTERNAL', 'roster entry vanished between step-1 and step-2'));
+  }
+
+  // Step-2: clock / min-time / lap-count / lap-sum
+  const track = getTrack(cur.session.trackId, nk);
+  if (!track) {
+    // Should never happen — create validates trackId exists.
+    return toJson(err('INTERNAL', `track ${cur.session.trackId} missing from catalog`));
+  }
+  const v2 = validateSubmissionStep2({
+    session: cur.session,
+    reporter: rosterEntry,
+    report,
+    track,
+    nowMs: serverNowMs(),
+  });
+  if (!v2.ok) return toJson(v2);
 
   // Atomically write report + bump roster (CAS on session.version).
   // Throws on version conflict (another concurrent submission); the
@@ -745,17 +786,18 @@ function race_submit_result_impl(
   }
 
   logger.info(
-    'race_submit_result sid=%s reporter=%s totalMs=%d laps=%d',
+    'race_submit_result sid=%s reporter=%s totalMs=%d laps=%d bot=%s',
     sessionId,
     reporterId,
     report.totalMs,
     report.laps.length,
+    report.isBotReport ? 'true' : 'false',
   );
 
   const out: RaceSubmitResultOutput = {
     accepted: true,
     // Chunk 9 will compute the real confidence based on quorum. For
-    // step-1 we always return 'client' as a placeholder; callers can
+    // now we always return 'client' as a placeholder; callers can
     // ignore it until the session reaches `closed`.
     confidence: 'client',
     flags: { needsReview: false },
