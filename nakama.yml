@@ -1,0 +1,27 @@
+---
+# Reference of the runtime config that docker-compose.yml's entrypoint
+# renders into /tmp/nakama.yml from env vars before starting Nakama.
+# Nakama does NOT expand env vars in YAML, so secrets are templated in via
+# a heredoc in the entrypoint script and written to /tmp/nakama.yml.
+#
+# Don't mount this file directly — it's only here as documentation.
+
+socket:
+  server_key: "${NAKAMA_SERVER_KEY}"
+  port: 8081             # HTTP/gateway on 8081 for Cloudflare tunnel
+  address: "0.0.0.0"
+
+runtime:
+  gwp_secret: "${NAKAMA_GWP_SECRET}"
+
+database:
+  address:
+    - "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+
+logger:
+  level: "info"
+
+console:
+  port: 8090                       # admin console (separate port)
+  username: "${NAKAMA_CONSOLE_USER}"
+  password: "${NAKAMA_CONSOLE_PASSWORD}"

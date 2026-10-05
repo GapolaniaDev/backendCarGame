@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Nakama game server metrics — exposed on its own port via
+  # -metrics.prometheus_port, no auth required.
+  - job_name: nakama
+    static_configs:
+      - targets: ["172.28.0.10:9100"]
+        labels:
+          service: nakama
+
+  # Prometheus self-metrics (optional but useful for debugging)
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

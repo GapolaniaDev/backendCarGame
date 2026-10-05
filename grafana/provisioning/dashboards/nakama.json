@@ -1,0 +1,86 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active Sessions",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(nakama_session_count)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "type": "stat",
+      "title": "Sessions Created (5m)",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "sum(increase(nakama_session_create_total[5m]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}}
+    },
+    {
+      "type": "stat",
+      "title": "Live Sessions",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(nakama_live_session_count)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}}}
+    },
+    {
+      "type": "stat",
+      "title": "Goroutines",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "sum(nakama_goroutine_count)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Session count over time",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "targets": [{"expr": "sum(nakama_session_count)", "refId": "A", "legendFormat": "sessions"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Session create rate (per second)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "targets": [{"expr": "rate(nakama_session_create_total[1m])", "refId": "A", "legendFormat": "creates/s"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP request duration (ms) - p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(nakama_http_request_duration_ms_bucket[5m])) by (le))", "refId": "A", "legendFormat": "p95"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage reads vs writes per second",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "targets": [
+        {"expr": "rate(nakama_storage_read_total[1m])", "refId": "A", "legendFormat": "reads"},
+        {"expr": "rate(nakama_storage_write_total[1m])", "refId": "B", "legendFormat": "writes"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DB connection pool usage",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "targets": [{"expr": "nakama_db_connection_count", "refId": "A", "legendFormat": "open conns"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Matchmaker (matches/sec)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "targets": [{"expr": "rate(nakama_matchmaker_total[1m])", "refId": "A", "legendFormat": "matches/s"}]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["nakama"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Nakama Game Server",
+  "uid": "nakama-main",
+  "version": 1,
+  "weekStart": ""
+}

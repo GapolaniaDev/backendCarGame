@@ -1,0 +1,32 @@
+# Secrets / env
+.env
+*.env
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code (per-user, never commit)
+.claude/settings.local.json
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+*.tsbuildinfo

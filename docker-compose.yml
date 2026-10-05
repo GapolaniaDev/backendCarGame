@@ -1,0 +1,158 @@
+# Custom network with a fixed subnet so we can assign static IPs to
+# services that the Cloudflare tunnel routes to by IP (Cloudflare
+# can't resolve docker DNS names like `nakama` from outside the
+# network, so we hardcode 172.28.0.10 in the Cloudflare routes).
+networks:
+  default:
+    name: carvideogamebackend
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nakama-postgres
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+        ipv4_address: 172.28.0.2
+
+  nakama:
+    image: heroiclabs/nakama:3.27.0
+    container_name: nakama
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    entrypoint:
+      - "/bin/sh"
+      - "-ec"
+      - |
+        cat > /tmp/nakama.yml <<EOF
+        socket:
+          server_key: "${NAKAMA_SERVER_KEY}"
+          port: 8081
+          address: "0.0.0.0"
+        runtime:
+          gwp_secret: "${NAKAMA_GWP_SECRET}"
+          http_key: "${NAKAMA_RUNTIME_HTTP_KEY}"
+        database:
+          address:
+            - "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+        session:
+          encryption_key: "${NAKAMA_SESSION_ENCRYPTION_KEY}"
+          refresh_encryption_key: "${NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY}"
+        console:
+          port: 8090
+          username: "${NAKAMA_CONSOLE_USER}"
+          password: "${NAKAMA_CONSOLE_PASSWORD}"
+          signing_key: "${NAKAMA_CONSOLE_SIGNING_KEY}"
+        logger:
+          level: "info"
+        EOF
+        /nakama/nakama migrate up --config /tmp/nakama.yml
+        exec /nakama/nakama --config /tmp/nakama.yml --metrics.prometheus_port=9100 --runtime.js_entrypoint=leaderboards.js
+    ports:
+      - "8081:8081"   # API HTTP/gRPC for your Cloudflare tunnel
+      - "8090:8090"   # admin console (host:container)
+      - "9100:9100"   # Prometheus metrics endpoint (internal)
+    volumes:
+      - ./modules:/nakama/data/modules:ro   # place runtime JS/Lua modules here
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+
+  # Prometheus — scrapes Nakama's /metrics endpoint every 15s
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    restart: unless-stopped
+    depends_on:
+      - nakama
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"   # Prometheus UI (host:container, optional)
+    networks:
+      default:
+        ipv4_address: 172.28.0.20
+
+  # Grafana — visualizes Prometheus data with dashboards
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"   # Grafana UI
+    networks:
+      default:
+        ipv4_address: 172.28.0.21
+
+  # Quick tunnel — no DNS/tunnel setup required. Generates a random
+  # *.trycloudflare.com URL exposing only the API (8081).
+  # Start with: docker compose --profile tunnel-quick up -d tunnel-quick
+  tunnel-quick:
+    image: cloudflare/cloudflared:2024.12.2
+    container_name: cloudflared-quick
+    restart: unless-stopped
+    profiles: ["tunnel-quick"]
+    depends_on:
+      nakama:
+        condition: service_started
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://172.28.0.10:8081
+
+  # Named tunnel — uses your real tunnel + DNS records. Requires
+  # TUNNEL_TOKEN in .env and the DNS records for api.<domain> and
+  # admin.<domain> pointing at the tunnel.
+  # Start with: docker compose --profile tunnel-named up -d tunnel-named
+  tunnel-named:
+    image: cloudflare/cloudflared:2024.12.2
+    container_name: cloudflared-named
+    restart: unless-stopped
+    profiles: ["tunnel-named"]
+    depends_on:
+      nakama:
+        condition: service_started
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${TUNNEL_TOKEN:?TUNNEL_TOKEN is required in .env for named mode}
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
