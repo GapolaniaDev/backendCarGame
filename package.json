@@ -5,7 +5,7 @@
   "description": "Nakama 3.27 backend for the racing game (Phase 1: race sessions & results)",
   "main": "modules/index.js",
   "scripts": {
-    "build": "esbuild modules/src/main.ts --bundle --platform=node --target=node20 --format=cjs --outfile=modules/index.js --log-level=warning",
+    "build": "esbuild modules/src/main.ts --bundle --platform=neutral --target=node20 --format=iife --outfile=modules/index.js --log-level=warning && node scripts/postbuild.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run typecheck && vitest run",
     "test:watch": "vitest",

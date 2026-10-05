@@ -62,7 +62,7 @@ services:
           level: "info"
         EOF
         /nakama/nakama migrate up --config /tmp/nakama.yml
-        exec /nakama/nakama --config /tmp/nakama.yml --metrics.prometheus_port=9100 --runtime.js_entrypoint=leaderboards.js
+        exec /nakama/nakama --config /tmp/nakama.yml --metrics.prometheus_port=9100 --runtime.js_entrypoint=index.js
     ports:
       - "8081:8081"   # API HTTP/gRPC for your Cloudflare tunnel
       - "8090:8090"   # admin console (host:container)

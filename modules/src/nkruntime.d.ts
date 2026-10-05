@@ -30,36 +30,27 @@ export interface ILogger {
 /** InitModule's third parameter is the "initializer" — registration helpers. */
 export interface IInitializer {
   // ── RPC ──
-  registerRpc(runtime: INakama, key: string, fn: RpcFunction): void;
+  // Signature verified against v3.27.0 source: registerRpc takes
+  // (name, fn) — no runtime arg. The Go side closes over the runtime
+  // internally.
+  registerRpc(key: string, fn: RpcFunction): void;
 
   // ── Hooks ──
-  registerBeforeAuthenticateApple(runtime: INakama, fn: BeforeAuthFn): void;
-  registerAfterAuthenticateApple(runtime: INakama, fn: AfterAuthFn): void;
-  registerBeforeSessionRefresh(runtime: INakama, fn: BeforeReqFn): void;
-  registerAfterSessionRefresh(runtime: INakama, fn: AfterReqFn): void;
+  registerBeforeAuthenticateApple(fn: BeforeAuthFn): void;
+  registerAfterAuthenticateApple(fn: AfterAuthFn): void;
+  registerBeforeSessionRefresh(fn: BeforeReqFn): void;
+  registerAfterSessionRefresh(fn: AfterReqFn): void;
 
-  registerBeforeWriteStorageObjects(
-    runtime: INakama,
-    fn: BeforeStorageFnEnvelope,
-  ): void;
-  registerAfterWriteStorageObjects(
-    runtime: INakama,
-    fn: AfterStorageFnEnvelope,
-  ): void;
+  registerBeforeWriteStorageObjects(fn: BeforeStorageFnEnvelope): void;
+  registerAfterWriteStorageObjects(fn: AfterStorageFnEnvelope): void;
 
-  registerBeforeLeaderboardRecordWrite(
-    runtime: INakama,
-    fn: BeforeLeaderboardRecordFn,
-  ): void;
-  registerAfterLeaderboardRecordWrite(
-    runtime: INakama,
-    fn: AfterLeaderboardRecordFn,
-  ): void;
+  registerBeforeLeaderboardRecordWrite(fn: BeforeLeaderboardRecordFn): void;
+  registerAfterLeaderboardRecordWrite(fn: AfterLeaderboardRecordFn): void;
 
-  registerMatchmakerMatched(runtime: INakama, fn: MatchmakerMatchedFn): void;
+  registerMatchmakerMatched(fn: MatchmakerMatchedFn): void;
 
   // ── Match lifecycle ──
-  registerMatch(runtime: INakama, name: string, handler: IMatchHandler): void;
+  registerMatch(name: string, handler: IMatchHandler): void;
 
   // ── Lifecycle ──
   registerShutdown(runtime: INakama, fn: ShutdownFn): void;
@@ -558,7 +549,21 @@ export interface IGroup {
 declare global {
   /**
    * Called once at server startup. Registers RPCs, hooks, matches, etc.
-   * Reference: https://github.com/heroiclabs/nakama/blob/v3.27.0/server/runtime_javascript_init.go
+   *
+   * The Go runtime invokes the JS function with this positional order
+   * (see `server/runtime_javascript.go` line 2467 in v3.27.0):
+   *   `initModFn(goja.Null(), ctx, jsLoggerInst, nk, init)`
+   *
+   * So in JS the params are:
+   *   ctx         — init context (node, version, env)
+   *   logger      — zap-backed logger (info, warn, error, debug, withField, withFields)
+   *   nk          — Nakama module (storageRead/Write, leaderboardCreate, sha256Hash, …)
+   *   initializer — register* hooks (registerRpc, registerBeforeWriteStorageObjects, …)
+   *
+   * Older docs (and the existing `modules/leaderboards.js` stub) use
+   * the 3-arg form `(ctx, logger, nk)`, which still works in v3.27
+   * because extras are silently dropped — but the `initializer` is
+   * required for `registerRpc` and hook registration.
    */
-  function InitModule(ctx: IContext, logger: ILogger, initializer: IInitializer, nk: INakama): void;
+  function InitModule(ctx: IContext, logger: ILogger, nk: INakama, initializer: IInitializer): void;
 }
