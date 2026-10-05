@@ -50,6 +50,8 @@ import storeJson from './catalogs/store.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
+import { garage_get } from './garage/rpcs';
+import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
@@ -88,6 +90,8 @@ function InitModule(
 
   // Auto-create a default profile on every successful auth.
   registerProfileAutoCreate(initializer, nk, logger);
+  // Phase 3: auto-create the starter-car garage on first auth.
+  registerGarageAutoCreate(initializer, nk, logger);
 
   // Phase 3 catalogs: rewards, levels, garage (cars/upgrades/cosmetics),
   // store. Chained after Phase 1+2 so a malformed Phase 3 catalog
@@ -161,6 +165,7 @@ function InitModule(
     initializer.registerRpc('lb_get', lb_get);
     initializer.registerRpc('profile_get', profile_get);
     initializer.registerRpc('profile_update', profile_update);
+    initializer.registerRpc('garage_get', garage_get);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }
