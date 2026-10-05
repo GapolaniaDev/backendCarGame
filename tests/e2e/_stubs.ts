@@ -297,6 +297,19 @@ class FakeNakamaCore {
     return { leaderboards: Array.from(this.leaderboards.values()), cursor: '' };
   }
 
+  /**
+   * Simulate the runtime's weekly reset: drop every record on the
+   * given table.  Only operates on tables that  exist (  so a missing
+   * id throws — same as the Go runtime). The leaderboard definition
+   * itself is left in place; only records are cleared.
+   */
+  leaderboardReset(id: string): void {
+    if (!this.leaderboards.has(id)) {
+      throw new Error(`leaderboardReset: unknown leaderboard "${id}"`);
+    }
+    this.leaderboardRecords.delete(id);
+  }
+
   leaderboardRecordWrite(
     id: string,
     ownerId: string,

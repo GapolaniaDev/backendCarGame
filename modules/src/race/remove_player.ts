@@ -21,7 +21,6 @@ import { writeJson } from '../core/storage';
 import type { RaceSession, RosterEntry } from './types';
 import { RACE_SESSIONS_COLLECTION } from './constants';
 import { SYSTEM_USER_ID } from './constants';
-import { SCHEMA_VERSION } from '../core/storage';
 import type { PersistedSession } from './session_repo';
 
 export interface RemovePlayerResult {

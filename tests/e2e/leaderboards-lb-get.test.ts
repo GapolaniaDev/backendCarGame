@@ -277,4 +277,72 @@ describe('lb_get RPC (Chunk 13)', () => {
     // We only have 4 records, but the cap shouldn't error.
     expect(resp.data.records.length).toBe(4);
   });
+
+  it('around_me when caller is rank 1 (first rank) returns the leading records', async () => {
+    await setupPopulatedRace();
+    // HOST won (all submitted 120_000 — order is by subscore then ownerId,
+    // so HOST isn't necessarily rank 1; let's just confirm HOST is in the
+    // result and that calling around_me on rank 1 gives a valid slice).
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'tt_neon_blvd_B_all',
+      view: 'around_me',
+      limit: 4,
+      callerUserId: HOST_ID,
+    });
+    expect(resp.ok).toBe(true);
+    expect(resp.data.ownerRecord?.rank).toBe(1);
+    // First-rank edge: the band overflows the start, so we still
+    // receive `limit` records.
+    expect(resp.data.records.length).toBe(4);
+    expect(resp.data.records[0]?.rank).toBe(1);
+  });
+
+  it('around_me when caller is last rank includes the tail (overflow at end)', async () => {
+    await setupPopulatedRace();
+    // Determine last rank ownerId, then call around_me on them.
+    const global = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'tt_neon_blvd_B_all',
+      view: 'global',
+      limit: 100,
+      callerUserId: HOST_ID,
+    });
+    const last = global.data.records[global.data.records.length - 1];
+    expect(last).toBeDefined();
+    const lastOwner = last!.ownerId;
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'tt_neon_blvd_B_all',
+      view: 'around_me',
+      limit: 4,
+      aroundUserId: lastOwner,
+      callerUserId: HOST_ID,
+    });
+    expect(resp.ok).toBe(true);
+    expect(resp.data.ownerRecord?.rank).toBe(global.data.totalCount);
+    // Band overflows the end: the slice is `start..start+limit` and
+    // clamped to the array end, so for last rank we get the trailing
+    // 3 records (4-player board, last at idx=3, half=2, start=1).
+    expect(resp.data.records.length).toBe(3);
+    // The last record in the slice is the caller (last rank).
+    expect(resp.data.records[resp.data.records.length - 1]?.ownerId).toBe(lastOwner);
+  });
+
+  it('around_me when caller has no record falls back to top-N (no error)', async () => {
+    await setupPopulatedRace();
+    const ghost = 'user-ghost-no-record';
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'tt_neon_blvd_B_all',
+      view: 'around_me',
+      limit: 3,
+      aroundUserId: ghost,
+      callerUserId: HOST_ID,
+    });
+    expect(resp.ok).toBe(true);
+    // ownerRecord is null because the ghost user has no record.
+    expect(resp.data.ownerRecord).toBeNull();
+    // Fallback: we return the first `limit` records (NOT_FOUND semantics
+    // is intentionally NOT used here — the leaderboard exists, the user
+    // is just missing).
+    expect(resp.data.records.length).toBe(3);
+    expect(resp.data.records[0]?.rank).toBe(1);
+  });
 });

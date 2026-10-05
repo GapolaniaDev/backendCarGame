@@ -2,7 +2,7 @@
 
 Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
 
-**Phase 1 in progress**: race session creation, joins, start, result reporting, quorum, close-on-all-reported, and `RaceCompleted` event emission. Everything else (economy, matchmaking, ranked, leaderboards rebuild, social, tournaments, missions, pass, real-money IAP) is out of scope for this phase.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ⏳**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create. Next up is economy, garage, and progression. See [`docs/leaderboards.md`](./docs/leaderboards.md) for the Phase 2 leaderboard spec.
 
 ## Stack
 
@@ -135,13 +135,103 @@ Confidence semantics:
 
 ## In-process events
 
-- `RaceCompleted` — published on the `EventBus` exactly once per session (CAS-guarded). Default subscriber in `main.ts` logs the event with sid/mode/track/size/results count/needsReview. Future phases will register leaderboard, economy, and analytics subscribers.
+- `RaceCompleted` — published on the `EventBus` exactly once per session (CAS-guarded). Default subscriber in `main.ts` logs the event with sid/mode/track/size/results count/needsReview. Phase 2 also installs the **leaderboards** subscriber that writes time/best-lap/wins tables from the event; future phases register economy and analytics subscribers.
+
+---
+
+## Phase 2 — Leaderboards + Profiles
+
+Phase 2 ships the leaderboard catalog, the `RaceCompleted` → leaderboard writer subscriber, the `lb_get` read RPC, the profile module (auto-create on auth + `profile_get`/`profile_update`), and the `removePlayerFromAll` helper for disconnect cleanup.
+
+### Leaderboard catalog
+
+91 tables total, generated from `modules/src/catalogs/leaderboards.json` at boot:
+
+- `wins_week` — weekly wins counter (Monday 00:00 UTC reset), `incr desc`
+- per (track × class × pattern): `tt_{track}_{class}_{all|week}` (race time, `best asc`) and `lap_{track}_{class}_all` (best lap, `best asc`)
+- 6 tracks × 5 classes (D, C, B, A, S) × 3 patterns + 1 `wins_week` = 91
+
+Tables are registered through `initializer.registerLeaderboardCreate(...)` at `InitModule`. The catalog is also cached in `nk.localcache` (7-day TTL) so hot reads avoid re-walking the JSON.
+
+### `RaceCompleted` event enrichment (Phase 2)
+
+The event now carries an additional `sessionId` (already present) and the subscriber stamps every leaderboard record with metadata:
+
+```ts
+{
+  __server_token__: 'phase2',  // presence = server-wrote, client cannot forge
+  sessionId: string,
+  mode: RaceModeId,
+  confidence: 'quorum' | 'client' | 'server',
+  isBot: boolean,
+  car: string,        // bodyId from the entry's loadout
+  platform?: string,  // optional, from report metadata
+  control?: string,   // optional
+  clientVersion?: string
+}
+```
+
+### Phase 2 RPCs
+
+| RPC | Inputs | Errors | Notes |
+|---|---|---|---|
+| `lb_get` | `{ leaderboardId, view, limit?, aroundUserId?, callerUserId }` | `BAD_REQUEST`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND` | `view ∈ {global, around_me, friends}`. `limit` clamped to `[1,100]` (default 20). Profiles enriched in the same response. `friends` currently returns just the caller (graph stub). |
+| `profile_get` | `{ callerUserId }` | `UNAUTHENTICATED`, `FORBIDDEN` | Reads the caller's profile; auto-creates a default (`displayName='Racer'`, `avatarUrl=null`) on first read. |
+| `profile_update` | `{ displayName?, avatarUrl?, callerUserId }` | `BAD_REQUEST`, `FORBIDDEN`, `CONFLICT`, `RATE_LIMITED` | CAS update via storage `version`. Validation against `catalogs/profiles.json`: displayName 2-20 chars, pattern `^[A-Za-z0-9 _\-.]+$`, blocked-words list; avatarUrl ≤ 512 chars. Rejects payload `userId` that doesn't match the caller (spoof defense). |
+
+### `lb_get` response
+
+```ts
+{
+  leaderboardId: string;
+  view: 'global' | 'around_me' | 'friends';
+  totalCount: number;
+  records: Array<{
+    ownerId: string;
+    rank: number;          // 1-indexed within the full table
+    score: number;
+    subscore: number;
+    metadata: Record<string, unknown>;
+  }>;
+  ownerRecord: { ownerId: string; rank: number; score: number; subscore: number; metadata: ... } | null;
+  profiles: Record<userId, { userId: string; displayName: string; avatarUrl: string | null }>;
+}
+```
+
+### `lb_get` view semantics
+
+- **`global`** — top-N sorted ascending by score; `ownerRecord` is the caller's own entry (null if not on the table).
+- **`around_me`** — band of `limit/2` records on each side of the caller; clamped to the array bounds. Falls back to top-N when the caller has no record.
+- **`friends`** — stubbed to "just the caller" until the friends module lands.
+
+### Confidence → leaderboard write rules
+
+| Confidence | How it's derived | Time/best-lap writes | wins_week write |
+|---|---|---|---|
+| `quorum` | every human agreed on the order | ✅ written | ✅ +1 for rank-1 (quick/ranked only) |
+| `server` | zero humans reported (all-bot race) | ✅ written | ❌ never (bots don't win) |
+| `client` | humans disagree or some didn't report | ✅ written only for `time_trial` mode | ❌ pending review |
+
+The `time_trial` mode is special-cased: even at `client` confidence, the time table is written because the soloist's run is self-evidenced.
+
+### Profile module
+
+- **Storage**: `profiles/{userId}` owned by `userId`, perms 0/0. CAS via `version`.
+- **Auto-create**: registered on `registerAfterAuthenticateDevice/Custom/Email/Apple` — every new auth lands with a default profile. Failures log and never abort the auth.
+- **Default profile**: `{ schemaVersion: 1, userId, displayName: 'Racer', avatarUrl: null, createdAt, updatedAt }`.
+- **Validation catalog** (`modules/src/catalogs/profiles.json`): `displayName` 2–20 chars matching `^[A-Za-z0-9 _\-.]+$`; blocked-words list (case-insensitive whole-token match); `avatarUrl` ≤ 512 chars.
+- **Spoof defense**: `profile_update` rejects any payload `userId` that differs from the authenticated caller.
+
+### `removePlayerFromAll(userId)`
+
+`modules/src/race/remove_player.ts` — utility for disconnect cleanup. Walks every persisted `race_sessions` object, marks the player's roster entry `abandoned: true` (so the close-time ordering sees them as DNF). Idempotent. Returns `{ abandonedFrom: string[], closedSessions: string[] }`. Currently only called from tests; the runtime disconnect hook lands in Phase 4.
 
 ## Future work
 
-- Phases 2–9 per `specs/Checklist de desarrollo por fases — Juego de carreras con Nakama.pdf`
+- Phase 3+ per `specs/Checklist de desarrollo por fases — Juego de carreras con Nakama.pdf`
 - Authoritative match relay rewrite (currently relay-pure per Phase 1)
 - `CLOSE_GRACE_MS` timer so non-reporting humans are marked `abandoned` automatically (currently close fires only when `allSubmitted`)
 - Analytics event emission from server (Phase 5)
+- Runtime disconnect hook that drives `removePlayerFromAll` (Phase 4)
 
-See [`/Users/gustavo/.claude/plans/graceful-mapping-clarke.md`](file:///Users/gustavo/.claude/plans/graceful-mapping-clarke.md) for the full Phase 1 implementation plan, and [`docs/race-protocol-ops.md`](./docs/race-protocol-ops.md) for the operational protocol codes the client uses.
+See [`/Users/gustavo/.claude/plans/graceful-mapping-clarke.md`](file:///Users/gustavo/.claude/plans/graceful-mapping-clarke.md) for the full Phase 1 implementation plan, [`docs/leaderboards.md`](./docs/leaderboards.md) for the Phase 2 leaderboard spec, and [`docs/race-protocol-ops.md`](./docs/race-protocol-ops.md) for the operational protocol codes the client uses.
