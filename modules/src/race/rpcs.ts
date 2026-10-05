@@ -28,16 +28,19 @@ import {
   getTracks,
 } from '../core/catalog';
 import { serverNowMs } from '../core/time';
+import type { EventBus } from '../core/event_bus';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { SYSTEM_USER_ID, RATE_LIMITS } from './constants';
 import { canTransition } from './state';
 import {
+  allSubmitted,
   appendRosterEntry,
   createSession,
   lookupLastClosed,
   markStarted,
   readSession,
   submitReport,
+  tryCloseAndPublish,
 } from './session_repo';
 import { validateSubmissionStep1, validateSubmissionStep2 } from './validation';
 import type {
@@ -64,6 +67,27 @@ export type RpcHandler = (
   nk: INakama,
   payload: string,
 ) => string;
+
+// ─── Event bus wiring ─────────────────────────────────────────────────────────
+
+/**
+ * Module-level reference to the EventBus, set by `main.ts` after
+ * InitModule constructs it. The race handlers read this on every
+ * submit so tests don't need to plumb the bus through the RPC
+ * signature. Defaults to `null` — submit handlers skip publishing
+ * when no bus is installed (unit/e2e tests that don't exercise close).
+ */
+let raceBus: EventBus | null = null;
+
+/** Called once by `InitModule` after the EventBus is constructed. */
+export function setRaceBus(bus: EventBus): void {
+  raceBus = bus;
+}
+
+/** Test/diagnostic accessor. */
+export function getRaceBus(): EventBus | null {
+  return raceBus;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -773,8 +797,10 @@ function race_submit_result_impl(
   // outer race_submit_result call from the other request will likely
   // be the duplicate one — its idempotency cache will pick up our
   // result via the read-back, OR this request gets CONFLICT.
+  let newSessionVersion: string;
   try {
-    submitReport(nk, cur.session, reporterId, report, cur.version, serverNowMs());
+    const r = submitReport(nk, cur.session, reporterId, report, cur.version, serverNowMs());
+    newSessionVersion = r.version;
   } catch (e) {
     logger.warn(
       'race_submit_result sid=%s reporter=%s CAS conflict: %s',
@@ -783,6 +809,15 @@ function race_submit_result_impl(
       e instanceof Error ? e.message : String(e),
     );
     return toJson(err('CONFLICT', 'concurrent write raced — please retry'));
+  }
+
+  // Re-read the post-write session so the close logic sees the
+  // up-to-date roster (with this reporter's `reportedAt` set).
+  const updated = readSession(nk, sessionId);
+  if (!updated) {
+    // Vanished between write and re-read — bail out without closing.
+    logger.warn('race_submit_result sid=%s disappeared after submit', sessionId);
+    return toJson(err('INTERNAL', 'session vanished after submit'));
   }
 
   logger.info(
@@ -794,13 +829,60 @@ function race_submit_result_impl(
     report.isBotReport ? 'true' : 'false',
   );
 
+  // If every roster entry has now submitted, transition the session to
+  // `closed` atomically. The CAS on `version` guards against a second
+  // concurrent submit racing us — only the winner closes, the loser
+  // sees `closed: false` from the idempotency check below on retry.
+  let closeOutcome: ReturnType<typeof tryCloseAndPublish> | null = null;
+  if (allSubmitted(updated.session.roster)) {
+    if (raceBus === null) {
+      logger.warn(
+        'race_submit_result sid=%s: all submitted but no EventBus installed — skipping close',
+        sessionId,
+      );
+    } else {
+      try {
+        closeOutcome = tryCloseAndPublish(
+          nk,
+          raceBus,
+          updated.session,
+          newSessionVersion,
+          serverNowMs(),
+        );
+        logger.info(
+          'race_submit_result sid=%s closed confidence=%s needsReview=%s',
+          sessionId,
+          closeOutcome.confidence,
+          String(closeOutcome.needsReview),
+        );
+      } catch (e) {
+        logger.warn(
+          'race_submit_result sid=%s close CAS conflict: %s',
+          sessionId,
+          e instanceof Error ? e.message : String(e),
+        );
+        // Not fatal — the next submit (or the next-chance goroutine)
+        // will retry the close.
+      }
+    }
+  }
+
   const out: RaceSubmitResultOutput = {
     accepted: true,
-    // Chunk 9 will compute the real confidence based on quorum. For
-    // now we always return 'client' as a placeholder; callers can
-    // ignore it until the session reaches `closed`.
-    confidence: 'client',
-    flags: { needsReview: false },
+    confidence: closeOutcome?.confidence ?? 'client',
+    ...(closeOutcome !== null && closeOutcome.closed
+      ? {
+          officialResults: closeOutcome.results,
+          flags: {
+            needsReview: closeOutcome.needsReview,
+            ...(closeOutcome.reviewReason !== undefined
+              ? { reviewReason: closeOutcome.reviewReason }
+              : {}),
+          },
+        }
+      : {
+          flags: { needsReview: false },
+        }),
   };
   const serialized = toJson(ok(out));
   // 60 s is enough to absorb in-flight retries without forcing clients

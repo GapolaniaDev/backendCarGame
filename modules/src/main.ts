@@ -14,6 +14,8 @@
 
 import type { IContext, ILogger, IInitializer, INakama } from './nkruntime';
 import { loadCatalogs, type TracksCatalog, type ModesCatalog } from './core/catalog';
+import { EventBus } from './core/event_bus';
+import { RACE_EVENT_RACE_COMPLETED } from './race/constants';
 import {
   config_get,
   race_session_create,
@@ -21,7 +23,9 @@ import {
   race_session_start,
   race_session_get,
   race_submit_result,
+  setRaceBus,
 } from './race/rpcs';
+import type { RaceCompletedEvent } from './race/types';
 import tracksJson from './catalogs/tracks.json';
 import modesJson from './catalogs/modes.json';
 
@@ -41,6 +45,25 @@ function InitModule(
     (s: string): string => nk.sha256Hash(s),
     nk,
   );
+
+  // Wire the in-process event bus and install a default subscriber
+  // for `RaceCompleted` so the close path's emission is observable
+  // in logs. Real subscribers (leaderboards, economy, etc.) land in
+  // later phases; for now we just record that the event fired.
+  const bus = new EventBus(logger);
+  bus.subscribe(RACE_EVENT_RACE_COMPLETED, (payload) => {
+    const e = payload as RaceCompletedEvent;
+    logger.info(
+      'RaceCompleted sid=%s mode=%s track=%s size=%d results=%d needsReview=%s',
+      e.sessionId,
+      e.mode,
+      e.trackId,
+      e.size,
+      e.results.length,
+      String(e.flags.needsReview),
+    );
+  });
+  setRaceBus(bus);
 
   // Register the 6 RPCs as individual top-level statements.
   //

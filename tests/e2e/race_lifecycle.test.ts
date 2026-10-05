@@ -891,4 +891,224 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(submitEnv.ok).toBe(true);
     });
   });
+
+  describe('race_submit_result (Chunk 9: close + quorum + ordering + RaceCompleted)', () => {
+    const P1 = '22222222-2222-4222-8222-222222222222';
+    const P2 = '33333333-3333-4333-8333-333333333333';
+    const P3 = '44444444-4444-4444-8444-444444444444';
+
+    function reportFor(userId: string, totalMs: number, isBot = false): Record<string, unknown> {
+      // quick/neon_blvd = 3 laps; B class min = 40_000/lap → min total 120_000.
+      return {
+        userId,
+        totalMs,
+        laps: [40_000, 40_000, totalMs - 80_000],
+        isBotReport: isBot,
+      };
+    }
+
+    function submitReport(
+      sid: string,
+      userId: string,
+      totalMs: number,
+      opts: { isBot?: boolean } = {},
+    ): { ok: boolean; data?: unknown; error?: unknown } {
+      const caller = opts.isBot ? HOST_ID : userId;
+      const submitEnv = call<{
+        accepted: true;
+        confidence: string;
+        officialResults?: Array<{ rank: number; userId: string; abandoned: boolean }>;
+        flags: { needsReview: boolean; reviewReason?: string };
+      }>(
+        env,
+        'race_submit_result',
+        caller,
+        JSON.stringify({
+          sessionId: sid,
+          callerUserId: caller,
+          report: reportFor(userId, totalMs, opts.isBot ?? false),
+        }),
+      );
+      return submitEnv as unknown as { ok: boolean; data?: unknown; error?: unknown };
+    }
+
+    function setupFourPlayerSession(): { sid: string } {
+      const createEnv = call<CreateData>(env, 'race_session_create', null,
+        makeCreatePayload({ mode: 'quick', size: 4, hostLoadout: { classId: 'B', bodyId: 'coupe' } }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      for (const userId of [P1, P2, P3]) {
+        const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+          env, 'race_session_join', null,
+          {
+            sessionId: sid,
+            userId,
+            callerUserId: userId,
+            loadout: { classId: 'B', bodyId: 'coupe' },
+          },
+        );
+        if (!joinEnv.ok) throw new Error(`join ${userId} failed`);
+      }
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      // Backdate startedAt so the clock check is comfortably within
+      // tolerance for any 120_000+ totalMs.
+      const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+      const obj = env.fakeNakama.store.get(storeKey);
+      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+      return { sid };
+    }
+
+    it('closes with confidence=quorum when all 4 humans reported', () => {
+      const { sid } = setupFourPlayerSession();
+      const responses = [
+        submitReport(sid, HOST_ID, 120_000),
+        submitReport(sid, P1, 130_000),
+        submitReport(sid, P2, 140_000),
+        submitReport(sid, P3, 150_000),
+      ];
+      for (const r of responses) expect(r.ok).toBe(true);
+
+      // Last submit is the one that closed the session — assert officialResults.
+      const last = responses[3] as {
+        ok: true;
+        data: {
+          confidence: string;
+          officialResults?: Array<{ rank: number; userId: string; abandoned: boolean }>;
+          flags: { needsReview: boolean; reviewReason?: string };
+        };
+      };
+      expect(last.data.confidence).toBe('quorum');
+      expect(last.data.flags.needsReview).toBe(false);
+      expect(last.data.officialResults).toBeDefined();
+      expect(last.data.officialResults?.map((r) => r.userId)).toEqual([HOST_ID, P1, P2, P3]);
+
+      // Session is in `closed` state.
+      const read = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!read.ok) throw new Error('read failed');
+      expect((read.data.session as { state: string }).state).toBe('closed');
+
+      // last_closed/{userId} index is populated for every roster member.
+      for (const u of [HOST_ID, P1, P2, P3]) {
+        const k = `race_sessions/last_closed/${u}/00000000-0000-0000-0000-000000000000`;
+        expect(env.fakeNakama.store.has(k)).toBe(true);
+      }
+
+      // RaceCompleted event fired once (default subscriber logged it).
+      const logLines = env.fakeLogger.lines.filter((l) => l.startsWith('RaceCompleted'));
+      expect(logLines.length).toBe(1);
+      expect(logLines[0]).toContain(`sid=${sid}`);
+    });
+
+    it('closes with confidence=quorum when 1 human + 1 bot both report', () => {
+      // 2-player session: HOST (human) + a bot added via mutation
+      // (we don't have a "join bot" RPC — bots are part of the relay
+      // and the host reports on their behalf via isBotReport=true).
+      const createEnv = call<CreateData>(env, 'race_session_create', null,
+        makeCreatePayload({ mode: 'quick', size: 2, hostLoadout: { classId: 'B', bodyId: 'coupe' } }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+      const obj = env.fakeNakama.store.get(storeKey);
+      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+
+      // Add a bot to the roster directly.
+      if (obj) {
+        const v = obj.value as { roster: Array<{ userId: string; loadout: unknown; isBot: boolean }> };
+        v.roster.push({
+          userId: 'bot-1',
+          loadout: { classId: 'B', bodyId: 'coupe' },
+          isBot: true,
+        });
+      }
+
+      // HOST submits own report (human).
+      const humanSubmit = submitReport(sid, HOST_ID, 130_000);
+      expect(humanSubmit.ok).toBe(true);
+      // HOST submits the bot report on behalf of the bot.
+      const botSubmit = submitReport(sid, 'bot-1', 120_000, { isBot: true });
+
+      const last = botSubmit as {
+        ok: true;
+        data: {
+          confidence: string;
+          officialResults?: Array<{ rank: number; userId: string; abandoned: boolean; totalMs: number; isBot: boolean }>;
+          flags: { needsReview: boolean };
+        };
+      };
+      expect(last.ok).toBe(true);
+      expect(last.data.confidence).toBe('quorum');
+      expect(last.data.flags.needsReview).toBe(false);
+      expect(last.data.officialResults).toBeDefined();
+      // Bot wins (lower totalMs).
+      expect(last.data.officialResults?.[0]?.userId).toBe('bot-1');
+      expect(last.data.officialResults?.[0]?.isBot).toBe(true);
+      expect(last.data.officialResults?.[1]?.userId).toBe(HOST_ID);
+    });
+
+    it('closes with confidence=server when only bots are in the roster', () => {
+      // 1-player time_trial session; the host reports on behalf of the bot.
+      const createEnv = call<CreateData>(env, 'race_session_create', null,
+        makeCreatePayload({ mode: 'time_trial', size: 1, hostLoadout: { classId: 'C', bodyId: 'coupe' } }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
+      const obj = env.fakeNakama.store.get(storeKey);
+      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+
+      // Host reports for itself (the only roster member) as a bot report
+      // so computeQuorum sees zero humans. time_trial = 1 lap.
+      const submitEnv = call<{ accepted: true; confidence: string; flags: { needsReview: boolean } }>(
+        env,
+        'race_submit_result',
+        HOST_ID,
+        JSON.stringify({
+          sessionId: sid,
+          callerUserId: HOST_ID,
+          report: { userId: HOST_ID, totalMs: 60_000, laps: [60_000], isBotReport: true },
+        }),
+      );
+      expect(submitEnv.ok).toBe(true);
+      if (!submitEnv.ok) return;
+      expect(submitEnv.data.confidence).toBe('server');
+      expect(submitEnv.data.flags.needsReview).toBe(false);
+    });
+
+    it('replays the cached response on retry after close (no double emit)', () => {
+      const { sid } = setupFourPlayerSession();
+      const responses = [
+        submitReport(sid, HOST_ID, 120_000),
+        submitReport(sid, P1, 130_000),
+        submitReport(sid, P2, 140_000),
+        submitReport(sid, P3, 150_000),
+      ];
+      for (const r of responses) expect(r.ok).toBe(true);
+
+      // First close fired → one RaceCompleted log.
+      const initialLogs = env.fakeLogger.lines.filter((l) => l.startsWith('RaceCompleted'));
+      expect(initialLogs.length).toBe(1);
+
+      // A retry of P3's submit (still cached) should NOT re-close or re-emit.
+      const replay = submitReport(sid, P3, 150_000);
+      expect(replay.ok).toBe(true);
+      const afterReplay = env.fakeLogger.lines.filter((l) => l.startsWith('RaceCompleted'));
+      expect(afterReplay.length).toBe(1);
+    });
+  });
 });

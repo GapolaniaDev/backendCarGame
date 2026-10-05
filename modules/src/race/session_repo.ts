@@ -8,8 +8,17 @@
 
 import type { INakama, IStorageObject } from '../nkruntime';
 import { readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
-import { RACE_SESSIONS_COLLECTION, SYSTEM_USER_ID } from './constants';
-import type { RaceSession, RaceReport, RosterEntry } from './types';
+import type { EventBus } from '../core/event_bus';
+import { RACE_SESSIONS_COLLECTION, RACE_EVENT_RACE_COMPLETED, SYSTEM_USER_ID } from './constants';
+import { aggregateForClose } from './ordering';
+import type {
+  Confidence,
+  RaceCompletedEvent,
+  RaceReport,
+  RaceResult,
+  RaceSession,
+  RosterEntry,
+} from './types';
 
 /** Composite storage key for a per-user report inside a session. */
 export function reportKey(sessionId: string, userId: string): string {
@@ -263,4 +272,134 @@ export function submitReport(
     throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
   }
   return { version: first.version };
+}
+
+// ─── Close + emit (Chunk 9) ──────────────────────────────────────────────────
+
+/**
+ * True when every roster entry has `reportedAt !== undefined`, i.e.
+ * the server can finalize the session on the next submit handler.
+ */
+export function allSubmitted(roster: readonly RosterEntry[]): boolean {
+  for (const e of roster) {
+    if (e.reportedAt === undefined) return false;
+  }
+  return true;
+}
+
+export interface CloseOutcome {
+  results: RaceResult[];
+  confidence: Confidence;
+  needsReview: boolean;
+  reviewReason?: string;
+  newVersion: string;
+  /** True when this call actually transitioned the session to closed. */
+  closed: boolean;
+}
+
+/**
+ * Atomically transition a session to `closed`, persist the
+ * `last_closed/{userId}` index for every roster member, and publish
+ * `RaceCompleted` on the event bus. Idempotent: a second concurrent
+ * call with the same `expectedVersion` will fail the CAS (the helper
+ * throws) and a second call after the close has landed returns `closed: false`
+ * without re-emitting.
+ */
+export function tryCloseAndPublish(
+  nk: INakama,
+  bus: EventBus,
+  session: RaceSession,
+  expectedVersion: string,
+  nowMs: number,
+): CloseOutcome {
+  // If we're already closed, return the persisted result without emitting.
+  if (session.state === 'closed') {
+    const stored = session.results;
+    return {
+      results: stored,
+      confidence: stored.length > 0 && session.flags.needsReview ? 'client' : 'quorum',
+      needsReview: session.flags.needsReview,
+      ...(session.flags.reviewReason !== undefined
+        ? { reviewReason: session.flags.reviewReason }
+        : {}),
+      newVersion: expectedVersion,
+      closed: false,
+    };
+  }
+
+  // Collect every per-user report that was written by submitReport.
+  const reports: RaceReport[] = [];
+  for (const entry of session.roster) {
+    const r = readReport(nk, session.id, entry.userId);
+    if (r !== null) reports.push(r as RaceReport);
+  }
+
+  const agg = aggregateForClose({ roster: session.roster, reports });
+  const closed: RaceSession = {
+    ...session,
+    state: 'closed',
+    results: agg.results,
+    flags: {
+      needsReview: agg.needsReview,
+      ...(agg.reviewReason !== undefined ? { reviewReason: agg.reviewReason } : {}),
+    },
+    version: session.version + 1,
+  };
+
+  const sessionWrite: IStorageObject = {
+    collection: RACE_SESSIONS_COLLECTION,
+    key: session.id,
+    userId: SYSTEM_USER_ID,
+    value: closed as unknown as PersistedSession,
+    permissionRead: 0,
+    permissionWrite: 0,
+    version: expectedVersion,
+  };
+
+  // Write a `last_closed/{userId}` index per roster member so future
+  // `race_session_get` calls (without an explicit sessionId) can
+  // resolve the caller's most recent closed race.
+  const indexWrites: IStorageObject[] = session.roster.map((entry) => ({
+    collection: RACE_SESSIONS_COLLECTION,
+    key: `${LAST_CLOSED_KEY_PREFIX}${entry.userId}`,
+    userId: SYSTEM_USER_ID,
+    value: { sessionId: session.id, closedAt: nowMs },
+    permissionRead: 0,
+    permissionWrite: 0,
+  }));
+
+  const ack = nk.multiUpdate(
+    undefined,
+    [sessionWrite, ...indexWrites],
+    undefined,
+    undefined,
+    undefined,
+  );
+  const sessionAck = ack.storageWriteAcks[0];
+  if (!sessionAck) {
+    throw new Error(`multiUpdate returned no session close ack for ${session.id}`);
+  }
+
+  const event: RaceCompletedEvent = {
+    schemaVersion: 1,
+    sessionId: session.id,
+    mode: session.mode,
+    trackId: session.trackId,
+    size: session.size,
+    results: agg.results,
+    flags: closed.flags,
+    closedAt: nowMs,
+  };
+  // Fire-and-forget: a subscriber crash must not roll back the close.
+  // EventBus.publish itself catches per-handler exceptions.
+  void bus.publish(RACE_EVENT_RACE_COMPLETED, event);
+
+  return {
+    results: agg.results,
+    confidence: agg.confidence,
+    needsReview: agg.needsReview,
+    ...(agg.reviewReason !== undefined ? { reviewReason: agg.reviewReason } : {}),
+    newVersion: sessionAck.version,
+    closed: true,
+  };
 }
