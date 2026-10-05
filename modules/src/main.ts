@@ -26,8 +26,12 @@ import {
   setRaceBus,
 } from './race/rpcs';
 import type { RaceCompletedEvent } from './race/types';
+import { loadLeaderboardsCatalog } from './leaderboards/catalog';
+import { ensureLeaderboards } from './leaderboards/ensure';
+import { registerLeaderboardWriteGuard } from './leaderboards/hooks';
 import tracksJson from './catalogs/tracks.json';
 import modesJson from './catalogs/modes.json';
+import leaderboardsJson from './catalogs/leaderboards.json';
 
 function InitModule(
   _ctx: IContext,
@@ -45,6 +49,14 @@ function InitModule(
     (s: string): string => nk.sha256Hash(s),
     nk,
   );
+
+  // Phase 2: load the leaderboards catalog (declarative table list),
+  // ensure every authoritative table exists, drop the deprecated
+  // client-writable `race_score` table, and register a before-hook
+  // that rejects any write missing the server token.
+  loadLeaderboardsCatalog(logger, leaderboardsJson as unknown as import('./leaderboards/catalog').RawTablesFile, nk);
+  ensureLeaderboards(logger, nk);
+  registerLeaderboardWriteGuard(initializer);
 
   // Wire the in-process event bus and install a default subscriber
   // for `RaceCompleted` so the close path's emission is observable

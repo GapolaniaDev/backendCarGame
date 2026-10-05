@@ -16,14 +16,17 @@ import * as vm from 'node:vm';
 
 import type {
   IContext,
-  ILogger,
   IInitializer,
+  ILeaderboard,
+  ILeaderboardRecord,
+  ILeaderboardRecordEnvelope,
+  ILogger,
+  IMultiUpdateResult,
+  INakama,
   IStorageKey,
   IStorageListRequest,
   IStorageObject,
   IStorageObjectAck,
-  IMultiUpdateResult,
-  INakama,
   IUser,
   RpcFunction,
   ShutdownFn,
@@ -239,6 +242,132 @@ class FakeNakamaCore {
     return randomUUID();
   }
 
+  // ── Leaderboards ──
+  /** id → leaderboard. Created via `leaderboardCreate`. */
+  readonly leaderboards = new Map<string, ILeaderboard>();
+  /** id → map(ownerId → record). Populated via `leaderboardRecordWrite`. */
+  readonly leaderboardRecords = new Map<string, Map<string, ILeaderboardRecord>>();
+  /** ids that have been deleted via `leaderboardDelete` (so we can re-delete safely). */
+  readonly deletedLeaderboards = new Set<string>();
+  /**
+   * Installed before-hook for leaderboardRecordWrite. Tests can replace
+   * this with their own function (e.g. to assert it's called).
+   * Signature mirrors IInitializer.registerBeforeLeaderboardRecordWrite.
+   */
+  beforeLeaderboardRecordWrite:
+    | ((ctx: unknown, logger: ILogger, nk: INakama, envelope: ILeaderboardRecordEnvelope) => void)
+    | null = null;
+
+  leaderboardCreate(
+    id: string,
+    authoritative: boolean,
+    sortOrder: 'asc' | 'ascending' | 'desc' | 'descending',
+    operator: 'best' | 'set' | 'incr' | 'decr',
+    resetSchedule: string,
+    metadata: Record<string, unknown>,
+    _enableRanks: boolean,
+  ): { leaderboard: ILeaderboard; created: boolean } {
+    const existing = this.leaderboards.get(id);
+    if (existing !== undefined) {
+      // Re-creating with the same id is a no-op (matches INSERT-IF-NOT-EXISTS).
+      return { leaderboard: existing, created: false };
+    }
+    const lb = {
+      id,
+      authoritative,
+      sortOrder,
+      operator,
+      resetSchedule,
+      metadata,
+    } as unknown as ILeaderboard;
+    this.leaderboards.set(id, lb);
+    return { leaderboard: lb, created: true };
+  }
+
+  leaderboardDelete(id: string): void {
+    if (!this.leaderboards.has(id) && !this.deletedLeaderboards.has(id)) {
+      throw new Error(`leaderboard not found: ${id}`);
+    }
+    this.leaderboards.delete(id);
+    this.leaderboardRecords.delete(id);
+    this.deletedLeaderboards.add(id);
+  }
+
+  leaderboardList(): { leaderboards: ILeaderboard[]; cursor: string } {
+    return { leaderboards: Array.from(this.leaderboards.values()), cursor: '' };
+  }
+
+  leaderboardRecordWrite(
+    id: string,
+    ownerId: string,
+    username: string,
+    score: number,
+    subscore: number,
+    metadata: Record<string, unknown>,
+    _operatorOverride?: 'best' | 'set' | 'incr' | 'decr',
+  ): { record: ILeaderboardRecord } {
+    const lb = this.leaderboards.get(id);
+    if (!lb) {
+      throw new Error(`leaderboardRecordWrite: unknown leaderboard "${id}"`);
+    }
+    const prev = this.leaderboardRecords.get(id)?.get(ownerId);
+
+    // Honor the operator: 'best' keeps the lower score, others set/incr.
+    let next = score;
+    if (lb.operator === 'best' && prev !== undefined) {
+      const better = lb.sortOrder === 'asc' || lb.sortOrder === 'ascending'
+        ? score < prev.score
+        : score > prev.score;
+      if (!better) {
+        return { record: prev };
+      }
+      next = score;
+    } else if (lb.operator === 'incr' && prev !== undefined) {
+      next = prev.score + score;
+    }
+
+    const now = new Date().toISOString();
+    const rec: ILeaderboardRecord = {
+      leaderboardId: id,
+      ownerId,
+      username,
+      score: next,
+      subscore,
+      numScore: 1,
+      metadata,
+      createTime: prev?.createTime ?? now,
+      updateTime: now,
+      expiryTime: null,
+      rank: null,
+      maxNumScore: 1,
+    };
+    let bucket = this.leaderboardRecords.get(id);
+    if (!bucket) {
+      bucket = new Map();
+      this.leaderboardRecords.set(id, bucket);
+    }
+    bucket.set(ownerId, rec);
+    return { record: rec };
+  }
+
+  leaderboardRecordDelete(id: string, ownerId: string): void {
+    this.leaderboardRecords.get(id)?.delete(ownerId);
+  }
+
+  leaderboardRecordsList(
+    id: string,
+    _ownerIds: string[],
+    limit?: number,
+    _cursor?: string,
+    _sortOrder?: 'asc' | 'desc',
+  ): { records: ILeaderboardRecord[]; ownerRecords: ILeaderboardRecord[]; nextCursor: string; prevCursor: string } {
+    const bucket = this.leaderboardRecords.get(id);
+    const records = bucket ? Array.from(bucket.values()) : [];
+    records.sort((a, b) => a.score - b.score);
+    const slice = limit !== undefined ? records.slice(0, limit) : records;
+    return { records: slice, ownerRecords: [], nextCursor: '', prevCursor: '' };
+  }
+
   accountGetId(userId: string): unknown {
     if (userId === SYSTEM_USER_ID) return null;
     const now = new Date().toISOString();
@@ -290,6 +419,21 @@ export class FakeNakama {
   readonly cache: Map<string, unknown>;
   /** Fake user accounts keyed by userId. */
   readonly users: Map<string, IUser>;
+  /** Leaderboard id → ILeaderboard. Populated by `leaderboardCreate`. */
+  readonly leaderboards: Map<string, ILeaderboard>;
+  /** Leaderboard id → map(ownerId → ILeaderboardRecord). */
+  readonly leaderboardRecords: Map<string, Map<string, ILeaderboardRecord>>;
+  /** Leaderboard ids that have been deleted via `leaderboardDelete`. */
+  readonly deletedLeaderboards: Set<string>;
+  /** Installed before-hook for `leaderboardRecordWrite`. Tests can replace. */
+  beforeLeaderboardRecordWrite:
+    | ((
+        ctx: unknown,
+        logger: ILogger,
+        nk: INakama,
+        envelope: ILeaderboardRecordEnvelope,
+      ) => void)
+    | null;
   /** INakama view — pass this into InitModule / RPC handlers. */
   readonly nakama: INakama;
 
@@ -298,6 +442,10 @@ export class FakeNakama {
     this.store = core.store;
     this.cache = core.cache;
     this.users = core.users;
+    this.leaderboards = core.leaderboards;
+    this.leaderboardRecords = core.leaderboardRecords;
+    this.deletedLeaderboards = core.deletedLeaderboards;
+    this.beforeLeaderboardRecordWrite = core.beforeLeaderboardRecordWrite;
     this.nakama = wrapWithNotStubbedThrow(core) as INakama;
   }
 }
@@ -308,6 +456,22 @@ export class FakeNakama {
 class FakeInitializerCore {
   readonly rpcs: Array<{ key: string; fn: RpcFunction }> = [];
   readonly shutdowns: Array<ShutdownFn> = [];
+  readonly beforeLeaderboardRecordWrites: Array<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void
+  > = [];
+  readonly afterLeaderboardRecordWrites: Array<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void
+  > = [];
 
   registerRpc(key: string, fn: RpcFunction): void {
     this.rpcs.push({ key, fn });
@@ -315,6 +479,28 @@ class FakeInitializerCore {
 
   registerShutdown(_runtime: INakama, fn: ShutdownFn): void {
     this.shutdowns.push(fn);
+  }
+
+  registerBeforeLeaderboardRecordWrite(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void,
+  ): void {
+    this.beforeLeaderboardRecordWrites.push(fn);
+  }
+
+  registerAfterLeaderboardRecordWrite(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void,
+  ): void {
+    this.afterLeaderboardRecordWrites.push(fn);
   }
 }
 
@@ -326,12 +512,30 @@ class FakeInitializerCore {
 export class FakeInitializer {
   readonly rpcs: ReadonlyArray<{ key: string; fn: RpcFunction }>;
   readonly shutdowns: ReadonlyArray<ShutdownFn>;
+  readonly beforeLeaderboardRecordWrites: ReadonlyArray<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void
+  >;
+  readonly afterLeaderboardRecordWrites: ReadonlyArray<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: ILeaderboardRecordEnvelope,
+    ) => void
+  >;
   readonly initializer: IInitializer;
 
   constructor() {
     const core = new FakeInitializerCore();
     this.rpcs = core.rpcs;
     this.shutdowns = core.shutdowns;
+    this.beforeLeaderboardRecordWrites = core.beforeLeaderboardRecordWrites;
+    this.afterLeaderboardRecordWrites = core.afterLeaderboardRecordWrites;
     this.initializer = wrapWithNotStubbedThrow(core) as IInitializer;
   }
 

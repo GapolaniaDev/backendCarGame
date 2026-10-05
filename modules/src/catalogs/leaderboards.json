@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "id": "wins_week",
+      "operator": "incr",
+      "sortOrder": "desc",
+      "resetSchedule": "0 0 * * 1",
+      "description": "Weekly wins in quick + ranked modes (Monday 00:00 UTC reset)"
+    }
+  ],
+  "trackScoped": {
+    "tracks": ["neon_blvd", "reef_run", "mountain_pass", "canyon_drift", "harbor_sprint", "factory_loop"],
+    "classes": ["D", "C", "B", "A", "S"],
+    "patterns": {
+      "tt_all": {
+        "template": "tt_{track}_{class}_all",
+        "operator": "best",
+        "sortOrder": "asc",
+        "resetSchedule": "",
+        "description": "Best race time per (track, class), all-time"
+      },
+      "tt_week": {
+        "template": "tt_{track}_{class}_week",
+        "operator": "best",
+        "sortOrder": "asc",
+        "resetSchedule": "0 0 * * 1",
+        "description": "Best race time per (track, class) this week"
+      },
+      "lap_all": {
+        "template": "lap_{track}_{class}_all",
+        "operator": "best",
+        "sortOrder": "asc",
+        "resetSchedule": "",
+        "description": "Best single lap per (track, class), all-time"
+      }
+    }
+  },
+  "deprecated": [
+    {
+      "id": "race_score",
+      "reason": "Replaced by per-track per-class tables (Phase 2). Old table was written by clients — data not migrated."
+    }
+  ]
+}
