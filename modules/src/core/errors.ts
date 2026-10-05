@@ -14,6 +14,7 @@ export const ERROR_CODES = [
   'INVALID_RESULT',
   'INTERNAL',
   'CATALOG_INVALID',
+  'INSUFFICIENT_FUNDS',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -29,6 +30,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   INVALID_RESULT: 'The submitted result failed plausibility checks',
   INTERNAL: 'An unexpected server error occurred',
   CATALOG_INVALID: 'A game-data catalog failed validation at boot',
+  INSUFFICIENT_FUNDS: 'Wallet balance is too low for this operation',
 };
 
 /** Type guard for narrowing user input / storage payloads to a known code. */
