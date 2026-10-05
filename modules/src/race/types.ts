@@ -198,6 +198,13 @@ export interface RaceSessionGetOutput {
 export interface RaceSubmitResultInput {
   sessionId: string;
   report: RaceReport;
+  /**
+   * userId of the caller. Required when calling over HTTP gateway
+   * (where `ctx.userId` is null). When `ctx.userId` is set, the
+   * RPC verifies it matches `report.userId` (defense against
+   * impersonation); on mismatch it returns `FORBIDDEN`.
+   */
+  callerUserId: string;
 }
 
 export type ConfidenceOutcome = 'quorum' | 'client' | 'server';

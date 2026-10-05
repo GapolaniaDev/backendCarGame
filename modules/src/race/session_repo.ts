@@ -9,7 +9,12 @@
 import type { INakama, IStorageObject } from '../nkruntime';
 import { readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
 import { RACE_SESSIONS_COLLECTION, SYSTEM_USER_ID } from './constants';
-import type { RaceSession, RosterEntry } from './types';
+import type { RaceSession, RaceReport, RosterEntry } from './types';
+
+/** Composite storage key for a per-user report inside a session. */
+export function reportKey(sessionId: string, userId: string): string {
+  return `${sessionId}/reports/${userId}`;
+}
 
 /** Persisted shape: a RaceSession whose schemaVersion is locked to 1. */
 export interface PersistedSession
@@ -158,3 +163,104 @@ export function lookupLastClosed(
 
 /** Storage key under which the per-user last-closed index lives. */
 export const LAST_CLOSED_KEY_PREFIX = 'last_closed/';
+
+// ─── Per-user reports ────────────────────────────────────────────────────────
+
+/**
+ * Persisted shape for an individual report: the same fields as the
+ * incoming `RaceReport` plus `schemaVersion: 1`.
+ */
+export interface PersistedReport
+  extends RaceReport,
+    Record<string, unknown> {
+  schemaVersion: typeof SCHEMA_VERSION;
+}
+
+/**
+ * Read a single report by `(sessionId, userId)`. Returns `null` if the
+ * player hasn't submitted yet. Owner is the joiner (perms 0/0 so only
+ * the runtime can read/write).
+ */
+export function readReport(
+  nk: INakama,
+  sessionId: string,
+  userId: string,
+): PersistedReport | null {
+  const r = readJson<PersistedReport>(nk, {
+    collection: RACE_SESSIONS_COLLECTION,
+    key: reportKey(sessionId, userId),
+    ownerId: userId,
+  });
+  return r === null ? null : r.value;
+}
+
+/**
+ * Atomic submission: writes the report and bumps the roster entry in
+ * a single `multiUpdate` with CAS on the session version.
+ *
+ * On version conflict the runtime refuses the write and the helper
+ * throws — caller maps to `CONFLICT`.
+ *
+ * Note: this is the ONLY valid path for `race_submit_result` writes
+ * in Chunk 7. Step-2 validations (clock, min-time, lap-sum) live in
+ * Chunk 8 and gate this call.
+ */
+export function submitReport(
+  nk: INakama,
+  session: RaceSession,
+  reporterId: string,
+  report: RaceReport,
+  expectedVersion: string,
+  nowMs: number,
+): { version: string } {
+  const newRoster = session.roster.map((e) =>
+    e.userId === reporterId
+      ? {
+          ...e,
+          reportedAt: nowMs,
+          totalMs: report.totalMs,
+          laps: report.laps.slice(),
+        }
+      : e,
+  );
+  const nextSession: RaceSession = {
+    ...session,
+    roster: newRoster,
+    version: session.version + 1,
+  };
+
+  const persisted: PersistedReport = {
+    schemaVersion: SCHEMA_VERSION,
+    userId: reporterId,
+    totalMs: report.totalMs,
+    laps: report.laps.slice(),
+    isBotReport: report.isBotReport,
+  };
+
+  const writes: IStorageObject[] = [
+    {
+      collection: RACE_SESSIONS_COLLECTION,
+      key: session.id,
+      userId: SYSTEM_USER_ID,
+      value: nextSession as unknown as PersistedSession,
+      permissionRead: 0,
+      permissionWrite: 0,
+      version: expectedVersion,
+    },
+    {
+      collection: RACE_SESSIONS_COLLECTION,
+      key: reportKey(session.id, reporterId),
+      userId: reporterId,
+      value: persisted as unknown as PersistedReport,
+      permissionRead: 0,
+      permissionWrite: 0,
+    },
+  ];
+
+  const ack = nk.multiUpdate(undefined, writes, undefined, undefined, undefined);
+  const first = ack.storageWriteAcks[0];
+  if (!first) {
+    throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
+  }
+  return { version: first.version };
+}

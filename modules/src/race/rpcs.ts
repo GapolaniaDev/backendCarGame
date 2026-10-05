@@ -37,11 +37,14 @@ import {
   lookupLastClosed,
   markStarted,
   readSession,
+  submitReport,
 } from './session_repo';
+import { validateSubmissionStep1 } from './validation';
 import type {
   ConfigGetOutput,
   CarClassId,
   Loadout,
+  RaceReport,
   RaceSession,
   RaceSessionCreateInput,
   RaceSessionCreateOutput,
@@ -51,6 +54,8 @@ import type {
   RaceSessionStartOutput,
   RaceSessionGetInput,
   RaceSessionGetOutput,
+  RaceSubmitResultInput,
+  RaceSubmitResultOutput,
 } from './types';
 
 export type RpcHandler = (
@@ -78,14 +83,6 @@ function parsePayload<T>(payload: string): Resp<T> | null {
   } catch {
     return err('BAD_REQUEST', 'payload is not valid JSON');
   }
-}
-
-/** Stub handler used for handlers not implemented in this chunk. */
-function makeStub(name: string): RpcHandler {
-  return (_ctx, logger, _nk, payload): string => {
-    logger.info('rpc %s (stub) called payload=%s', name, payload);
-    return toJson(err('INTERNAL', `TODO: ${name} not implemented yet`));
-  };
 }
 
 // ─── config_get ──────────────────────────────────────────────────────────────
@@ -624,6 +621,152 @@ function race_session_start_impl(
   return toJson(ok(out));
 }
 
+// ─── race_submit_result (Chunk 7: step-1 + idempotency) ───────────────────────
+
+/**
+ * `validateReport` checks the shape of a `RaceReport` payload. Step-1
+ * validations (membership / state / dup) live in `validation.ts` and
+ * run AFTER this passes. Step-2 validations (clock / min / lap-sum /
+ * bot-auth) land in Chunk 8 — for now we accept any well-formed
+ * payload.
+ */
+function validateReport(raw: unknown): Resp<RaceReport> {
+  if (raw === null || typeof raw !== 'object') {
+    return err('BAD_REQUEST', 'report must be an object');
+  }
+  const r = raw as Record<string, unknown>;
+  if (typeof r['userId'] !== 'string' || r['userId'].length === 0) {
+    return err('BAD_REQUEST', 'report.userId must be a non-empty string');
+  }
+  if (typeof r['totalMs'] !== 'number' || !Number.isFinite(r['totalMs']) || r['totalMs'] <= 0) {
+    return err('BAD_REQUEST', 'report.totalMs must be a positive number');
+  }
+  if (!Array.isArray(r['laps']) || r['laps'].length === 0) {
+    return err('BAD_REQUEST', 'report.laps must be a non-empty array');
+  }
+  for (const lap of r['laps']) {
+    if (typeof lap !== 'number' || !Number.isFinite(lap) || lap <= 0) {
+      return err('BAD_REQUEST', 'every lap must be a positive number');
+    }
+  }
+  if (typeof r['isBotReport'] !== 'boolean') {
+    return err('BAD_REQUEST', 'report.isBotReport must be a boolean');
+  }
+  return ok({
+    userId: r['userId'],
+    totalMs: r['totalMs'],
+    laps: (r['laps'] as number[]).slice(),
+    isBotReport: r['isBotReport'],
+  });
+}
+
+function race_submit_result_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  payload: string,
+): string {
+  const parsed = parsePayload<RaceSubmitResultInput>(payload);
+  if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
+  if (!parsed.ok) return toJson(parsed);
+
+  const reportV = validateReport(parsed.data.report);
+  if (!reportV.ok) return toJson(reportV);
+  const report = reportV.data;
+
+  // Caller authz: the RPC caller must be the reporter themselves.
+  // - ctx.userId (socket) wins; payload.callerUserId is fallback for HTTP
+  // - the report itself also carries userId; ctx.userId must match it
+  if (typeof parsed.data.callerUserId !== 'string' || parsed.data.callerUserId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'callerUserId is required'));
+  }
+  const declaredCaller = parsed.data.callerUserId;
+  const reporterId = ctx.userId ?? declaredCaller;
+  if (ctx.userId && declaredCaller !== ctx.userId) {
+    return toJson(err('FORBIDDEN', 'callerUserId does not match ctx.userId'));
+  }
+  if (reporterId !== report.userId) {
+    return toJson(err('FORBIDDEN', 'reporterId must match report.userId'));
+  }
+
+  const sessionId =
+    typeof parsed.data.sessionId === 'string' && parsed.data.sessionId.length > 0
+      ? parsed.data.sessionId
+      : '';
+  if (!sessionId) {
+    return toJson(err('BAD_REQUEST', 'sessionId is required'));
+  }
+
+  // Idempotency: cache the response keyed by (sessionId, reporterId) for
+  // 60s. Retries with the same payload (e.g. transient network error)
+  // return the cached outcome without re-appending.
+  const idempKey = `${sessionId}:${reporterId}`;
+  // NOTE: Nakama 3.27.0 returns "" (empty string) for missing keys, NOT
+  // null — verify before treating a hit as a replay.
+  const cached = nk.localcacheGet<string>(`submit_result:${idempKey}`);
+  if (typeof cached === 'string' && cached.length > 0) {
+    logger.info('race_submit_result sid=%s reporter=%s replayed', sessionId, reporterId);
+    return cached;
+  }
+
+  const rl = checkRateLimit(nk, {
+    rpcName: 'race_submit_result',
+    userId: reporterId,
+    ...RATE_LIMITS.race_submit_result,
+  });
+  if (!rl.allowed) {
+    return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
+  }
+
+  const cur = readSession(nk, sessionId);
+  if (!cur) {
+    return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
+  }
+
+  // Step-1: roster / state / dup
+  const v1 = validateSubmissionStep1({ session: cur.session, reporterId });
+  if (!v1.ok) return toJson(v1);
+
+  // Atomically write report + bump roster (CAS on session.version).
+  // Throws on version conflict (another concurrent submission); the
+  // outer race_submit_result call from the other request will likely
+  // be the duplicate one — its idempotency cache will pick up our
+  // result via the read-back, OR this request gets CONFLICT.
+  try {
+    submitReport(nk, cur.session, reporterId, report, cur.version, serverNowMs());
+  } catch (e) {
+    logger.warn(
+      'race_submit_result sid=%s reporter=%s CAS conflict: %s',
+      sessionId,
+      reporterId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return toJson(err('CONFLICT', 'concurrent write raced — please retry'));
+  }
+
+  logger.info(
+    'race_submit_result sid=%s reporter=%s totalMs=%d laps=%d',
+    sessionId,
+    reporterId,
+    report.totalMs,
+    report.laps.length,
+  );
+
+  const out: RaceSubmitResultOutput = {
+    accepted: true,
+    // Chunk 9 will compute the real confidence based on quorum. For
+    // step-1 we always return 'client' as a placeholder; callers can
+    // ignore it until the session reaches `closed`.
+    confidence: 'client',
+    flags: { needsReview: false },
+  };
+  const serialized = toJson(ok(out));
+  // 60 s is enough to absorb in-flight retries without forcing clients
+  // to re-submit long after a transient error.
+  nk.localcachePut(`submit_result:${idempKey}`, serialized, 60);
+  return serialized;
+}
+
 // ─── Top-level exports ────────────────────────────────────────────────────────
 
 // goja resolver first looks the RPC fn up by NAME on the global object after
@@ -636,8 +779,9 @@ export const race_session_create: RpcHandler = race_session_create_impl;
 export const race_session_join: RpcHandler = race_session_join_impl;
 export const race_session_start: RpcHandler = race_session_start_impl;
 export const race_session_get: RpcHandler = race_session_get_impl;
-// Stub for the handler that arrives in Chunks 7-9:
-export const race_submit_result: RpcHandler = makeStub('race_submit_result');
+// Chunk 7 lands step-1 + idempotency. Step-2 (clock / min / lap-sum)
+// and the bot-auth gate land in Chunk 8.
+export const race_submit_result: RpcHandler = race_submit_result_impl;
 
 /**
  * Stable name → handler map for tests. The keys here MUST match the

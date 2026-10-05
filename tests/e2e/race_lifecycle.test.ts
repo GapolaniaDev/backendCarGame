@@ -529,4 +529,206 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(sysKey).toBeDefined();
     });
   });
+
+  describe('race_submit_result (Chunk 7: step-1 + idempotency)', () => {
+    const PLAYER_A = '22222222-2222-4222-8222-222222222222';
+
+    /**
+     * Helper: create + join PLAYER_A + start the session. Returns the
+     * sessionId for further calls.
+     */
+    function setupStartedSession(
+      size: 1 | 2 | 4 | 6 = 4,
+      mode: 'quick' | 'ranked' | 'private' | 'time_trial' = 'quick',
+    ): string {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode, size }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      if (size > 1) {
+        const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+          env, 'race_session_join', null,
+          {
+            sessionId: sid,
+            userId: PLAYER_A,
+            callerUserId: PLAYER_A,
+            loadout: { classId: 'B', bodyId: 'coupe' },
+          },
+        );
+        if (!joinEnv.ok) throw new Error('join failed');
+      }
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      return sid;
+    }
+
+    function makeReport(reporterId: string, totalMs = 90_000): Record<string, unknown> {
+      return {
+        userId: reporterId,
+        totalMs,
+        laps: [totalMs],
+        isBotReport: false,
+      };
+    }
+
+    function submitPayload(sid: string, report: Record<string, unknown>, caller = PLAYER_A): string {
+      return JSON.stringify({
+        sessionId: sid,
+        callerUserId: caller,
+        report,
+      });
+    }
+
+    it('accepts a valid report from a roster member and bumps the session version', () => {
+      const sid = setupStartedSession();
+      const submitEnv = call<{ accepted: true; confidence: string }>(
+        env,
+        'race_submit_result',
+        null,
+        submitPayload(sid, makeReport(PLAYER_A)),
+      );
+      expect(submitEnv.ok).toBe(true);
+      if (!submitEnv.ok) return;
+      expect(submitEnv.data.accepted).toBe(true);
+      expect(submitEnv.data.confidence).toBe('client'); // placeholder until Chunk 9
+
+      const readEnv = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!readEnv.ok) throw new Error('read failed');
+      const entry = readEnv.data.session.roster.find((r) => r.userId === PLAYER_A);
+      expect(entry?.reportedAt).toBeGreaterThan(0);
+      expect(entry?.totalMs).toBe(90_000);
+      expect(entry?.laps).toEqual([90_000]);
+    });
+
+    it('persists the report in the race_sessions/{sid}/reports/{userId} sub-key', () => {
+      const sid = setupStartedSession();
+      call<{ accepted: true }>(
+        env,
+        'race_submit_result',
+        null,
+        submitPayload(sid, makeReport(PLAYER_A)),
+      );
+      const reportKey = `race_sessions/${sid}/reports/${PLAYER_A}/${PLAYER_A}`;
+      expect(env.fakeNakama.store.has(reportKey)).toBe(true);
+    });
+
+    it('replays the cached response on retry with the same (sessionId, userId)', () => {
+      const sid = setupStartedSession();
+      const first = call<{ accepted: true }>(
+        env,
+        'race_submit_result',
+        null,
+        submitPayload(sid, makeReport(PLAYER_A, 90_000)),
+      );
+      expect(first.ok).toBe(true);
+      // Replay with the SAME totalMs should return cached (idempotent).
+      const replay = call<{ accepted: true }>(
+        env,
+        'race_submit_result',
+        null,
+        submitPayload(sid, makeReport(PLAYER_A, 90_000)),
+      );
+      expect(replay.ok).toBe(true);
+      // Even with a different totalMs the cache wins — that's the point
+      // of idempotency on the (sessionId, userId) key.
+      const replay2 = call<{ accepted: true }>(
+        env,
+        'race_submit_result',
+        null,
+        submitPayload(sid, makeReport(PLAYER_A, 95_000)),
+      );
+      expect(replay2.ok).toBe(true);
+      // Session version bumped exactly once (cache prevented the second).
+      const readEnv = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!readEnv.ok) throw new Error('read failed');
+      const entry = readEnv.data.session.roster.find((r) => r.userId === PLAYER_A);
+      expect(entry?.totalMs).toBe(90_000);
+    });
+
+    it('rejects an out-of-roster submission (INVALID_RESULT)', () => {
+      const sid = setupStartedSession();
+      const OUTSIDER = '99999999-9999-4999-8999-999999999999';
+      const submitEnv = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(OUTSIDER), OUTSIDER));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('INVALID_RESULT');
+    });
+
+    it('rejects a duplicate submission with CONFLICT / ALREADY_REPORTED', () => {
+      const sid = setupStartedSession();
+      // First submission — clear the cache key after writing so the
+      // duplicate test doesn't hit idempotency. Easiest: delete the
+      // cache entry directly.
+      const first = call<{ accepted: true }>(
+        env, 'race_submit_result', null, submitPayload(sid, makeReport(PLAYER_A)),
+      );
+      expect(first.ok).toBe(true);
+      env.fakeNakama.cache.delete('submit_result:' + sid + ':' + PLAYER_A);
+      const second = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(PLAYER_A, 95_000)));
+      expect(second.ok).toBe(false);
+      if (second.ok) return;
+      expect(second.error.code).toBe('CONFLICT');
+      expect((second.error.details as { reason?: string }).reason).toBe('ALREADY_REPORTED');
+    });
+
+    it('rejects a submission to a session in created state (CONFLICT / BAD_STATE)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      // No start — session is in created. The HOST is in the roster,
+      // so we can use HOST as both caller and reporter.
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(createEnv.data.sessionId, makeReport(HOST_ID), HOST_ID));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('CONFLICT');
+      expect((submitEnv.error.details as { reason?: string }).reason).toBe('BAD_STATE');
+    });
+
+    it('rejects a submission to a nonexistent session (NOT_FOUND)', () => {
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload('does-not-exist', makeReport(PLAYER_A)));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects mismatched callerUserId vs report.userId (FORBIDDEN)', () => {
+      const sid = setupStartedSession();
+      const submitEnv = call<unknown>(env, 'race_submit_result', null,
+        submitPayload(sid, makeReport('44444444-4444-4444-8444-444444444444'), PLAYER_A));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('FORBIDDEN');
+    });
+
+    it('rejects ctx.userId != callerUserId on socket calls (FORBIDDEN)', () => {
+      const sid = setupStartedSession();
+      const submitEnv = call<unknown>(env, 'race_submit_result', HOST_ID,
+        submitPayload(sid, makeReport(PLAYER_A), PLAYER_A));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('FORBIDDEN');
+    });
+
+    it('rejects malformed reports (BAD_REQUEST)', () => {
+      const sid = setupStartedSession();
+      const bad = {
+        sessionId: sid,
+        callerUserId: PLAYER_A,
+        report: { userId: PLAYER_A, totalMs: -1, laps: [], isBotReport: false },
+      };
+      const submitEnv = call<unknown>(env, 'race_submit_result', null, JSON.stringify(bad));
+      expect(submitEnv.ok).toBe(false);
+      if (submitEnv.ok) return;
+      expect(submitEnv.error.code).toBe('BAD_REQUEST');
+    });
+  });
 });

@@ -42,6 +42,13 @@ export interface WriteOptions<V extends VersionedValue> {
 
 export interface ReadResult<V extends VersionedValue> {
   value: V;
+  /**
+   * Version token returned by the runtime. Always populated by the
+   * runtime (server-assigned on writes, monotonically increasing on
+   * updates). The type is `string` here even though the underlying
+   * field on `IStorageObject` is optional because the runtime ALWAYS
+   * returns it on read.
+   */
   version: string;
 }
 
@@ -76,7 +83,7 @@ export function readJson<V extends VersionedValue>(
     }
     v = current as V;
   }
-  return { value: v, version: obj.version };
+  return { value: v, version: obj.version ?? '' };
 }
 
 /**

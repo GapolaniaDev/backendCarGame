@@ -461,7 +461,11 @@ export interface IStorageObject {
   key: string;
   userId: string;
   value: unknown;
-  version: string;
+  /**
+   * Required for CAS updates (set to the version returned by the
+   * previous read). Omit on fresh writes — the runtime assigns one.
+   */
+  version?: string;
   permissionRead: number; // 0 = server-only, 1 = owner, 2 = public
   permissionWrite: number;
   /**
