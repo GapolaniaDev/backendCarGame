@@ -58,6 +58,31 @@ describe('profile module (Chunk 14)', () => {
     expect(r2.data.profile.displayName).toBe('Racer');
   });
 
+  it('profile_get returns the Phase 3 progression field (Chunk 3, additive)', () => {
+    const resp = call<{
+      ok: true;
+      data: {
+        profile: {
+          userId: string;
+          progression: {
+            level: number;
+            xp: number;
+            xpToNextLevel: number;
+            unlockedLevels: string[];
+            lastDailyWinAt: number;
+          };
+        };
+      };
+    }>(env, 'profile_get', HOST_ID, { callerUserId: HOST_ID });
+    expect(resp.ok).toBe(true);
+    const p = resp.data.profile.progression;
+    expect(p.level).toBe(1);
+    expect(p.xp).toBe(0);
+    expect(p.xpToNextLevel).toBeGreaterThan(0);
+    expect(p.unlockedLevels).toContain('class:D');
+    expect(p.lastDailyWinAt).toBe(0);
+  });
+
   it('profile_update persists a new displayName + avatarUrl', () => {
     // First create the default.
     call(env, 'profile_get', HOST_ID, { callerUserId: HOST_ID });

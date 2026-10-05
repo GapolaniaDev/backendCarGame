@@ -5,10 +5,32 @@
 // All writes MUST omit `version` for the first create; subsequent
 // updates must include the version they were based on (CAS via
 // `nk.multiUpdate`).
+//
+// The `progression` sub-record was added in Phase 3 (Chunk 3) for the
+// wallet/level/XP subsystem. It is optional on the wire so v1 records
+// (written before Phase 3) round-trip cleanly through `readProfile`
+// with empty progression defaults.
 
 import type { IStorageObject, INakama } from '../nkruntime';
 
 export const PROFILES_COLLECTION = 'profiles';
+
+/**
+ * Per-player XP / level state. Lives inside `ProfileRecord` so the
+ * profile doc is still the single source of truth the client knows how
+ * to fetch.
+ */
+export interface ProfileProgression {
+  /** Cumulative XP earned across all races. */
+  xp: number;
+  /** Highest level reached (1..50). Capped at MAX_LEVEL. */
+  level: number;
+  /**
+   * UTC epoch-ms when the player last took a first-win-of-day stamp.
+   * `0` means "never". Used by the RaceCompleted subscriber.
+   */
+  lastDailyWinAt: number;
+}
 
 export interface ProfileRecord {
   schemaVersion: 1;
@@ -17,6 +39,12 @@ export interface ProfileRecord {
   avatarUrl: string | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Phase 3 progression state. Optional in storage payloads so v1
+   * records (written before the wallet/level subsystem shipped)
+   * round-trip cleanly. Default = zero XP at level 1, never won today.
+   */
+  progression?: ProfileProgression;
 }
 
 export function readProfile(
@@ -68,6 +96,10 @@ export function writeProfileUpdate(
  * displayName uses the catalog's defaultDisplayName so the player
  * is never anonymous on the wire; the avatarUrl is null and the
  * client is expected to call profile_update after the user picks one.
+ *
+ * Phase 3 also seeds `progression` to the zero state (level 1, 0 XP,
+ * never won today) so `profile_get.progression` is non-null on the
+ * first read.
  */
 export function defaultProfile(userId: string, nowMs: number, defaultDisplayName: string): ProfileRecord {
   return {
@@ -77,5 +109,22 @@ export function defaultProfile(userId: string, nowMs: number, defaultDisplayName
     avatarUrl: null,
     createdAt: nowMs,
     updatedAt: nowMs,
+    progression: { xp: 0, level: 1, lastDailyWinAt: 0 },
+  };
+}
+
+/**
+ * Returns the profile's progression sub-record, normalising legacy v1
+ * records (no progression field) to the zero state. Caller can mutate
+ * the returned object without affecting the catalog.
+ */
+export function getProgression(profile: ProfileRecord): ProfileProgression {
+  if (profile.progression === undefined) {
+    return { xp: 0, level: 1, lastDailyWinAt: 0 };
+  }
+  return {
+    xp: profile.progression.xp,
+    level: profile.progression.level,
+    lastDailyWinAt: profile.progression.lastDailyWinAt,
   };
 }
