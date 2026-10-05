@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "paint_red_flame",      "displayName": "Llama roja",        "type": "paint",  "rarity": "common",    "priceCoins": 500,   "compatibleClasses": ["D","C","B"] },
+    { "id": "paint_electric_blue",  "displayName": "Azul eléctrico",    "type": "paint",  "rarity": "common",    "priceCoins": 500,   "compatibleClasses": ["D","C","B","A"] },
+    { "id": "paint_matte_black",    "displayName": "Negro mate",        "type": "paint",  "rarity": "rare",      "priceCoins": 1500,  "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_chrome_gold",    "displayName": "Cromo dorado",      "type": "paint",  "rarity": "epic",      "priceCoins": 4500,  "compatibleClasses": ["C","B","A","S"] },
+    { "id": "paint_neon_green",     "displayName": "Verde neón",        "type": "paint",  "rarity": "rare",      "priceCoins": 1500,  "compatibleClasses": ["D","C","B"] },
+    { "id": "paint_champion_white", "displayName": "Blanco campeón",    "type": "paint",  "rarity": "legendary", "priceGems": 50,      "compatibleClasses": ["B","A","S"] },
+
+    { "id": "wheels_chrome_spoke",  "displayName": "Radios cromados",   "type": "wheels", "rarity": "common",    "priceCoins": 800,   "compatibleClasses": ["D","C","B","A"] },
+    { "id": "wheels_black_mesh",    "displayName": "Malla negra",       "type": "wheels", "rarity": "rare",      "priceCoins": 2000,  "compatibleClasses": ["C","B","A","S"] },
+    { "id": "wheels_neon_rim",      "displayName": "Llantas neón",      "type": "wheels", "rarity": "epic",      "priceCoins": 5000,  "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "wheels_forged_carbon", "displayName": "Carbono forjado",   "type": "wheels", "rarity": "legendary", "priceGems": 60,      "compatibleClasses": ["B","A","S"] },
+    { "id": "wheels_classic_5spoke","displayName": "5 radios clásico",  "type": "wheels", "rarity": "common",    "priceCoins": 600,   "compatibleClasses": ["D","C"] },
+    { "id": "wheels_red_racing",    "displayName": "Rojo carreras",     "type": "wheels", "rarity": "rare",      "priceCoins": 1800,  "compatibleClasses": ["C","B","A"] },
+
+    { "id": "decal_thunder_skull",  "displayName": "Trueno craneo",     "type": "decal",  "rarity": "common",    "priceCoins": 700,   "compatibleClasses": ["D","C","B"] },
+    { "id": "decal_tribal_serpent", "displayName": "Serpiente tribal",  "type": "decal",  "rarity": "rare",      "priceCoins": 2000,  "compatibleClasses": ["C","B","A"] },
+    { "id": "decal_grid_numbers",   "displayName": "Números de grilla","type": "decal",  "rarity": "common",    "priceCoins": 500,   "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_champion_ribbon","displayName": "Cinta campeón",     "type": "decal",  "rarity": "epic",      "priceGems": 30,      "compatibleClasses": ["B","A","S"] },
+    { "id": "decal_neon_arrow",     "displayName": "Flecha neón",       "type": "decal",  "rarity": "rare",      "priceCoins": 1800,  "compatibleClasses": ["C","B","A"] },
+    { "id": "decal_dragon_koi",     "displayName": "Dragón koi",        "type": "decal",  "rarity": "legendary", "priceGems": 80,      "compatibleClasses": ["B","A","S"] },
+
+    { "id": "trail_red_fire",       "displayName": "Fuego rojo",        "type": "trail",  "rarity": "common",    "priceCoins": 600,   "compatibleClasses": ["D","C","B","A"] },
+    { "id": "trail_blue_ice",       "displayName": "Hielo azul",        "type": "trail",  "rarity": "rare",      "priceCoins": 1800,  "compatibleClasses": ["C","B","A","S"] },
+    { "id": "trail_gold_sparks",    "displayName": "Chispas doradas",   "type": "trail",  "rarity": "epic",      "priceCoins": 4500,  "compatibleClasses": ["B","A","S"] },
+    { "id": "trail_neon_pink",      "displayName": "Rosa neón",         "type": "trail",  "rarity": "rare",      "priceCoins": 2000,  "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_dark_smoke",     "displayName": "Humo oscuro",       "type": "trail",  "rarity": "common",    "priceCoins": 500,   "compatibleClasses": ["D","C"] },
+    { "id": "trail_legendary_rainbow","displayName": "Arcoíris legendario","type": "trail","rarity": "legendary","priceGems": 100,    "compatibleClasses": ["B","A","S"] },
+
+    { "id": "horn_classic_beep",    "displayName": "Bocina clásica",    "type": "horn",   "rarity": "common",    "priceCoins": 300,   "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "horn_low_rumble",      "displayName": "Retumbo grave",     "type": "horn",   "rarity": "common",    "priceCoins": 300,   "compatibleClasses": ["D","C","B"] },
+    { "id": "horn_air_raid",        "displayName": "Alarma aérea",      "type": "horn",   "rarity": "rare",      "priceCoins": 1200,  "compatibleClasses": ["C","B","A","S"] },
+    { "id": "horn_pedro_scream",    "displayName": "Grito de Pedro",    "type": "horn",   "rarity": "epic",      "priceGems": 25,      "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "horn_orchestra_hit",   "displayName": "Orquesta fanfarria","type": "horn",   "rarity": "legendary", "priceGems": 75,      "compatibleClasses": ["B","A","S"] },
+    { "id": "horn_8bit_jingle",     "displayName": "Chicharra 8-bit",   "type": "horn",   "rarity": "rare",      "priceCoins": 1500,  "compatibleClasses": ["D","C","B","A"] }
+  ]
+}

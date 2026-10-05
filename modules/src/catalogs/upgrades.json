@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "lines": ["engine", "tires", "nitro", "handling"],
+  "maxLevel": 5,
+  "perCarClass": {
+    "D": {
+      "engine": [
+        { "level": 1, "cost": 500,  "delta": { "speed": 2 } },
+        { "level": 2, "cost": 800,  "delta": { "speed": 4 } },
+        { "level": 3, "cost": 1200, "delta": { "speed": 6 } },
+        { "level": 4, "cost": 1800, "delta": { "speed": 8 } },
+        { "level": 5, "cost": 2500, "delta": { "speed": 10 } }
+      ],
+      "tires": [
+        { "level": 1, "cost": 400,  "delta": { "handling": 2 } },
+        { "level": 2, "cost": 700,  "delta": { "handling": 4 } },
+        { "level": 3, "cost": 1100, "delta": { "handling": 6 } },
+        { "level": 4, "cost": 1600, "delta": { "handling": 8 } },
+        { "level": 5, "cost": 2200, "delta": { "handling": 10 } }
+      ],
+      "nitro": [
+        { "level": 1, "cost": 400,  "delta": { "nitro": 2 } },
+        { "level": 2, "cost": 700,  "delta": { "nitro": 4 } },
+        { "level": 3, "cost": 1100, "delta": { "nitro": 6 } },
+        { "level": 4, "cost": 1600, "delta": { "nitro": 8 } },
+        { "level": 5, "cost": 2200, "delta": { "nitro": 10 } }
+      ],
+      "handling": [
+        { "level": 1, "cost": 400,  "delta": { "acceleration": 2 } },
+        { "level": 2, "cost": 700,  "delta": { "acceleration": 4 } },
+        { "level": 3, "cost": 1100, "delta": { "acceleration": 6 } },
+        { "level": 4, "cost": 1600, "delta": { "acceleration": 8 } },
+        { "level": 5, "cost": 2200, "delta": { "acceleration": 10 } }
+      ]
+    },
+    "C": {
+      "engine": [
+        { "level": 1, "cost": 900,  "delta": { "speed": 2 } },
+        { "level": 2, "cost": 1400, "delta": { "speed": 5 } },
+        { "level": 3, "cost": 2200, "delta": { "speed": 8 } },
+        { "level": 4, "cost": 3000, "delta": { "speed": 11 } },
+        { "level": 5, "cost": 4200, "delta": { "speed": 14 } }
+      ],
+      "tires": [
+        { "level": 1, "cost": 800,  "delta": { "handling": 2 } },
+        { "level": 2, "cost": 1200, "delta": { "handling": 5 } },
+        { "level": 3, "cost": 1900, "delta": { "handling": 8 } },
+        { "level": 4, "cost": 2700, "delta": { "handling": 11 } },
+        { "level": 5, "cost": 3800, "delta": { "handling": 14 } }
+      ],
+      "nitro": [
+        { "level": 1, "cost": 800,  "delta": { "nitro": 2 } },
+        { "level": 2, "cost": 1200, "delta": { "nitro": 5 } },
+        { "level": 3, "cost": 1900, "delta": { "nitro": 8 } },
+        { "level": 4, "cost": 2700, "delta": { "nitro": 11 } },
+        { "level": 5, "cost": 3800, "delta": { "nitro": 14 } }
+      ],
+      "handling": [
+        { "level": 1, "cost": 800,  "delta": { "acceleration": 2 } },
+        { "level": 2, "cost": 1200, "delta": { "acceleration": 5 } },
+        { "level": 3, "cost": 1900, "delta": { "acceleration": 8 } },
+        { "level": 4, "cost": 2700, "delta": { "acceleration": 11 } },
+        { "level": 5, "cost": 3800, "delta": { "acceleration": 14 } }
+      ]
+    },
+    "B": {
+      "engine": [
+        { "level": 1, "cost": 1500, "delta": { "speed": 3 } },
+        { "level": 2, "cost": 2400, "delta": { "speed": 6 } },
+        { "level": 3, "cost": 3600, "delta": { "speed": 10 } },
+        { "level": 4, "cost": 5000, "delta": { "speed": 14 } },
+        { "level": 5, "cost": 7000, "delta": { "speed": 18 } }
+      ],
+      "tires": [
+        { "level": 1, "cost": 1300, "delta": { "handling": 3 } },
+        { "level": 2, "cost": 2200, "delta": { "handling": 6 } },
+        { "level": 3, "cost": 3300, "delta": { "handling": 10 } },
+        { "level": 4, "cost": 4600, "delta": { "handling": 14 } },
+        { "level": 5, "cost": 6400, "delta": { "handling": 18 } }
+      ],
+      "nitro": [
+        { "level": 1, "cost": 1300, "delta": { "nitro": 3 } },
+        { "level": 2, "cost": 2200, "delta": { "nitro": 6 } },
+        { "level": 3, "cost": 3300, "delta": { "nitro": 10 } },
+        { "level": 4, "cost": 4600, "delta": { "nitro": 14 } },
+        { "level": 5, "cost": 6400, "delta": { "nitro": 18 } }
+      ],
+      "handling": [
+        { "level": 1, "cost": 1300, "delta": { "acceleration": 3 } },
+        { "level": 2, "cost": 2200, "delta": { "acceleration": 6 } },
+        { "level": 3, "cost": 3300, "delta": { "acceleration": 10 } },
+        { "level": 4, "cost": 4600, "delta": { "acceleration": 14 } },
+        { "level": 5, "cost": 6400, "delta": { "acceleration": 18 } }
+      ]
+    },
+    "A": {
+      "engine": [
+        { "level": 1, "cost": 2500, "delta": { "speed": 4 } },
+        { "level": 2, "cost": 4000, "delta": { "speed": 8 } },
+        { "level": 3, "cost": 6000, "delta": { "speed": 13 } },
+        { "level": 4, "cost": 8500, "delta": { "speed": 18 } },
+        { "level": 5, "cost": 12000,"delta": { "speed": 23 } }
+      ],
+      "tires": [
+        { "level": 1, "cost": 2200, "delta": { "handling": 4 } },
+        { "level": 2, "cost": 3600, "delta": { "handling": 8 } },
+        { "level": 3, "cost": 5400, "delta": { "handling": 13 } },
+        { "level": 4, "cost": 7700, "delta": { "handling": 18 } },
+        { "level": 5, "cost": 10800,"delta": { "handling": 23 } }
+      ],
+      "nitro": [
+        { "level": 1, "cost": 2200, "delta": { "nitro": 4 } },
+        { "level": 2, "cost": 3600, "delta": { "nitro": 8 } },
+        { "level": 3, "cost": 5400, "delta": { "nitro": 13 } },
+        { "level": 4, "cost": 7700, "delta": { "nitro": 18 } },
+        { "level": 5, "cost": 10800,"delta": { "nitro": 23 } }
+      ],
+      "handling": [
+        { "level": 1, "cost": 2200, "delta": { "acceleration": 4 } },
+        { "level": 2, "cost": 3600, "delta": { "acceleration": 8 } },
+        { "level": 3, "cost": 5400, "delta": { "acceleration": 13 } },
+        { "level": 4, "cost": 7700, "delta": { "acceleration": 18 } },
+        { "level": 5, "cost": 10800,"delta": { "acceleration": 23 } }
+      ]
+    },
+    "S": {
+      "engine": [
+        { "level": 1, "cost": 4000,  "delta": { "speed": 5 } },
+        { "level": 2, "cost": 6500,  "delta": { "speed": 10 } },
+        { "level": 3, "cost": 10000, "delta": { "speed": 16 } },
+        { "level": 4, "cost": 14000, "delta": { "speed": 22 } },
+        { "level": 5, "cost": 20000, "delta": { "speed": 28 } }
+      ],
+      "tires": [
+        { "level": 1, "cost": 3500,  "delta": { "handling": 5 } },
+        { "level": 2, "cost": 5800,  "delta": { "handling": 10 } },
+        { "level": 3, "cost": 9000,  "delta": { "handling": 16 } },
+        { "level": 4, "cost": 13000, "delta": { "handling": 22 } },
+        { "level": 5, "cost": 18000, "delta": { "handling": 28 } }
+      ],
+      "nitro": [
+        { "level": 1, "cost": 3500,  "delta": { "nitro": 5 } },
+        { "level": 2, "cost": 5800,  "delta": { "nitro": 10 } },
+        { "level": 3, "cost": 9000,  "delta": { "nitro": 16 } },
+        { "level": 4, "cost": 13000, "delta": { "nitro": 22 } },
+        { "level": 5, "cost": 18000, "delta": { "nitro": 28 } }
+      ],
+      "handling": [
+        { "level": 1, "cost": 3500,  "delta": { "acceleration": 5 } },
+        { "level": 2, "cost": 5800,  "delta": { "acceleration": 10 } },
+        { "level": 3, "cost": 9000,  "delta": { "acceleration": 16 } },
+        { "level": 4, "cost": 13000, "delta": { "acceleration": 22 } },
+        { "level": 5, "cost": 18000, "delta": { "acceleration": 28 } }
+      ]
+    }
+  }
+}

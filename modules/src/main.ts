@@ -41,6 +41,16 @@ import profilesJson from './catalogs/profiles.json';
 import tracksJson from './catalogs/tracks.json';
 import modesJson from './catalogs/modes.json';
 import leaderboardsJson from './catalogs/leaderboards.json';
+import carsJson from './catalogs/cars.json';
+import upgradesJson from './catalogs/upgrades.json';
+import cosmeticsJson from './catalogs/cosmetics.json';
+import levelsJson from './catalogs/levels.json';
+import rewardsJson from './catalogs/rewards.json';
+import storeJson from './catalogs/store.json';
+import { loadRewardsCatalog } from './economy/catalog';
+import { loadLevelsCatalog } from './progression/catalog';
+import { loadGarageCatalog } from './garage/catalog';
+import { loadStoreCatalog } from './store/catalog';
 
 function InitModule(
   _ctx: IContext,
@@ -76,6 +86,34 @@ function InitModule(
 
   // Auto-create a default profile on every successful auth.
   registerProfileAutoCreate(initializer, nk, logger);
+
+  // Phase 3 catalogs: rewards, levels, garage (cars/upgrades/cosmetics),
+  // store. Chained after Phase 1+2 so a malformed Phase 3 catalog
+  // still surfaces as CATALOG_INVALID instead of silently passing.
+  loadRewardsCatalog(
+    logger,
+    rewardsJson as unknown as import('./economy/catalog').RawRewardsFile,
+    nk,
+  );
+  loadLevelsCatalog(
+    logger,
+    levelsJson as unknown as import('./progression/catalog').RawLevelsFile,
+    nk,
+  );
+  loadGarageCatalog(
+    logger,
+    {
+      cars: carsJson as unknown as import('./garage/catalog').RawGarageFiles['cars'],
+      upgrades: upgradesJson as unknown as import('./garage/catalog').RawGarageFiles['upgrades'],
+      cosmetics: cosmeticsJson as unknown as import('./garage/catalog').RawGarageFiles['cosmetics'],
+    },
+    nk,
+  );
+  loadStoreCatalog(
+    logger,
+    storeJson as unknown as import('./store/catalog').RawStoreFile,
+    nk,
+  );
 
   // Wire the in-process event bus and install the default subscribers
   // for `RaceCompleted`. Phase 2:

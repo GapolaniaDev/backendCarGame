@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "positionBase": {
+    "2": [100, 50],
+    "4": [100, 70, 50, 35],
+    "6": [100, 80, 65, 50, 40, 30]
+  },
+  "modeMultiplier": {
+    "quick":      1.0,
+    "ranked":     1.25,
+    "private":    0.25,
+    "time_trial": 1.0
+  },
+  "bonuses": {
+    "firstWinOfDay": { "type": "coins", "amount": 100 },
+    "noAbandon":     { "type": "coins", "amount": 10 }
+  },
+  "privateRoomCapPerDay": 3,
+  "xpFloor": 20,
+  "xpDivisor": 2
+}

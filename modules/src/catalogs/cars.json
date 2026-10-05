@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "cars": [
+    {
+      "id": "starter_viper",
+      "displayName": "Viper inicial",
+      "classId": "D",
+      "baseStats": { "speed": 50, "acceleration": 50, "handling": 50, "nitro": 50 },
+      "maxStats":  { "speed": 70, "acceleration": 70, "handling": 70, "nitro": 70 },
+      "priceCoins": 0,
+      "priceGems": 0,
+      "requiredLevel": 1,
+      "isStarter": true
+    },
+    {
+      "id": "civic_r",
+      "displayName": "Civic R",
+      "classId": "D",
+      "baseStats": { "speed": 55, "acceleration": 52, "handling": 55, "nitro": 48 },
+      "maxStats":  { "speed": 75, "acceleration": 72, "handling": 75, "nitro": 70 },
+      "priceCoins": 8000,
+      "requiredLevel": 6,
+      "isStarter": false
+    },
+    {
+      "id": "coupe_gt",
+      "displayName": "Coupé GT",
+      "classId": "C",
+      "baseStats": { "speed": 60, "acceleration": 58, "handling": 60, "nitro": 55 },
+      "maxStats":  { "speed": 82, "acceleration": 80, "handling": 82, "nitro": 78 },
+      "priceCoins": 18000,
+      "requiredLevel": 12,
+      "isStarter": false
+    },
+    {
+      "id": "phantom_rsx",
+      "displayName": "Phantom RSX",
+      "classId": "B",
+      "baseStats": { "speed": 65, "acceleration": 62, "handling": 65, "nitro": 60 },
+      "maxStats":  { "speed": 88, "acceleration": 86, "handling": 88, "nitro": 84 },
+      "priceCoins": 32000,
+      "requiredLevel": 20,
+      "isStarter": false
+    },
+    {
+      "id": "aurora_aero",
+      "displayName": "Aurora Aero",
+      "classId": "A",
+      "baseStats": { "speed": 72, "acceleration": 70, "handling": 70, "nitro": 65 },
+      "maxStats":  { "speed": 95, "acceleration": 93, "handling": 92, "nitro": 90 },
+      "priceCoins": 55000,
+      "requiredLevel": 30,
+      "isStarter": false
+    },
+    {
+      "id": "titan_s1",
+      "displayName": "Titan S1",
+      "classId": "S",
+      "baseStats": { "speed": 80, "acceleration": 78, "handling": 75, "nitro": 72 },
+      "maxStats":  { "speed": 100, "acceleration": 98, "handling": 96, "nitro": 94 },
+      "priceCoins": 120000,
+      "requiredLevel": 40,
+      "isStarter": false
+    }
+  ]
+}
