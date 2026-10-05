@@ -142,7 +142,19 @@ export interface RaceSessionCreateOutput {
 
 export interface RaceSessionJoinInput {
   sessionId: string;
+  /**
+   * userId of the player joining. Same contract as `hostUserId` in
+   * create — required when calling over the HTTP gateway (where
+   * `ctx.userId` is null); ignored when `ctx.userId` is set.
+   */
   userId: string;
+  /**
+   * userId of the caller. Required when calling over HTTP gateway to
+   * prevent a malicious client from joining on behalf of another
+   * player. When `ctx.userId` is set, this field must match it or the
+   * RPC returns `FORBIDDEN`.
+   */
+  callerUserId: string;
   loadout: Loadout;
 }
 
@@ -154,6 +166,12 @@ export interface RaceSessionJoinOutput {
 
 export interface RaceSessionStartInput {
   sessionId: string;
+  /**
+   * userId of the caller. Required when calling over HTTP gateway.
+   * The RPC verifies that this userId matches `session.host`; on
+   * mismatch it returns `FORBIDDEN`.
+   */
+  callerUserId: string;
 }
 
 export interface RaceSessionStartOutput {

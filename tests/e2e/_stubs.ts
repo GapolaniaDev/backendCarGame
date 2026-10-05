@@ -193,15 +193,18 @@ class FakeNakamaCore {
     this.cache.clear();
   }
 
-  multiUpdate(ops: IMultiUpdateOp[]): IMultiUpdateResult {
-    const storage_updates: IStorageObjectAck[] = [];
-    const wallet_updates: unknown[] = [];
-    const ledger_updates: unknown[] = [];
+  multiUpdate(
+    _accountUpdates: unknown,
+    storageWrites: IStorageObject[] | undefined,
+    _storageDeletes: unknown,
+    _walletUpdates: unknown,
+    _updateLedger: unknown,
+  ): IMultiUpdateResult {
+    const storageWriteAcks: IStorageObjectAck[] = [];
     const now = new Date().toISOString();
 
-    for (const op of ops) {
-      if ('storage_write' in op) {
-        const obj = op.storage_write;
+    if (storageWrites) {
+      for (const obj of storageWrites) {
         this.versionCounter += 1;
         const version = formatVersion(this.versionCounter);
         const stored: IStorageObject = {
@@ -217,22 +220,16 @@ class FakeNakamaCore {
           expiresAt: obj.expiresAt ?? null,
         };
         this.store.set(storageKeyString(obj), stored);
-        storage_updates.push({
+        storageWriteAcks.push({
           collection: obj.collection,
           key: obj.key,
           userId: obj.userId,
           version,
         });
-      } else if ('storage_delete' in op) {
-        this.store.delete(storageKeyString(op.storage_delete));
-      } else if ('wallet_update' in op) {
-        wallet_updates.push({ ok: true });
-      } else if ('wallet_ledger_update' in op) {
-        ledger_updates.push({ ok: true });
       }
     }
 
-    return { storage_updates, wallet_updates, ledger_updates };
+    return { storageWriteAcks, walletUpdateAcks: [] };
   }
 
   sha256Hash(input: string): string {

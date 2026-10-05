@@ -224,6 +224,292 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
   });
 
+  describe('race_session_join', () => {
+    function joinPayload(
+      sessionId: string,
+      joinerId: string,
+      callerId: string,
+      overrides: Partial<{ loadout: { classId: 'D' | 'C' | 'B' | 'A' | 'S'; bodyId: string } }> = {},
+    ): Record<string, unknown> {
+      return {
+        sessionId,
+        userId: joinerId,
+        callerUserId: callerId,
+        loadout: { classId: 'B', bodyId: 'coupe', ...overrides.loadout },
+      };
+    }
+
+    it('appends to the roster and bumps rosterVersion + rosterSize', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode: 'quick', size: 4 }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        null,
+        joinPayload(sid, OTHER_ID, OTHER_ID),
+      );
+      expect(joinEnv.ok).toBe(true);
+      if (!joinEnv.ok) return;
+      expect(joinEnv.data.rosterVersion).toBe(2);
+      expect(joinEnv.data.rosterSize).toBe(2);
+
+      const readEnv = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!readEnv.ok) throw new Error('read failed');
+      expect(readEnv.data.session.roster).toHaveLength(2);
+      expect(readEnv.data.session.roster.map((r) => r.userId)).toEqual([HOST_ID, OTHER_ID]);
+    });
+
+    it('rejects joining a session that does not exist (NOT_FOUND)', () => {
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        null,
+        joinPayload('does-not-exist', OTHER_ID, OTHER_ID),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects duplicate join (CONFLICT)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      // host tries to join again
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        HOST_ID,
+        joinPayload(sid, HOST_ID, HOST_ID),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('CONFLICT');
+      expect(joinEnv.error.message).toMatch(/already in the roster/);
+    });
+
+    it('rejects joiner when callerUserId !== userId (HTTP FORBIDDEN)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      // someone tries to make OTHER_ID join by impersonating them
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        null,
+        joinPayload(sid, OTHER_ID, '33333333-3333-4333-8333-333333333333'),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('FORBIDDEN');
+    });
+
+    it('rejects joiner when ctx.userId !== callerUserId (socket FORBIDDEN)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      // ctx.userId says HOST, payload says OTHER_ID — defense against a socket client
+      // claiming to be someone else.
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        HOST_ID,
+        joinPayload(sid, OTHER_ID, OTHER_ID),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('FORBIDDEN');
+    });
+
+    it('rejects join when capacity reached (CONFLICT)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ size: 1 }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        null,
+        joinPayload(sid, OTHER_ID, OTHER_ID),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('CONFLICT');
+      expect(joinEnv.error.message).toMatch(/roster is full/);
+    });
+
+    it('rejects join after the session has been started (CONFLICT)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!startEnv.ok) throw new Error('start failed');
+      const joinEnv = call<{ rosterVersion: number; rosterSize: number }>(
+        env,
+        'race_session_join',
+        null,
+        joinPayload(sid, OTHER_ID, OTHER_ID),
+      );
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('CONFLICT');
+      expect(joinEnv.error.message).toMatch(/state started/);
+    });
+
+    it('rejects missing loadout (BAD_REQUEST)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const joinEnv = call<unknown>(env, 'race_session_join', null, {
+        sessionId: sid,
+        userId: OTHER_ID,
+        callerUserId: OTHER_ID,
+      });
+      expect(joinEnv.ok).toBe(false);
+      if (joinEnv.ok) return;
+      expect(joinEnv.error.code).toBe('BAD_REQUEST');
+    });
+  });
+
+  describe('race_session_start', () => {
+    it('host transitions to started and stamps startedAt', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode: 'quick', size: 4 }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      expect(startEnv.ok).toBe(true);
+      if (!startEnv.ok) return;
+      expect(typeof startEnv.data.startedAt).toBe('number');
+      expect(startEnv.data.startedAt).toBeGreaterThan(0);
+
+      const readEnv = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!readEnv.ok) throw new Error('read failed');
+      expect(readEnv.data.session.state).toBe('started');
+      expect(readEnv.data.session.startedAt).toBe(startEnv.data.startedAt);
+    });
+
+    it('rejects non-host caller (FORBIDDEN)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', null, {
+        sessionId: sid,
+        callerUserId: OTHER_ID,
+      });
+      expect(startEnv.ok).toBe(false);
+      if (startEnv.ok) return;
+      expect(startEnv.error.code).toBe('FORBIDDEN');
+      expect(startEnv.error.message).toMatch(/host/);
+    });
+
+    it('rejects a second start (CONFLICT)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+      const first = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      expect(first.ok).toBe(true);
+      const second = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      expect(second.ok).toBe(false);
+      if (second.ok) return;
+      expect(second.error.code).toBe('CONFLICT');
+      expect(second.error.message).toMatch(/state started/);
+    });
+
+    it('rejects start for nonexistent session (NOT_FOUND)', () => {
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: 'does-not-exist',
+        callerUserId: HOST_ID,
+      });
+      expect(startEnv.ok).toBe(false);
+      if (startEnv.ok) return;
+      expect(startEnv.error.code).toBe('NOT_FOUND');
+    });
+  });
+
+  describe('race_session_get (lastClosed path)', () => {
+    it('returns NOT_FOUND when sessionId is omitted and lastClosed index is empty', () => {
+      const readEnv = call<unknown>(env, 'race_session_get', HOST_ID, {
+        callerUserId: HOST_ID,
+      });
+      expect(readEnv.ok).toBe(false);
+      if (readEnv.ok) return;
+      expect(readEnv.error.code).toBe('NOT_FOUND');
+      expect(readEnv.error.message).toMatch(/lastClosed/);
+    });
+
+    it('returns NOT_FOUND when sessionId is omitted (no caller — HTTP gateway)', () => {
+      const readEnv = call<unknown>(env, 'race_session_get', null, {
+        callerUserId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(readEnv.ok).toBe(false);
+      if (readEnv.ok) return;
+      expect(readEnv.error.code).toBe('NOT_FOUND');
+    });
+  });
+
+  describe('create → join ×3 → start happy path', () => {
+    it('produces a session with 4 entries, state=started, startedAt set', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode: 'quick', size: 4 }));
+      if (!createEnv.ok) throw new Error('create failed');
+      const sid = createEnv.data.sessionId;
+
+      const joinerIds = [
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+      ];
+      for (const jid of joinerIds) {
+        const r = call<{ rosterVersion: number; rosterSize: number }>(
+          env,
+          'race_session_join',
+          null,
+          {
+            sessionId: sid,
+            userId: jid,
+            callerUserId: jid,
+            loadout: { classId: 'C', bodyId: 'coupe' },
+          },
+        );
+        expect(r.ok).toBe(true);
+      }
+
+      const startEnv = call<{ startedAt: number }>(env, 'race_session_start', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      expect(startEnv.ok).toBe(true);
+
+      const readEnv = call<GetData>(env, 'race_session_get', HOST_ID, {
+        sessionId: sid,
+        callerUserId: HOST_ID,
+      });
+      if (!readEnv.ok) throw new Error('read failed');
+      expect(readEnv.data.session.roster).toHaveLength(4);
+      expect(readEnv.data.session.state).toBe('started');
+      expect(readEnv.data.session.startedAt).not.toBeNull();
+      expect(readEnv.data.session.version).toBe(5); // create=1, +3 joins=4, +start=5
+    });
+  });
+
   describe('storage sanity', () => {
     it('writes race_sessions collection only (no leaks into other collections)', () => {
       const env2 = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());

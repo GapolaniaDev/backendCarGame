@@ -246,8 +246,22 @@ export interface INakama {
   storageWrite(objs: IStorageObject[]): IStorageObjectAck[];
   storageDelete(keys: IStorageKey[]): void;
 
-  // ── Atomic multi-update (storage + wallet + ledger in a single transaction) ──
-  multiUpdate(ops: IMultiUpdateOp[]): IMultiUpdateResult;
+  /**
+   * Atomic multi-update (storage + wallet + ledger in a single transaction).
+   *
+   * JS runtime signature (verified v3.27.0): all five args are positional
+   * arrays/values. The `{storage_write: ...}` envelope shape is the
+   * nakama-common Go API, NOT what the JS runtime accepts.
+   *
+   * Pass `undefined` for any slot you don't need.
+   */
+  multiUpdate(
+    accountUpdates: undefined,
+    storageWrites: IStorageObject[],
+    storageDeletes: undefined,
+    walletUpdates: undefined,
+    updateLedger: undefined,
+  ): IMultiUpdateResult;
 
   // ── Local cache (per-process, in-memory) ──
   localcacheGet<T = unknown>(key: string): T | null;
@@ -450,9 +464,14 @@ export interface IStorageObject {
   version: string;
   permissionRead: number; // 0 = server-only, 1 = owner, 2 = public
   permissionWrite: number;
-  createTime: string;
-  updateTime: string;
-  expiresAt: string | null;
+  /**
+   * Server-managed timestamps. Populated by the runtime on reads;
+   * writes MUST leave them unset — empty strings cause
+   * `multiUpdate` to reject the write with "No fields to update".
+   */
+  createTime?: string;
+  updateTime?: string;
+  expiresAt?: string | null;
 }
 
 export interface IStorageObjectAck {
@@ -487,9 +506,10 @@ export type IMultiUpdateOp =
     };
 
 export interface IMultiUpdateResult {
-  storage_updates: IStorageObjectAck[];
-  wallet_updates: unknown[];
-  ledger_updates: unknown[];
+  /** Per-storage-write acks (collection, key, userId, version). */
+  storageWriteAcks: IStorageObjectAck[];
+  /** Per-wallet-update results (userId, updated, previous). */
+  walletUpdateAcks: unknown[];
 }
 
 export interface ILeaderboard {

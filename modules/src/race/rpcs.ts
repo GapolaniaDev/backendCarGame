@@ -1,14 +1,14 @@
-// Race RPC handlers (Phase 1 — Chunk 5).
+// Race RPC handlers (Phase 1 — Chunk 6).
 //
-// Three handlers are real in this chunk:
+// Five handlers are real as of this chunk:
 //   - config_get            (catalogs + serverTimeMs)
 //   - race_session_create   (creates a fresh RaceSession)
-//   - race_session_get      (reads a session by id or the caller's live one)
+//   - race_session_join     (appends a player to an open session's roster)
+//   - race_session_start    (transitions created → started, stamps startedAt)
+//   - race_session_get      (reads a session by id OR the caller's lastClosed)
 //
-// The other three are still stubs and land in Chunks 6-9:
-//   - race_session_join     (Chunk 6)
-//   - race_session_start    (Chunk 6)
-//   - race_submit_result    (Chunks 7-9)
+// The remaining handler is still a stub:
+//   - race_submit_result    (lands in Chunks 7-9)
 //
 // Each handler follows the same envelope:
 //   `withSession()` → `checkRateLimit()` → parse → validate → work → `ok()`/`err()`
@@ -30,12 +30,25 @@ import {
 import { serverNowMs } from '../core/time';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { SYSTEM_USER_ID, RATE_LIMITS } from './constants';
-import { createSession, readSession } from './session_repo';
+import { canTransition } from './state';
+import {
+  appendRosterEntry,
+  createSession,
+  lookupLastClosed,
+  markStarted,
+  readSession,
+} from './session_repo';
 import type {
   ConfigGetOutput,
+  CarClassId,
+  Loadout,
   RaceSession,
   RaceSessionCreateInput,
   RaceSessionCreateOutput,
+  RaceSessionJoinInput,
+  RaceSessionJoinOutput,
+  RaceSessionStartInput,
+  RaceSessionStartOutput,
   RaceSessionGetInput,
   RaceSessionGetOutput,
 } from './types';
@@ -336,10 +349,26 @@ function race_session_get_impl(
     return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
   }
 
+  // No sessionId → look up the caller's lastClosed index. Chunk 9 will
+  // populate this index on session close. Until then, the lookup
+  // returns null and we surface NOT_FOUND.
   if (!sessionId) {
-    return toJson(
-      err('NOT_FOUND', 'sessionId is required (no live-session lookup in Phase 1)'),
-    );
+    const last = lookupLastClosed(nk, callerId);
+    if (!last) {
+      return toJson(
+        err('NOT_FOUND', 'no lastClosed index for caller (live-session lookup not yet implemented)'),
+      );
+    }
+    const result = readSession(nk, last.sessionId);
+    if (!result) {
+      return toJson(err('NOT_FOUND', `lastClosed index pointed to missing session ${last.sessionId}`));
+    }
+    const out: RaceSessionGetOutput = {
+      session: result.session,
+      lastClosed: result.session,
+    };
+    logger.debug('race_session_get caller=%s via lastClosed sid=%s', callerId, last.sessionId);
+    return toJson(ok(out));
   }
 
   const result = readSession(nk, sessionId);
@@ -347,10 +376,7 @@ function race_session_get_impl(
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
-  // Caller must be in the roster. SYSTEM_USER_ID is allowed only when
-  // the caller is a server-side admin tool that doesn't have a userId —
-  // and the host should NEVER be SYSTEM_USER_ID for a legitimate
-  // create-session flow.
+  // Caller must be in the roster.
   const inRoster = result.session.roster.some((e) => e.userId === callerId);
   if (!inRoster) {
     logger.warn(
@@ -366,6 +392,238 @@ function race_session_get_impl(
   return toJson(ok(out));
 }
 
+// ─── race_session_join ───────────────────────────────────────────────────────
+
+function validateLoadout(obj: unknown): Resp<Loadout> {
+  if (!obj || typeof obj !== 'object') {
+    return err('BAD_REQUEST', 'loadout must be an object');
+  }
+  const l = obj as Record<string, unknown>;
+  const classId = l['classId'];
+  if (classId !== 'D' && classId !== 'C' && classId !== 'B' && classId !== 'A' && classId !== 'S') {
+    return err('BAD_REQUEST', 'loadout.classId must be D|C|B|A|S');
+  }
+  const bodyId = l['bodyId'];
+  if (typeof bodyId !== 'string' || bodyId.length === 0) {
+    return err('BAD_REQUEST', 'loadout.bodyId must be a non-empty string');
+  }
+  const out: Loadout = {
+    classId: classId as CarClassId,
+    bodyId,
+    ...(typeof l['liveryId'] === 'string' ? { liveryId: l['liveryId'] } : {}),
+  };
+  return ok(out);
+}
+
+function race_session_join_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  payload: string,
+): string {
+  const parsed = parsePayload<RaceSessionJoinInput>(payload);
+  if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
+  if (!parsed.ok) return toJson(parsed);
+
+  // Resolve the joiner (the player being added to the roster).
+  //   - ctx.userId (socket) wins over payload.userId
+  //   - HTTP gateway falls back to payload.userId
+  let joinerId: string;
+  if (ctx.userId) {
+    joinerId = ctx.userId;
+  } else {
+    if (typeof parsed.data.userId !== 'string' || parsed.data.userId.length === 0) {
+      return toJson(
+        err('BAD_REQUEST', 'userId is required when ctx.userId is null (HTTP gateway call)'),
+      );
+    }
+    joinerId = parsed.data.userId;
+  }
+
+  // Caller authz: the RPC caller must be the joiner themselves (or
+  // the system for admin tooling). Defense against a malicious client
+  // joining on behalf of another player via HTTP.
+  if (typeof parsed.data.callerUserId !== 'string' || parsed.data.callerUserId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'callerUserId is required'));
+  }
+  const declaredCaller = parsed.data.callerUserId;
+  if (ctx.userId && declaredCaller !== ctx.userId) {
+    return toJson(err('FORBIDDEN', 'callerUserId does not match ctx.userId'));
+  }
+  if (!ctx.userId && declaredCaller !== joinerId) {
+    return toJson(err('FORBIDDEN', 'callerUserId must match userId'));
+  }
+
+  const loadoutV = validateLoadout(parsed.data.loadout);
+  if (!loadoutV.ok) return toJson(loadoutV);
+  const loadout = loadoutV.data;
+
+  const rl = checkRateLimit(nk, {
+    rpcName: 'race_session_join',
+    userId: joinerId,
+    ...RATE_LIMITS.race_session_join,
+  });
+  if (!rl.allowed) {
+    return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
+  }
+
+  const sessionId =
+    typeof parsed.data.sessionId === 'string' && parsed.data.sessionId.length > 0
+      ? parsed.data.sessionId
+      : '';
+  if (!sessionId) {
+    return toJson(err('BAD_REQUEST', 'sessionId is required'));
+  }
+
+  const cur = readSession(nk, sessionId);
+  if (!cur) {
+    return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
+  }
+  if (cur.session.state !== 'created') {
+    return toJson(
+      err('CONFLICT', `cannot join session in state ${cur.session.state}`, {
+        state: cur.session.state,
+      }),
+    );
+  }
+  if (cur.session.roster.some((e) => e.userId === joinerId)) {
+    return toJson(err('CONFLICT', `user ${joinerId} is already in the roster`));
+  }
+  if (cur.session.roster.length >= cur.session.size) {
+    return toJson(
+      err(
+        'CONFLICT',
+        `roster is full (${cur.session.roster.length}/${cur.session.size})`,
+        {
+          size: cur.session.size,
+          rosterSize: cur.session.roster.length,
+        },
+      ),
+    );
+  }
+
+  try {
+    appendRosterEntry(
+      nk,
+      cur.session,
+      { userId: joinerId, loadout, isBot: false },
+      cur.version,
+    );
+  } catch (e) {
+    logger.warn(
+      'race_session_join sid=%s joiner=%s CAS conflict: %s',
+      sessionId,
+      joinerId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return toJson(err('CONFLICT', 'concurrent join raced — please retry'));
+  }
+
+  logger.info(
+    'race_session_join sid=%s joiner=%s rosterSize=%d',
+    sessionId,
+    joinerId,
+    cur.session.roster.length + 1,
+  );
+
+  const out: RaceSessionJoinOutput = {
+    rosterVersion: cur.session.version + 1,
+    rosterSize: cur.session.roster.length + 1,
+  };
+  return toJson(ok(out));
+}
+
+// ─── race_session_start ──────────────────────────────────────────────────────
+
+function race_session_start_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  payload: string,
+): string {
+  const parsed = parsePayload<RaceSessionStartInput>(payload);
+  if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
+  if (!parsed.ok) return toJson(parsed);
+
+  let callerId: string;
+  if (ctx.userId) {
+    callerId = ctx.userId;
+  } else {
+    if (
+      typeof parsed.data.callerUserId !== 'string' ||
+      parsed.data.callerUserId.length === 0
+    ) {
+      return toJson(
+        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
+      );
+    }
+    callerId = parsed.data.callerUserId;
+  }
+
+  const sessionId =
+    typeof parsed.data.sessionId === 'string' && parsed.data.sessionId.length > 0
+      ? parsed.data.sessionId
+      : '';
+  if (!sessionId) {
+    return toJson(err('BAD_REQUEST', 'sessionId is required'));
+  }
+
+  const rl = checkRateLimit(nk, {
+    rpcName: 'race_session_start',
+    userId: callerId,
+    ...RATE_LIMITS.race_session_start,
+  });
+  if (!rl.allowed) {
+    return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
+  }
+
+  const cur = readSession(nk, sessionId);
+  if (!cur) {
+    return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
+  }
+  if (cur.session.host !== callerId) {
+    logger.warn(
+      'race_session_start sid=%s callerId=%s != host=%s — denying',
+      sessionId,
+      callerId,
+      cur.session.host,
+    );
+    return toJson(err('FORBIDDEN', 'only the host can start the session'));
+  }
+  if (!canTransition(cur.session.state, 'started')) {
+    return toJson(
+      err('CONFLICT', `cannot start session in state ${cur.session.state}`, {
+        state: cur.session.state,
+      }),
+    );
+  }
+
+  const startedAt = serverNowMs();
+  let newVersion: string;
+  try {
+    const r = markStarted(nk, cur.session, cur.version, startedAt);
+    newVersion = r.version;
+  } catch (e) {
+    logger.warn(
+      'race_session_start sid=%s CAS conflict: %s',
+      sessionId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return toJson(err('CONFLICT', 'concurrent write raced — please retry'));
+  }
+
+  logger.info(
+    'race_session_start sid=%s host=%s startedAt=%d version=%s',
+    sessionId,
+    callerId,
+    startedAt,
+    newVersion,
+  );
+
+  const out: RaceSessionStartOutput = { startedAt };
+  return toJson(ok(out));
+}
+
 // ─── Top-level exports ────────────────────────────────────────────────────────
 
 // goja resolver first looks the RPC fn up by NAME on the global object after
@@ -375,10 +633,10 @@ function race_session_get_impl(
 
 export const config_get: RpcHandler = config_get_impl;
 export const race_session_create: RpcHandler = race_session_create_impl;
+export const race_session_join: RpcHandler = race_session_join_impl;
+export const race_session_start: RpcHandler = race_session_start_impl;
 export const race_session_get: RpcHandler = race_session_get_impl;
-// Stubs for handlers that arrive in 6/8/9:
-export const race_session_join: RpcHandler = makeStub('race_session_join');
-export const race_session_start: RpcHandler = makeStub('race_session_start');
+// Stub for the handler that arrives in Chunks 7-9:
 export const race_submit_result: RpcHandler = makeStub('race_submit_result');
 
 /**
