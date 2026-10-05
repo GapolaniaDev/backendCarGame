@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "modes": [
+    {
+      "id": "quick",
+      "displayName": "Quick Race",
+      "allowedSizes": [2, 4, 6],
+      "scoreMultiplier": 1.0,
+      "usesRating": false
+    },
+    {
+      "id": "ranked",
+      "displayName": "Ranked Race",
+      "allowedSizes": [4],
+      "scoreMultiplier": 1.25,
+      "usesRating": true
+    },
+    {
+      "id": "private",
+      "displayName": "Private Room",
+      "allowedSizes": [2, 4, 6],
+      "scoreMultiplier": 0.25,
+      "usesRating": false
+    },
+    {
+      "id": "time_trial",
+      "displayName": "Time Trial",
+      "allowedSizes": [1],
+      "scoreMultiplier": 1.0,
+      "usesRating": false
+    }
+  ]
+}

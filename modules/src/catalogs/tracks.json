@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "tracks": [
+    {
+      "id": "neon_blvd",
+      "displayName": "Neon Boulevard",
+      "modes": { "quick": 3, "ranked": 5, "private": 3, "time_trial": 1 },
+      "checkpoints": 8,
+      "minTimeMsByClass": { "D": 48000, "C": 44000, "B": 40000, "A": 36000, "S": 32000 }
+    },
+    {
+      "id": "reef_run",
+      "displayName": "Reef Run",
+      "modes": { "quick": 3, "ranked": 5, "private": 4, "time_trial": 1 },
+      "checkpoints": 10,
+      "minTimeMsByClass": { "D": 52000, "C": 47000, "B": 42000, "A": 38000, "S": 34000 }
+    },
+    {
+      "id": "mountain_pass",
+      "displayName": "Mountain Pass",
+      "modes": { "quick": 4, "ranked": 6, "private": 4, "time_trial": 1 },
+      "checkpoints": 12,
+      "minTimeMsByClass": { "D": 56000, "C": 50000, "B": 45000, "A": 40000, "S": 36000 }
+    },
+    {
+      "id": "canyon_drift",
+      "displayName": "Canyon Drift",
+      "modes": { "quick": 3, "ranked": 5, "private": 3, "time_trial": 1 },
+      "checkpoints": 9,
+      "minTimeMsByClass": { "D": 50000, "C": 45000, "B": 41000, "A": 37000, "S": 33000 }
+    },
+    {
+      "id": "harbor_sprint",
+      "displayName": "Harbor Sprint",
+      "modes": { "quick": 2, "ranked": 4, "private": 2, "time_trial": 1 },
+      "checkpoints": 6,
+      "minTimeMsByClass": { "D": 42000, "C": 38000, "B": 35000, "A": 32000, "S": 29000 }
+    },
+    {
+      "id": "factory_loop",
+      "displayName": "Factory Loop",
+      "modes": { "quick": 4, "ranked": 7, "private": 4, "time_trial": 1 },
+      "checkpoints": 14,
+      "minTimeMsByClass": { "D": 60000, "C": 54000, "B": 49000, "A": 44000, "S": 39000 }
+    }
+  ]
+}

@@ -9,16 +9,28 @@
 // Bundle entry is esbuild — see package.json's "build" script.
 
 import type { IContext, ILogger, IInitializer, INakama } from './nkruntime';
+import { loadCatalogs, type TracksCatalog, type ModesCatalog } from './core/catalog';
+import tracksJson from './catalogs/tracks.json';
+import modesJson from './catalogs/modes.json';
 
 function InitModule(
   _ctx: IContext,
   logger: ILogger,
   _initializer: IInitializer,
-  _nk: INakama,
+  nk: INakama,
 ): void {
-  // Chunk 3 will load `tracks.json` + `modes.json` here. Until then the
-  // server boots without game data and any RPC that needs catalogs
-  // returns `INTERNAL` (chunk 4+).
+  // Embed tracks/modes into the bundle via esbuild's default JSON loader.
+  loadCatalogs(
+    logger,
+    {
+      tracks: tracksJson as unknown as TracksCatalog,
+      modes: modesJson as unknown as ModesCatalog,
+    },
+    (s: string): string => nk.sha256Hash(s),
+  );
+
+  // Chunk 4+ will build the in-process EventBus, register the 6 RPCs,
+  // and wire a fake RaceCompleted subscriber that logs the event.
   logger.info('core ready');
 }
 

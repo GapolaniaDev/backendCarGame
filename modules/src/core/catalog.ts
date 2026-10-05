@@ -160,11 +160,13 @@ export function validateTracks(c: unknown): asserts c is TracksCatalog {
   if (!isPlainObject(c)) fail('not an object');
   const catalog = c as Record<string, unknown>;
   if (catalog['version'] !== 1) fail(`version must be 1, got ${String(catalog['version'])}`);
-  const tracksRaw = catalog['tracks'] as unknown[];
-  if (tracksRaw.length === 0) fail('tracks must be a non-empty array');
+  const tracksRaw: unknown = catalog['tracks'];
+  if (!Array.isArray(tracksRaw)) fail('tracks must be an array');
+  const tracksArr = tracksRaw as unknown[];
+  if (tracksArr.length === 0) fail('tracks must be a non-empty array');
 
   const seen = new Set<string>();
-  tracksRaw.forEach((rawT: unknown, idx: number) => {
+  tracksArr.forEach((rawT: unknown, idx: number) => {
     if (!isPlainObject(rawT)) fail(`tracks[${idx}] must be an object`);
     const t = rawT as Record<string, unknown>;
     const id = t['id'] as string;
@@ -202,11 +204,13 @@ export function validateModes(c: unknown): asserts c is ModesCatalog {
   if (!isPlainObject(c)) fail('not an object');
   const catalog = c as Record<string, unknown>;
   if (catalog['version'] !== 1) fail(`version must be 1, got ${String(catalog['version'])}`);
-  const modesRaw = catalog['modes'] as unknown[];
-  if (modesRaw.length === 0) fail('modes must be a non-empty array');
+  const modesRaw: unknown = catalog['modes'];
+  if (!Array.isArray(modesRaw)) fail('modes must be an array');
+  const modesArr = modesRaw as unknown[];
+  if (modesArr.length === 0) fail('modes must be a non-empty array');
 
   const seen = new Set<ModeId>();
-  modesRaw.forEach((rawM: unknown, idx: number) => {
+  modesArr.forEach((rawM: unknown, idx: number) => {
     if (!isPlainObject(rawM)) fail(`modes[${idx}] must be an object`);
     const m = rawM as Record<string, unknown>;
     const id = m['id'] as string;
