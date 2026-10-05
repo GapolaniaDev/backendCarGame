@@ -47,6 +47,7 @@ import type {
   ConfigGetOutput,
   CarClassId,
   Loadout,
+  RaceCompletedEvent,
   RaceReport,
   RaceSession,
   RaceSessionCreateInput,
@@ -59,7 +60,16 @@ import type {
   RaceSessionGetOutput,
   RaceSubmitResultInput,
   RaceSubmitResultOutput,
+  RaceSubmitResultRewardEntry,
 } from './types';
+import {
+  handleRaceCompletedForEconomy,
+  type RaceCompletedRewardSummary,
+} from '../economy/subscriber';
+import {
+  handleRaceCompletedForProgression,
+  type RaceCompletedProgressionSummary,
+} from '../progression/subscriber';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -834,6 +844,7 @@ function race_submit_result_impl(
   // concurrent submit racing us — only the winner closes, the loser
   // sees `closed: false` from the idempotency check below on retry.
   let closeOutcome: ReturnType<typeof tryCloseAndPublish> | null = null;
+  let closedEvent: RaceCompletedEvent | null = null;
   if (allSubmitted(updated.session.roster)) {
     if (raceBus === null) {
       logger.warn(
@@ -855,6 +866,26 @@ function race_submit_result_impl(
           closeOutcome.confidence,
           String(closeOutcome.needsReview),
         );
+        // Synthesize the closed event so the RPC can synchronously
+        // compute the per-player reward summary (Decision 6) without
+        // waiting on the async subscribers. The async subscribers
+        // (economy, progression) also run; their grant() / XP updates
+        // are idempotent via the wallet helper's localcache keys.
+        closedEvent = {
+          schemaVersion: 1,
+          sessionId,
+          mode: updated.session.mode,
+          trackId: updated.session.trackId,
+          size: updated.session.size,
+          results: closeOutcome.results,
+          flags: {
+            needsReview: closeOutcome.needsReview,
+            ...(closeOutcome.reviewReason !== undefined
+              ? { reviewReason: closeOutcome.reviewReason }
+              : {}),
+          },
+          closedAt: serverNowMs(),
+        };
       } catch (e) {
         logger.warn(
           'race_submit_result sid=%s close CAS conflict: %s',
@@ -865,6 +896,23 @@ function race_submit_result_impl(
         // will retry the close.
       }
     }
+  }
+
+  // Phase 3 (Decision 6): compute per-player rewards synchronously so
+  // the RPC client sees them in the response without waiting on the
+  // async event subscribers. The subscribers still run for redundancy
+  // and for sessions closed by other paths (admin, force-close).
+  let rewardsOut: Record<string, RaceSubmitResultRewardEntry> | undefined = undefined;
+  if (closedEvent !== null) {
+    const econSummary: RaceCompletedRewardSummary = handleRaceCompletedForEconomy(
+      { logger, nk, bus: raceBus ?? dummyBus },
+      closedEvent,
+    );
+    const progSummary: RaceCompletedProgressionSummary = handleRaceCompletedForProgression(
+      { logger, nk, bus: raceBus ?? dummyBus },
+      closedEvent,
+    );
+    rewardsOut = mergeRewardSummaries(econSummary, progSummary);
   }
 
   const out: RaceSubmitResultOutput = {
@@ -883,12 +931,62 @@ function race_submit_result_impl(
       : {
           flags: { needsReview: false },
         }),
+    ...(rewardsOut !== undefined ? { rewards: rewardsOut } : {}),
   };
   const serialized = toJson(ok(out));
   // 60 s is enough to absorb in-flight retries without forcing clients
   // to re-submit long after a transient error.
   nk.localcachePut(`submit_result:${idempKey}`, serialized, 60);
   return serialized;
+}
+
+// ─── Reward merging (Phase 3, Decision 6) ────────────────────────────────────
+
+const dummyBus: EventBus = {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  subscribe: () => {},
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  publish: async () => {},
+  subscriberCount: () => 0,
+} as unknown as EventBus;
+
+function mergeRewardSummaries(
+  econ: RaceCompletedRewardSummary,
+  prog: RaceCompletedProgressionSummary,
+): Record<string, RaceSubmitResultRewardEntry> {
+  const out: Record<string, RaceSubmitResultRewardEntry> = {};
+  // Players with wallet movement come from the economy summary.
+  for (const [userId, e] of Object.entries(econ.perPlayer)) {
+    const p = prog.perPlayer[userId];
+    out[userId] = {
+      coins: e.rewards.filter((r) => r.kind === 'coins').reduce((s, r) => s + (r.amount ?? 0), 0),
+      gems: e.rewards.filter((r) => r.kind === 'gems').reduce((s, r) => s + (r.amount ?? 0), 0),
+      xp: p?.xpAwarded ?? 0,
+      isFirstWinOfDay: e.isFirstWinOfDay,
+      leveledUp: p?.leveledUp ?? false,
+      newLevel: p?.newLevel ?? 1,
+      newBalance: e.newBalance,
+      levelUpRewards: (p?.levelUpRewards ?? []).map((r) => ({
+        kind: (r.kind === 'coins' || r.kind === 'gems' ? r.kind : 'coins') as 'coins' | 'gems',
+        amount: r.amount ?? 0,
+      })),
+    };
+  }
+  // Players with XP but no wallet movement (e.g. below the XP floor).
+  for (const [userId, p] of Object.entries(prog.perPlayer)) {
+    if (out[userId] !== undefined) continue;
+    out[userId] = {
+      coins: 0,
+      gems: 0,
+      xp: p.xpAwarded,
+      isFirstWinOfDay: p.isFirstWinOfDay,
+      leveledUp: p.leveledUp,
+      newLevel: p.newLevel,
+      newBalance: { coins: 0, gems: 0 },
+      levelUpRewards: [],
+    };
+  }
+  return out;
 }
 
 // ─── Top-level exports ────────────────────────────────────────────────────────

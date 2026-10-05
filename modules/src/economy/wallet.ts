@@ -19,6 +19,7 @@ import type {
   WalletChangeset,
   WalletView,
 } from './types';
+export type { WalletView } from './types';
 
 /** Maximum byte size of a packed metadata payload sent to Nakama. */
 export const LEDGER_METADATA_MAX_BYTES = 200;

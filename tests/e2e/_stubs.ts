@@ -121,6 +121,10 @@ class FakeNakamaCore {
   readonly store = new Map<string, IStorageObject>();
   readonly cache = new Map<string, unknown>();
   readonly users = new Map<string, IUser>();
+  /** userId → currency balances. Lazily populated by walletUpdate. */
+  readonly wallets = new Map<string, Record<string, number>>();
+  /** userId → ledger entries (oldest first). Populated by walletLedgerUpdate. */
+  readonly ledger = new Map<string, Record<string, unknown>[]>();
   private versionCounter = 0;
 
   storageRead(keys: IStorageKey[]): IStorageObject[] {
@@ -193,6 +197,61 @@ class FakeNakamaCore {
 
   localcacheClear(): void {
     this.cache.clear();
+  }
+
+  // ── Wallet ──
+  /**
+   * Apply a per-currency delta to the user's wallet. Returns the
+   * resulting balance map. Mirrors the production `nk.walletUpdate`
+   * signature: positive numbers credit, negative numbers debit, unknown
+   * currencies are created lazily.
+   */
+  walletUpdate(userId: string, changeset: Record<string, number>): Record<string, number> {
+    const wallet = this.wallets.get(userId) ?? {};
+    for (const [currency, delta] of Object.entries(changeset)) {
+      if (typeof delta !== 'number' || !Number.isFinite(delta)) continue;
+      wallet[currency] = (wallet[currency] ?? 0) + delta;
+    }
+    this.wallets.set(userId, wallet);
+    return { ...wallet };
+  }
+
+  /**
+   * Append a ledger entry. Mirrors the production signature:
+   * `(userId, changeset, metadata, idempotencyKey)`. The stub keeps
+   * the entries in insertion order so callers can list them back via
+   * `walletLedgerList` if they want.
+   */
+  walletLedgerUpdate(
+    userId: string,
+    changeset: Record<string, number>,
+    metadata?: Record<string, unknown>,
+    _idempotencyKey?: string,
+  ): void {
+    let bucket = this.ledger.get(userId);
+    if (!bucket) {
+      bucket = [];
+      this.ledger.set(userId, bucket);
+    }
+    bucket.push({
+      changeset: { ...changeset },
+      metadata: metadata ?? {},
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * List the most recent ledger entries for a user. Returns the last
+   * `limit` entries and an empty cursor (the stub doesn't paginate).
+   */
+  walletLedgerList(
+    userId: string,
+    limit?: number,
+    _cursor?: string,
+  ): { entries: Record<string, unknown>[]; cursor: string } {
+    const bucket = this.ledger.get(userId) ?? [];
+    const slice = limit !== undefined ? bucket.slice(-limit) : bucket.slice();
+    return { entries: slice, cursor: '' };
   }
 
   multiUpdate(
@@ -388,6 +447,7 @@ class FakeNakamaCore {
     // Nakama JS runtime returns a unix-seconds number or null. The spec
     // for this stub asks for `null`; we cast through `unknown` to satisfy
     // the type without lying at runtime.
+    const wallet = this.wallets.get(userId);
     const fake = {
       userId,
       username: 'fake-user',
@@ -395,6 +455,7 @@ class FakeNakamaCore {
       updateTime: now,
       disableTime: null,
       metadata: {},
+      wallet: wallet ? { ...wallet } : {},
     };
     return fake;
   }
@@ -432,6 +493,10 @@ export class FakeNakama {
   readonly cache: Map<string, unknown>;
   /** Fake user accounts keyed by userId. */
   readonly users: Map<string, IUser>;
+  /** userId → wallet balances. Populated by `walletUpdate`. */
+  readonly wallets: Map<string, Record<string, number>>;
+  /** userId → ledger entries (insertion order). Populated by `walletLedgerUpdate`. */
+  readonly ledger: Map<string, Record<string, unknown>[]>;
   /** Leaderboard id → ILeaderboard. Populated by `leaderboardCreate`. */
   readonly leaderboards: Map<string, ILeaderboard>;
   /** Leaderboard id → map(ownerId → ILeaderboardRecord). */
@@ -455,6 +520,8 @@ export class FakeNakama {
     this.store = core.store;
     this.cache = core.cache;
     this.users = core.users;
+    this.wallets = core.wallets;
+    this.ledger = core.ledger;
     this.leaderboards = core.leaderboards;
     this.leaderboardRecords = core.leaderboardRecords;
     this.deletedLeaderboards = core.deletedLeaderboards;

@@ -45,6 +45,16 @@ export interface ProfileRecord {
    * round-trip cleanly. Default = zero XP at level 1, never won today.
    */
   progression?: ProfileProgression;
+  /**
+   * Phase 3: how many private races the player has been paid out for
+   * in the current UTC day. Capped per the rewards catalog.
+   */
+  dailyPrivateCount?: number;
+  /**
+   * Phase 3: UTC epoch-ms when `dailyPrivateCount` was last reset
+   * (typically once per UTC day by the RaceCompleted subscriber).
+   */
+  dailyResetAt?: number;
 }
 
 export function readProfile(

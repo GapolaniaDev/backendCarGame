@@ -51,6 +51,8 @@ import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
 import { loadStoreCatalog } from './store/catalog';
+import { subscribeEconomyRewards } from './economy/subscriber';
+import { subscribeProgressionRewards } from './progression/subscriber';
 
 function InitModule(
   _ctx: IContext,
@@ -134,6 +136,9 @@ function InitModule(
     );
   });
   subscribeLeaderboardWriter(logger, bus, nk);
+  // Phase 3: wallet + XP rewards for every closed race.
+  subscribeEconomyRewards({ logger, nk, bus });
+  subscribeProgressionRewards({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the 6 RPCs as individual top-level statements.

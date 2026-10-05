@@ -209,12 +209,42 @@ export interface RaceSubmitResultInput {
 
 export type ConfidenceOutcome = 'quorum' | 'client' | 'server';
 
+export interface RaceSubmitResultRewardEntry {
+  /** Cumulative coins credited for this race (incl. position, bonuses). */
+  coins: number;
+  /** Cumulative gems credited (typically zero; only first-win-of-day may grant). */
+  gems: number;
+  /** XP awarded by this race (zero if no progression). */
+  xp: number;
+  /** True if this win stamped the player's first-win-of-day flag. */
+  isFirstWinOfDay: boolean;
+  /** True if the player crossed at least one level boundary this race. */
+  leveledUp: boolean;
+  /** Player level AFTER applying the race's XP. */
+  newLevel: number;
+  /** Snapshot of the player's wallet after the race's grants. */
+  newBalance: { coins: number; gems: number };
+  /** Level-up coin/gem stamps applied during this race (cumulative across levels). */
+  levelUpRewards: ReadonlyArray<{ kind: 'coins' | 'gems'; amount: number }>;
+}
+
 export interface RaceSubmitResultOutput {
   accepted: true;
   confidence: ConfidenceOutcome;
   /** Present only when the submit causes the session to close. */
   officialResults?: RaceResult[];
   flags: { needsReview: boolean; reviewReason?: string };
+  /**
+   * Phase 3 additive (Decision 6): per-player reward snapshot. Present
+   * only when the submit caused a close AND the player was a paying
+   * participant. Players who didn't race (joined but never reported)
+   * are absent from the map. Existing Phase 1/2 clients that ignore
+   * unknown fields remain compatible.
+   *
+   * Keyed by userId; the caller of `race_submit_result` will be one
+   * of the keys when they reported before close.
+   */
+  rewards?: Record<string, RaceSubmitResultRewardEntry>;
 }
 
 export interface ConfigGetOutput {
