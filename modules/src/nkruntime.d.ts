@@ -11,9 +11,21 @@
 
 // ─── InitModule parameter types ──────────────────────────────────────────────
 
-/** Opaque Go context.Context — discarded by the JS bridge. */
+/**
+ * Per-RPC invocation context. Carries the authenticated user's id when
+ * the call arrived over an authenticated transport (HTTP session token,
+ * socket session, etc.); `null` when the caller is anonymous.
+ *
+ * Verified against v3.27.0: `server/runtime_javascript.go` injects the
+ * caller userId onto the context object before invoking the handler.
+ */
 export interface IContext {
   readonly _brand: 'NakamaContext';
+  userId: string | null;
+  /** Match id when the call originated from a match (Phase 2+). */
+  matchId?: string;
+  /** Nakama session token string (null when called without auth). */
+  sessionId?: string;
 }
 
 /** Server-side structured logger (mirrors zerolog's API). */

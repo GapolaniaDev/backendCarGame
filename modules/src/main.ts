@@ -39,6 +39,7 @@ function InitModule(
       modes: modesJson as unknown as ModesCatalog,
     },
     (s: string): string => nk.sha256Hash(s),
+    nk,
   );
 
   // Register the 6 RPCs as individual top-level statements.

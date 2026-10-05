@@ -6,8 +6,17 @@
 // propagates out of `InitModule` causing the container to exit non-zero.
 // This matches the Phase 1 spec's "un catálogo inválido impide el
 // arranque".
+//
+// Persistence across goja runtime workers:
+//   `loadCatalogs(logger, sources, hashFn, nk)` ALSO writes the frozen
+//   state into `nk.localcachePut('catalogs:state', ...)`. The 16-worker
+//   JS runtime pool in v3.27 instantiates each bundle in a SEPARATE goja
+//   VM, so a module-level `let state` only exists in the worker that
+//   ran `InitModule`. The other workers see `state === null` and throw
+//   "catalogs not loaded". localcache is per-process (shared across
+//   workers) which is what we want.
 
-import type { ILogger } from '../nkruntime';
+import type { ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from './response';
 import type { ErrorCode } from './errors';
 
@@ -62,36 +71,91 @@ export interface ModesCatalog {
 
 // ─── Loader state ────────────────────────────────────────────────────────────
 
-interface CatalogState {
+export interface CatalogState {
   tracks: ReadonlyArray<Readonly<TrackEntry>>;
   modes: ReadonlyArray<Readonly<ModeEntry>>;
-  tracksById: ReadonlyMap<string, Readonly<TrackEntry>>;
-  modesById: ReadonlyMap<ModeId, Readonly<ModeEntry>>;
+  /** Tracks keyed by id. Not stored in `localcache` because Map is
+   *  non-JSON-serialisable; rebuilt lazily on first resolve. */
+  tracksById?: ReadonlyMap<string, Readonly<TrackEntry>>;
+  modesById?: ReadonlyMap<ModeId, Readonly<ModeEntry>>;
   /** SHA-256 hash of the JSON source of both catalogs (client cache key). */
   hash: string;
 }
 
-let state: CatalogState | null = null;
+let moduleState: CatalogState | null = null;
 
-export function getTracks(): ReadonlyArray<Readonly<TrackEntry>> {
-  if (!state) throw new Error('catalogs not loaded; call loadCatalogs() first');
-  return state.tracks;
+/**
+ * Cache key under which the catalog state lives in `nk.localcache`. Shared
+ * across the JS runtime pool workers. The stored value is a JSON string
+ * because `localcachePut` only accepts string/number/boolean (verified
+ * against v3.27.0 source — the Go side rejects "value type must be
+ * string, numeric or boolean").
+ */
+export const CATALOG_CACHE_KEY = 'catalogs:state:v1';
+
+interface SerializedCatalogState {
+  tracks: ReadonlyArray<Readonly<TrackEntry>>;
+  modes: ReadonlyArray<Readonly<ModeEntry>>;
+  hash: string;
 }
-export function getTrack(id: string): Readonly<TrackEntry> | undefined {
-  if (!state) throw new Error('catalogs not loaded');
-  return state.tracksById.get(id);
+
+export function getTracks(nk?: INakama): ReadonlyArray<Readonly<TrackEntry>> {
+  return resolveState(nk).tracks;
 }
-export function getModes(): ReadonlyArray<Readonly<ModeEntry>> {
-  if (!state) throw new Error('catalogs not loaded');
-  return state.modes;
+export function getTrack(id: string, nk?: INakama): Readonly<TrackEntry> | undefined {
+  const s = resolveState(nk);
+  if (!s.tracksById) {
+    (s as unknown as { tracksById: Map<string, Readonly<TrackEntry>> }).tracksById =
+      buildTracksById(s.tracks);
+  }
+  return s.tracksById!.get(id);
 }
-export function getMode(id: ModeId): Readonly<ModeEntry> | undefined {
-  if (!state) throw new Error('catalogs not loaded');
-  return state.modesById.get(id);
+export function getModes(nk?: INakama): ReadonlyArray<Readonly<ModeEntry>> {
+  return resolveState(nk).modes;
 }
-export function getCatalogsHash(): string {
-  if (!state) throw new Error('catalogs not loaded');
-  return state.hash;
+export function getMode(id: ModeId, nk?: INakama): Readonly<ModeEntry> | undefined {
+  const s = resolveState(nk);
+  if (!s.modesById) {
+    (s as unknown as { modesById: Map<ModeId, Readonly<ModeEntry>> }).modesById =
+      buildModesById(s.modes);
+  }
+  return s.modesById!.get(id);
+}
+export function getCatalogsHash(nk?: INakama): string {
+  return resolveState(nk).hash;
+}
+
+function buildTracksById(
+  tracks: ReadonlyArray<Readonly<TrackEntry>>,
+): Map<string, Readonly<TrackEntry>> {
+  const m = new Map<string, Readonly<TrackEntry>>();
+  for (const t of tracks) m.set(t.id, t);
+  return m;
+}
+
+function buildModesById(
+  modes: ReadonlyArray<Readonly<ModeEntry>>,
+): Map<ModeId, Readonly<ModeEntry>> {
+  const m = new Map<ModeId, Readonly<ModeEntry>>();
+  for (const mo of modes) m.set(mo.id, mo);
+  return m;
+}
+
+function resolveState(nk?: INakama): CatalogState {
+  if (moduleState) return moduleState;
+  if (nk) {
+    const cached = nk.localcacheGet<string>(CATALOG_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached) as SerializedCatalogState;
+      moduleState = {
+        tracks: parsed.tracks,
+        modes: parsed.modes,
+        hash: parsed.hash,
+      };
+      return moduleState;
+    }
+  }
+  throw new Error('catalogs not loaded; call loadCatalogs() first');
 }
 
 // ─── Load entrypoint ─────────────────────────────────────────────────────────
@@ -101,10 +165,17 @@ export interface CatalogSources {
   modes: ModesCatalog;
 }
 
+/**
+ * Validates, freezes, and installs the catalogs.
+ *
+ * @param nk  Passed on boot — written to localcache so other runtime
+ *            pool workers can resolve the state. Optional for unit tests.
+ */
 export function loadCatalogs(
   logger: ILogger,
   sources: CatalogSources,
   hashFn: (input: string) => string,
+  nk?: INakama,
 ): void {
   validateTracks(sources.tracks);
   validateModes(sources.modes);
@@ -120,25 +191,37 @@ export function loadCatalogs(
     modesById.set(m.id, Object.freeze({ ...m }));
   }
 
-  state = {
+  const fresh: CatalogState = {
     tracks: Object.freeze(sources.tracks.tracks.map((t) => Object.freeze({ ...t }))),
     modes: Object.freeze(sources.modes.modes.map((m) => Object.freeze({ ...m }))),
     tracksById,
     modesById,
     hash,
   };
+  moduleState = fresh;
+  if (nk) {
+    // 7-day TTL: catalogs are immutable until next deploy.
+    // `localcachePut` only accepts string/number/boolean values
+    // (verified v3.27.0), so we JSON-serialize.
+    const serialized = JSON.stringify({
+      tracks: fresh.tracks,
+      modes: fresh.modes,
+      hash: fresh.hash,
+    } satisfies SerializedCatalogState);
+    nk.localcachePut(CATALOG_CACHE_KEY, serialized, 7 * 24 * 60 * 60);
+  }
 
   logger.info(
     'catalogs loaded: tracks=%d modes=%d hash=%s',
     sources.tracks.tracks.length,
     sources.modes.modes.length,
-    state.hash.slice(0, 12),
+    fresh.hash.slice(0, 12),
   );
 }
 
 /** Test-only: reset the in-memory catalog state between tests. */
 export function _resetCatalogsForTests(): void {
-  state = null;
+  moduleState = null;
 }
 
 // ─── Validators ──────────────────────────────────────────────────────────────
