@@ -472,6 +472,14 @@ class FakeInitializerCore {
       envelope: ILeaderboardRecordEnvelope,
     ) => void
   > = [];
+  readonly afterAuthenticates: Array<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void
+  > = [];
 
   registerRpc(key: string, fn: RpcFunction): void {
     this.rpcs.push({ key, fn });
@@ -479,6 +487,47 @@ class FakeInitializerCore {
 
   registerShutdown(_runtime: INakama, fn: ShutdownFn): void {
     this.shutdowns.push(fn);
+  }
+
+  registerAfterAuthenticateDevice(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void,
+  ): void {
+    this.afterAuthenticates.push(fn);
+  }
+  registerAfterAuthenticateCustom(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void,
+  ): void {
+    this.afterAuthenticates.push(fn);
+  }
+  registerAfterAuthenticateEmail(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void,
+  ): void {
+    this.afterAuthenticates.push(fn);
+  }
+  registerAfterAuthenticateApple(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void,
+  ): void {
+    this.afterAuthenticates.push(fn);
   }
 
   registerBeforeLeaderboardRecordWrite(
@@ -528,6 +577,14 @@ export class FakeInitializer {
       envelope: ILeaderboardRecordEnvelope,
     ) => void
   >;
+  readonly afterAuthenticates: ReadonlyArray<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void
+  >;
   readonly initializer: IInitializer;
 
   constructor() {
@@ -536,6 +593,7 @@ export class FakeInitializer {
     this.shutdowns = core.shutdowns;
     this.beforeLeaderboardRecordWrites = core.beforeLeaderboardRecordWrites;
     this.afterLeaderboardRecordWrites = core.afterLeaderboardRecordWrites;
+    this.afterAuthenticates = core.afterAuthenticates;
     this.initializer = wrapWithNotStubbedThrow(core) as IInitializer;
   }
 

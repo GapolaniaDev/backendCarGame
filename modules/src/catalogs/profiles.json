@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "blockedWords": [
+    "admin",
+    "administrator",
+    "moderator",
+    "support",
+    "system",
+    "null",
+    "undefined",
+    "nigger",
+    "faggot",
+    "kike",
+    "spic",
+    "chink",
+    "retard",
+    "cunt",
+    "whore"
+  ],
+  "displayName": {
+    "minLength": 2,
+    "maxLength": 20,
+    "pattern": "^[A-Za-z0-9 _\\-.]+$"
+  },
+  "avatarUrl": {
+    "maxLength": 512
+  },
+  "defaultDisplayName": "Racer"
+}

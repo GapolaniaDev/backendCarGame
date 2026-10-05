@@ -50,6 +50,12 @@ export interface IInitializer {
   // ── Hooks ──
   registerBeforeAuthenticateApple(fn: BeforeAuthFn): void;
   registerAfterAuthenticateApple(fn: AfterAuthFn): void;
+  registerBeforeAuthenticateCustom(fn: BeforeAuthFn): void;
+  registerAfterAuthenticateCustom(fn: AfterAuthFn): void;
+  registerBeforeAuthenticateDevice(fn: BeforeAuthFn): void;
+  registerAfterAuthenticateDevice(fn: AfterAuthFn): void;
+  registerBeforeAuthenticateEmail(fn: BeforeAuthFn): void;
+  registerAfterAuthenticateEmail(fn: AfterAuthFn): void;
   registerBeforeSessionRefresh(fn: BeforeReqFn): void;
   registerAfterSessionRefresh(fn: AfterReqFn): void;
 
