@@ -21,6 +21,7 @@
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
+import { emit } from '../core/admin/analytics';
 import {
   getCatalogsHash,
   getModes,
@@ -328,6 +329,14 @@ function race_session_create_impl(
     );
     return toJson(err('INTERNAL', 'failed to persist session'));
   }
+
+  emit(nk, logger, 'session_started', {
+    sessionId,
+    hostId,
+    mode: input.mode,
+    size: input.size,
+    trackId: input.trackId,
+  });
 
   logger.info(
     'race_session_create sid=%s host=%s mode=%s track=%s size=%d',
@@ -919,6 +928,19 @@ function race_submit_result_impl(
           },
           closedAt: serverNowMs(),
         };
+        const startedAt = updated.session.startedAt;
+        const abandonedCount = closeOutcome.results.filter((r) => r.abandoned === true).length;
+        const finisherCount = closeOutcome.results.length - abandonedCount;
+        const durationMs = typeof startedAt === 'number' ? closedEvent.closedAt - startedAt : 0;
+        emit(nk, logger, 'race_completed', {
+          sessionId: closedEvent.sessionId,
+          mode: closedEvent.mode,
+          size: closedEvent.size,
+          durationMs,
+          finisherCount,
+          abandonedCount,
+          confidence: closeOutcome.confidence,
+        });
       } catch (e) {
         logger.warn(
           'race_submit_result sid=%s close CAS conflict: %s',
@@ -1267,6 +1289,24 @@ function race_session_quick_bots_impl(
     trackId,
   );
 
+  // The matchmaker hook fired `matchmaker_matched` with
+  // `ratingSpread: null` because the per-human rating isn't on the
+  // envelope. Here we have the full humansInput — emit a follow-up so
+  // dashboards can correlate matchmaker activity with the eventual
+  // session characteristics.
+  const rated = humansInput
+    .map((h) => h.rating)
+    .filter((r): r is number => typeof r === 'number');
+  const ratingSpread =
+    rated.length >= 2 ? Math.max(...rated) - Math.min(...rated) : rated.length === 1 ? 0 : null;
+  emit(nk, logger, 'matchmaker_matched', {
+    sessionId,
+    humanCount: humansInput.length,
+    botCount: built.botCount,
+    ticketCount: humansInput.length,
+    ratingSpread,
+  });
+
   return toJson(ok(out));
 }
 
@@ -1386,6 +1426,13 @@ function race_host_claim_impl(
     cur.session.host,
     newClaimedAt,
   );
+
+  emit(nk, logger, 'host_claimed', {
+    sessionId,
+    newHost: callerId,
+    oldHost: cur.session.host,
+    withinGrace: true,
+  });
 
   const out: RaceHostClaimOutput = {
     sessionId,

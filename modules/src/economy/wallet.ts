@@ -13,6 +13,7 @@
 
 import type { INakama } from '../nkruntime';
 import { err, ok, type Err, type Resp } from '../core/response';
+import { emit } from '../core/admin/analytics';
 import type {
   LedgerMetadata,
   LedgerReason,
@@ -153,7 +154,15 @@ export function grant(
   }
   nk.walletUpdate(userId, positive);
   nk.walletLedgerUpdate(userId, positive, { reason: packed }, idempotencyKey);
-  return ok(walletGet(nk, userId));
+  const view = walletGet(nk, userId);
+  emit(nk, undefined, 'wallet_moved', {
+    userId,
+    kind: 'grant',
+    changeset: { ...positive },
+    reason: packed,
+    newBalance: view,
+  });
+  return ok(view);
 }
 
 /**
@@ -215,7 +224,15 @@ export function spend(
   }
   nk.walletUpdate(userId, signed);
   nk.walletLedgerUpdate(userId, signed, { reason: packed }, idempotencyKey);
-  return ok(walletGet(nk, userId));
+  const view = walletGet(nk, userId);
+  emit(nk, undefined, 'wallet_moved', {
+    userId,
+    kind: 'spend',
+    changeset: { ...signed },
+    reason: packed,
+    newBalance: view,
+  });
+  return ok(view);
 }
 
 /**

@@ -333,6 +333,37 @@ class FakeNakamaCore {
     return Buffer.from(input, 'base64url').toString('utf8');
   }
 
+  // ── HTTP ──
+  /**
+   * Outbound HTTP via the Nakama runtime. In production this is a
+   * synchronous goja call into `runtime_javascript.go`. In tests we
+   * capture every invocation in `httpRequests` and return a default
+   * `{code: 204, content: '', headers: {}}` so the caller sees the
+   * happy path. Tests can override `httpResponse` (and
+   * `httpRequestThrow`) to simulate failure modes.
+   */
+  readonly httpRequests: Array<{
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+  }> = [];
+  httpResponse: { code: number; content: string; headers: Record<string, string> } = {
+    code: 204, content: '', headers: {},
+  };
+  /** When set, `httpRequest` throws instead of returning — for failure tests. */
+  httpRequestThrow: Error | null = null;
+  httpRequest(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string,
+  ): { code: number; content: string; headers: Record<string, string> } {
+    this.httpRequests.push({ url, method, headers, body });
+    if (this.httpRequestThrow !== null) throw this.httpRequestThrow;
+    return { ...this.httpResponse, headers: { ...this.httpResponse.headers } };
+  }
+
   // ── Leaderboards ──
   /** id → leaderboard. Created via `leaderboardCreate`. */
   readonly leaderboards = new Map<string, ILeaderboard>();
@@ -586,6 +617,17 @@ export class FakeNakama {
         envelope: ILeaderboardRecordEnvelope,
       ) => void)
     | null;
+  /** Outbound HTTP calls captured by the stub. See `httpRequest`. */
+  readonly httpRequests: Array<{
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+  }>;
+  /** Per-call response override. Defaults to 204 No Content. */
+  httpResponse: { code: number; content: string; headers: Record<string, string> };
+  /** When set, `httpRequest` throws instead of returning. */
+  httpRequestThrow: Error | null;
   /** INakama view — pass this into InitModule / RPC handlers. */
   readonly nakama: INakama;
 
@@ -601,6 +643,9 @@ export class FakeNakama {
     this.leaderboardRecords = core.leaderboardRecords;
     this.deletedLeaderboards = core.deletedLeaderboards;
     this.beforeLeaderboardRecordWrite = core.beforeLeaderboardRecordWrite;
+    this.httpRequests = core.httpRequests;
+    this.httpResponse = core.httpResponse;
+    this.httpRequestThrow = core.httpRequestThrow;
     this.nakama = wrapWithNotStubbedThrow(core) as INakama;
   }
 }

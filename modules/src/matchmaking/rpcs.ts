@@ -15,8 +15,9 @@
 // already (the types module ships in this same chunk; the JSON loader
 // arrives in Chunk 8).
 
-import type { IContext, ILogger, INakama } from '../nkruntime';
+import type { IContext, IMatchmakerMatchedEnvelope, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
+import { emit } from '../core/admin/analytics';
 import { getRankedConfig } from '../ranked/config';
 import {
   buildOutput,
@@ -159,12 +160,24 @@ export const matchmakerMatchedHook: RpcHandler = () => {
 export function matchmakerMatchedImpl(
   _ctx: IContext,
   logger: ILogger,
-  _nk: INakama,
-  envelope: unknown,
+  nk: INakama,
+  envelope: IMatchmakerMatchedEnvelope,
 ): { matched: boolean } {
-  const decision = pickCandidate(envelope as Parameters<typeof pickCandidate>[0]);
+  const decision = pickCandidate(envelope);
   if (decision.matched) {
     logger.info('matchmakerMatched candidateIndex=%d (accepted)', decision.candidateIndex);
+    const session = envelope.matches[decision.candidateIndex];
+    if (session !== undefined) {
+      const humans = session.matched.filter((m) => m.vars['kind'] !== 'robot');
+      const bots = session.matched.filter((m) => m.vars['kind'] === 'robot');
+      emit(nk, logger, 'matchmaker_matched', {
+        sessionId: session.sessionId,
+        humanCount: humans.length,
+        botCount: bots.length,
+        ticketCount: session.tickets.length,
+        ratingSpread: null,
+      });
+    }
     return { matched: true };
   }
   logger.info('matchmakerMatched reason=%s (rejected)', decision.reason);

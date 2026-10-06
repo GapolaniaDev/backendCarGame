@@ -179,6 +179,19 @@ export function validate(raw: unknown): asserts raw is LiveopsConfig {
   if (ak !== undefined && (typeof ak !== 'string' || (ak as string).length === 0)) {
     fail('adminRpcKey must be a non-empty string when present');
   }
+
+  // analyticsWebhook: optional. When present must start with http(s)://.
+  // No deep URL parse — we just sanity-check the scheme to catch typos.
+  const wh = r['analyticsWebhook'];
+  if (wh !== undefined) {
+    if (typeof wh !== 'string') {
+      fail('analyticsWebhook must be a string when present');
+    }
+    const whStr = wh as string;
+    if (!whStr.startsWith('http://') && !whStr.startsWith('https://')) {
+      fail('analyticsWebhook must start with http:// or https://');
+    }
+  }
 }
 
 // ─── Read path (NO cache) ─────────────────────────────────────────────────
@@ -276,5 +289,6 @@ function freeze(cfg: LiveopsConfig): LiveopsConfig {
     regions: Object.freeze(cfg.regions.map((r) => Object.freeze({ ...r }))),
     calendar: Object.freeze(cfg.calendar.map((c) => Object.freeze({ ...c }))),
     ...(cfg.adminRpcKey !== undefined ? { adminRpcKey: cfg.adminRpcKey } : {}),
+    ...(cfg.analyticsWebhook !== undefined ? { analyticsWebhook: cfg.analyticsWebhook } : {}),
   });
 }

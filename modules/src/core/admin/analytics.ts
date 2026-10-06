@@ -1,46 +1,179 @@
-// Phase 5 Chunk 6 — Admin analytics emitter.
+// Phase 5 Chunk 7 — General server-emitted analytics events.
 //
-// Every admin RPC writes an `analytics_events` row with shape
-// `{ schemaVersion: 1, event: 'admin_action', at, rpcName, props }`.
-// Owner is the SYSTEM_USER_ID with permissionRead=2 (public-readable
-// for ops dashboards), permissionWrite=0 (server-only).
+// Replaces the Chunk-6 `emitAdminAction` with a generalized `emit()`
+// helper that any module can call. The shape on disk is:
 //
-// Storage layout:
 //   collection: `analytics_events`
-//   key:        `<at>-<uuid>`  (ms-timestamp prefix so a listing is
-//                naturally sorted by time; the uuid suffix avoids
-//                collision when two admin RPCs land in the same ms).
-//   userId:     SYSTEM_USER_ID
+//   key:        `<ts>-<uuid>`
+//   userId:     `SYSTEM_USER_ID` (default) or per-event `opts.userId`
+//   perms:      read=2 (public for ops dashboards), write=0 (server-only)
 //
-// D8 spec (Checklist §3.4): the storage destination is documented;
-// the optional webhook destination lands in a later chunk. This helper
-// only writes storage.
+// Each event is `{ schemaVersion: 1, id, ts, name, userId?, props,
+// webhook? }`. The webhook block is populated AFTER the storage write
+// when `liveops_config.analyticsWebhook` is configured; failures are
+// logged at warn and the event still succeeds.
+//
+// D8 locked (Chunk 7): destination = Storage `analytics_events` +
+// optional webhook. Webhook is best-effort — no retry, no DLQ.
+// Can be called on hot paths (every wallet grant). NEVER throws.
 
 import type { ILogger, INakama } from '../../nkruntime';
 import { SYSTEM_USER_ID } from '../../race/constants';
+import { loadLiveopsConfig } from '../../liveops/config';
 
 export const ANALYTICS_COLLECTION = 'analytics_events';
 
-export interface AdminActionEvent {
+export type AnalyticsEventName =
+  | 'admin_action'
+  | 'session_started'
+  | 'race_completed'
+  | 'wallet_moved'
+  | 'store_purchase'
+  | 'matchmaker_matched'
+  | 'host_claimed';
+
+export interface AnalyticsWebhook {
+  url: string;
+  /** Epoch-ms when the webhook POST was attempted. */
+  attemptedAt: number;
+  /** HTTP status code returned by the receiver, or `null` on failure. */
+  status: number | null;
+  /** Truncated error message when the POST failed. */
+  error: string | null;
+}
+
+export interface AnalyticsEvent {
   schemaVersion: 1;
-  event: 'admin_action';
-  /** Epoch-ms when the action ran. */
-  at: number;
-  /** The admin RPC name. */
-  rpcName: string;
-  /** Optional target user (for per-user admin ops like wallet/remove). */
-  targetUserId?: string;
-  /** Optional reason string. */
-  reason?: string;
-  /** Free-form structured payload — the RPC's audit detail. */
+  id: string;
+  ts: number;
+  name: AnalyticsEventName | string;
+  userId?: string;
   props: Record<string, unknown>;
+  webhook?: AnalyticsWebhook;
+}
+
+export interface EmitOptions {
+  /** When provided, overrides the default SYSTEM_USER_ID owner. */
+  userId?: string;
 }
 
 /**
- * Write one analytics row. Failures are logged at warn level and
- * swallowed — analytics MUST NOT crash the admin RPC. The audit trail
- * is best-effort by design; the RPC's primary effect (wallet update,
- * purge, etc.) is the source of truth.
+ * Write one analytics row + fire-and-forget webhook (when configured).
+ *
+ * ALL failures are caught and logged at warn level — `emit()` MUST
+ * NEVER throw. The storage row is the source of truth; the webhook is
+ * a notification convenience.
+ */
+export function emit(
+  nk: INakama,
+  logger: ILogger | undefined,
+  name: AnalyticsEventName | string,
+  props: Record<string, unknown>,
+  opts: EmitOptions = {},
+): void {
+  const safeWarn = (fmt: string, ...args: unknown[]): void => {
+    if (logger) {
+      logger.warn(fmt, ...args);
+    }
+  };
+  let ts = 0;
+  let key = '';
+  try {
+    ts = Date.now();
+    key = `${ts}-${nk.uuidv4()}`;
+    const ownerId = opts.userId ?? SYSTEM_USER_ID;
+    const value: AnalyticsEvent = {
+      schemaVersion: 1,
+      id: nk.uuidv4(),
+      ts,
+      name,
+      props: { ...props },
+      ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+    };
+    nk.storageWrite([
+      {
+        collection: ANALYTICS_COLLECTION,
+        key,
+        userId: ownerId,
+        value: value as unknown as Record<string, unknown>,
+        permissionRead: 2,
+        permissionWrite: 0,
+      },
+    ]);
+  } catch (e) {
+    safeWarn(
+      'emit(%s) storage failed: %s',
+      name, e instanceof Error ? e.message : String(e),
+    );
+    return;
+  }
+
+  // Best-effort webhook. The POST is synchronous in the production
+  // goja runtime, so a slow receiver will block this worker briefly;
+  // we accept that for now and revisit with a cron batch in a later
+  // chunk.
+  let webhookUrl: string | undefined;
+  try {
+    const cfg = loadLiveopsConfig(nk, logger);
+    if (typeof cfg.analyticsWebhook === 'string' && cfg.analyticsWebhook.length > 0) {
+      webhookUrl = cfg.analyticsWebhook;
+    }
+  } catch (e) {
+    safeWarn(
+      'emit(%s) liveops_config read failed: %s',
+      name, e instanceof Error ? e.message : String(e),
+    );
+  }
+
+  if (webhookUrl === undefined) return;
+
+  let status: number | null = null;
+  let error: string | null = null;
+  try {
+    const res = nk.httpRequest(
+      webhookUrl,
+      'POST',
+      { 'Content-Type': 'application/json' },
+      JSON.stringify({ name, ts, id: key, props }),
+    );
+    status = typeof res?.code === 'number' ? res.code : null;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+
+  const webhookBlock: AnalyticsWebhook = {
+    url: webhookUrl,
+    attemptedAt: Date.now(),
+    status,
+    error,
+  };
+
+  // Best-effort: patch the stored event with the webhook outcome so
+  // dashboards can see delivery status.
+  try {
+    const ownerId = opts.userId ?? SYSTEM_USER_ID;
+    nk.storageWrite([
+      {
+        collection: ANALYTICS_COLLECTION,
+        key,
+        userId: ownerId,
+        value: { schemaVersion: 1, id: key, ts, name, props, webhook: webhookBlock } as unknown as Record<string, unknown>,
+        permissionRead: 2,
+        permissionWrite: 0,
+      },
+    ]);
+  } catch (e) {
+    safeWarn(
+      'emit(%s) webhook-block write failed: %s',
+      name, e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
+/**
+ * Backwards-compatible wrapper used by the admin RPCs (Chunk 6).
+ * Delegates to `emit` so the audit trail reuses the same storage +
+ * webhook path as the other analytics events.
  */
 export function emitAdminAction(
   nk: INakama,
@@ -48,32 +181,5 @@ export function emitAdminAction(
   rpcName: string,
   props: Record<string, unknown>,
 ): void {
-  try {
-    const at = Date.now();
-    const key = `${at}-${nk.uuidv4()}`;
-    const value: AdminActionEvent = {
-      schemaVersion: 1,
-      event: 'admin_action',
-      at,
-      rpcName,
-      ...(typeof props['targetUserId'] === 'string' ? { targetUserId: props['targetUserId'] as string } : {}),
-      ...(typeof props['reason'] === 'string' ? { reason: props['reason'] as string } : {}),
-      props: { ...props, rpcName, at },
-    };
-    nk.storageWrite([
-      {
-        collection: ANALYTICS_COLLECTION,
-        key,
-        userId: SYSTEM_USER_ID,
-        value: value as unknown as Record<string, unknown>,
-        permissionRead: 2,
-        permissionWrite: 0,
-      },
-    ]);
-  } catch (e) {
-    logger.warn(
-      'emitAdminAction failed rpc=%s: %s',
-      rpcName, e instanceof Error ? e.message : String(e),
-    );
-  }
+  emit(nk, logger, 'admin_action', { ...props, rpcName });
 }

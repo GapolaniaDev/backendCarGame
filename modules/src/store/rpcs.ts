@@ -12,6 +12,7 @@
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
+import { emit } from '../core/admin/analytics';
 import { getStoreCatalog } from './catalog';
 import {
   dayKeyUtc,
@@ -331,6 +332,15 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     'store_buy user=%s offer=%s kind=%s refId=%s newBalance.coins=%d',
     userId, offer.offerId, offer.kind, offer.refId, finalBalance.coins,
   );
+  emit(nk, logger, 'store_purchase', {
+    userId,
+    offerId: offer.offerId,
+    kind: offer.kind,
+    refId: offer.refId,
+    priceCoins: offer.priceCoins ?? 0,
+    priceGems: offer.priceGems ?? 0,
+    finalBalance,
+  });
   return toJson(ok({ delivery, newBalance: finalBalance }));
 };
 

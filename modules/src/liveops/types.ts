@@ -46,4 +46,11 @@ export interface LiveopsConfig {
    * D7 (Phase 5 Chunk 6).
    */
   adminRpcKey?: string;
+  /**
+   * Optional webhook URL. When set, `emit()` POSTs a small JSON
+   * payload (name, ts, id, props) for every analytics event AFTER the
+   * storage write succeeds. Best-effort — failures are logged at
+   * warn level and never propagate. D8 (Phase 5 Chunk 7).
+   */
+  analyticsWebhook?: string;
 }

@@ -72,7 +72,12 @@ function breakNextStorageWrites(env: ReturnType<typeof loadBundleForTest>, n: nu
   const original = (nak as { storageWrite: (...args: unknown[]) => unknown }).storageWrite;
   let remaining = n;
   (nak as { storageWrite: (...args: unknown[]) => unknown }).storageWrite = ((...args: unknown[]) => {
-    if (remaining > 0) {
+    const objs = (args[0] as Array<{ collection?: string }> | undefined) ?? [];
+    // Only break writes to the garage collection so analytics
+    // emit() rows (which also use storageWrite) don't consume the
+    // break budget.
+    const isGarage = objs.some((o) => o.collection === 'garage');
+    if (remaining > 0 && isGarage) {
       remaining -= 1;
       throw new Error('storage write version mismatch (forced for test)');
     }
