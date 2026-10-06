@@ -51,6 +51,7 @@ import rewardsJson from './catalogs/rewards.json';
 import storeJson from './catalogs/store.json';
 import rankedConfigJson from './catalogs/ranked_config.json';
 import seasonsJson from './catalogs/seasons.json';
+import liveopsConfigJson from './catalogs/liveops_config.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
@@ -59,6 +60,7 @@ import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
+import { loadLiveOpsConfig } from './liveops/mm_config';
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
@@ -151,6 +153,16 @@ function InitModule(
   loadSeasonsCatalog(
     logger,
     seasonsJson as unknown as import('./ranked/seasons').RawSeasonsFile,
+    nk,
+  );
+
+  // Phase 4 Chunk 9: liveops config — D8 segmentBy default, D6 abandon
+  // block threshold + minutes. Loaded last so a malformed liveops
+  // override surfaces with the same CATALOG_INVALID diagnostic as the
+  // other Phase 4 catalogs.
+  loadLiveOpsConfig(
+    logger,
+    liveopsConfigJson as unknown as import('./liveops/mm_config').RawLiveOpsFile,
     nk,
   );
 

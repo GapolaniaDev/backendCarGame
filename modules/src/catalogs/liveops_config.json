@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "mm": {
+    "segmentBy": "none",
+    "ratingWindowBySeconds": [
+      { "elapsedMax": 30,    "window": 100 },
+      { "elapsedMax": 120,   "window": 200 },
+      { "elapsedMax": 3600,  "window": 400 },
+      { "elapsedMax": 86400, "window": 400 }
+    ]
+  },
+  "matchmaking": {
+    "abandonBlockThreshold": 3,
+    "abandonBlockMinutes": 15,
+    "graceSeconds": 20
+  }
+}

@@ -54,6 +54,12 @@ export interface RankedGetOutput {
   rank: number | null;
   /** Whole days until the season ends (0 once expired). */
   daysLeftInSeason: number;
+  /** Phase 4 Chunk 9 — count of ranked abandons in the rolling 24h
+   *  window (D6). Powers the "you'll be blocked soon" client banner. */
+  abandonsLast24h: number;
+  /** Phase 4 Chunk 9 — UTC epoch-ms until the matchmaking block
+   *  expires, or `null` when the player is not currently blocked. */
+  blockedUntilUtc: number | null;
 }
 
 // ─── Season meta ────────────────────────────────────────────────────────────

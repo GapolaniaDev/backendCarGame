@@ -29,6 +29,7 @@ import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { RATE_LIMITS } from './constants';
+import { getAbandonsLast24h, isBlocked } from '../liveops/abandon_tracker';
 import {
   findActiveSeason,
   getSeasonsCatalog,
@@ -149,6 +150,12 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const daysLeft = daysLeftInSeason(active.endsAt, now);
   const rank = lookupRank(nk, activeId, targetUserId);
 
+  // Phase 4 Chunk 9 — abandon counter + block status. Both reads are
+  // lazy-GC on the abandon record, but they're cheap (a single user
+  // record) and don't interact with the season migration above.
+  const abandonsLast24h = getAbandonsLast24h(nk, targetUserId, now);
+  const block = isBlocked(nk, targetUserId, now);
+
   const out: RankedGetOutput = {
     userId: record.userId,
     seasonId: activeId,
@@ -162,6 +169,8 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     recentAbandons: record.recentAbandons,
     rank,
     daysLeftInSeason: daysLeft,
+    abandonsLast24h,
+    blockedUntilUtc: block?.blockedUntilUtc ?? null,
   };
   logger.info(
     'ranked_get target=%s season=%s rating=%d division=%s rank=%s daysLeft=%d',

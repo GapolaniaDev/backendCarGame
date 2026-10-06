@@ -53,6 +53,7 @@ import { findActiveSeason, getSeasonsCatalog } from './seasons';
 import { getRankedConfig } from './config';
 import { divisionForRating } from './division';
 import { ratingChange } from './rating';
+import { recordAbandon } from '../liveops/abandon_tracker';
 import type { RankedRecord } from './types';
 
 export interface RankedSubscriberDeps {
@@ -190,6 +191,14 @@ export function handleRaceCompletedForRanked(
     return { ...SKIP, reason: 'no_humans' };
   }
 
+  // 4b. Record abandons for humans who failed to report (D6 — feeds the
+  //     15-min block + abandon_last_24h counter exposed by ranked_get).
+  //     Bots cannot abandon: a missing bot report is the host's problem,
+  //     not the bot's. Bots are constructed by `race_session_quick_bots`
+  //     with `isBot=true` and never enter `event.results` with
+  //     `abandoned=true`.
+  const abandonsRecorded = recordAbandonsForRace(nk, event, event.closedAt);
+
   // 5. Snapshot each human's current record + K-factor. We read
   //    `racesPlayed` BEFORE the update so the K-factor for THIS race
   //    uses the OLD count (race N+1 sees racesPlayed === N + 1).
@@ -276,6 +285,33 @@ function deriveConfidence(event: RaceCompletedEvent): 'quorum' | 'client' | 'ser
   if (humanResults.length === 0) return 'server';
   if (!event.flags.needsReview) return 'quorum';
   return 'client';
+}
+
+/**
+ * Phase 4 Chunk 9 — recordAbandon side-effect on every ranked
+ * abandoned human. Idempotency: `recordAbandon` is CAS-protected and
+ * the marker write in step 8 still gates a re-dispatch, so a replay
+ * that fires the subscriber twice records at most one entry per
+ * abandoned human per race close.
+ *
+ * Returns the userIds that triggered a new entry (test inspection).
+ */
+function recordAbandonsForRace(
+  nk: INakama,
+  event: RaceCompletedEvent,
+  nowMs: number,
+): string[] {
+  const touched: string[] = [];
+  for (const r of event.results) {
+    if (r.isBot) continue;
+    if (!r.abandoned) continue;
+    // Skip entries with no userId (defensive — close path always
+    // populates it, but a malformed event must not poison the tracker).
+    if (typeof r.userId !== 'string' || r.userId.length === 0) continue;
+    recordAbandon(nk, r.userId, nowMs);
+    touched.push(r.userId);
+  }
+  return touched;
 }
 
 /**

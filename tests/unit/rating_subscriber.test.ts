@@ -12,6 +12,7 @@ import {
 import { RANKED_COLLECTION, RANKED_PROGRESS_COLLECTION } from '../../modules/src/ranked/subscriber';
 import { loadSeasonsCatalog } from '../../modules/src/ranked/seasons';
 import { loadRankedConfig } from '../../modules/src/ranked/config';
+import { loadLiveOpsConfig } from '../../modules/src/liveops/mm_config';
 import { SYSTEM_USER_ID } from '../../modules/src/race/constants';
 import type { FakeLogger, FakeNakama } from '../e2e/_stubs';
 import { FakeLogger as FakeLoggerClass, FakeNakama as FakeNakamaClass } from '../e2e/_stubs';
@@ -19,12 +20,15 @@ import type { RaceCompletedEvent, RaceResult } from '../../modules/src/race/type
 import type { RankedRecord } from '../../modules/src/ranked/types';
 import seasonsJson from '../../modules/src/catalogs/seasons.json';
 import rankedConfigJson from '../../modules/src/catalogs/ranked_config.json';
+import liveopsConfigJson from '../../modules/src/catalogs/liveops_config.json';
 
 beforeAll(() => {
   // Load the bundled catalogs into module-level state so the
-  // subscriber can call `getSeasonsCatalog()` / `getRankedConfig()`.
+  // subscriber can call `getSeasonsCatalog()` / `getRankedConfig()` /
+  // `getLiveOpsConfig()`.
   loadSeasonsCatalog(console as never, seasonsJson as never);
   loadRankedConfig(console as never, rankedConfigJson as never);
+  loadLiveOpsConfig(console as never, liveopsConfigJson as never);
 });
 
 function makeDeps(): { deps: RankedSubscriberDeps; nak: FakeNakama; logger: FakeLogger } {
@@ -450,6 +454,58 @@ describe('ranked subscriber (Phase 4 Chunk 7) — empty results', () => {
     expect(out.processed).toBe(false);
     expect(out.reason).toBe('no_humans');
     expect(readProgress(nak, 'sid-1')).toBeDefined();
+  });
+});
+
+describe('ranked subscriber (Phase 4 Chunk 9) — abandon tracker integration', () => {
+  it('abandoned humans get a freshly stamped entry in abandons/{userId}', () => {
+    const { deps, nak } = makeDeps();
+    handleRaceCompletedForRanked(
+      deps,
+      event({
+        results: [human('u1', 1), human('u2', 1, { abandoned: true })],
+      }),
+    );
+    const obj = nak.store.get('abandons/u2/u2');
+    expect(obj).toBeDefined();
+    const value = obj!.value as { entries: Array<{ at: number }>; blockedUntilUtc: number | null };
+    expect(value.entries).toHaveLength(1);
+    // Winner u1 has no abandon entry — the counter is per-user.
+    expect(nak.store.get('abandons/u1/u1')).toBeUndefined();
+  });
+
+  it('three abandons across three races stamp a 15-min block', () => {
+    const { deps, nak } = makeDeps();
+    for (let i = 0; i < 3; i += 1) {
+      handleRaceCompletedForRanked(
+        deps,
+        event({
+          sessionId: `sid-abandon-${i}`,
+          results: [human('u1', 1), human('u2', 1, { abandoned: true })],
+        }),
+      );
+    }
+    const obj = nak.store.get('abandons/u2/u2');
+    expect(obj).toBeDefined();
+    const value = obj!.value as { entries: Array<{ at: number }>; blockedUntilUtc: number | null };
+    expect(value.entries).toHaveLength(3);
+    expect(value.blockedUntilUtc).not.toBeNull();
+    expect(value.blockedUntilUtc!).toBeGreaterThan(value.entries[0]!.at);
+  });
+
+  it('bots with abandoned=true are NOT recorded — they cannot abandon', () => {
+    const { deps, nak } = makeDeps();
+    handleRaceCompletedForRanked(
+      deps,
+      event({
+        results: [
+          human('u1', 1),
+          { userId: 'bot-1', rank: 2, isBot: true, totalMs: 0, abandoned: true },
+        ],
+      }),
+    );
+    // Only the human loser should have an entry — the bot is filtered out.
+    expect(nak.store.get('abandons/bot-1/bot-1')).toBeUndefined();
   });
 });
 
