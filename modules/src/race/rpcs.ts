@@ -54,6 +54,10 @@ import type {
   RaceSessionCreateOutput,
   RaceSessionJoinInput,
   RaceSessionJoinOutput,
+  RaceSessionQuickBotsHuman,
+  RaceSessionQuickBotsInput,
+  RaceSessionQuickBotsOutput,
+  RaceSessionQuickBotsRosterEntry,
   RaceSessionStartInput,
   RaceSessionStartOutput,
   RaceSessionGetInput,
@@ -62,6 +66,12 @@ import type {
   RaceSubmitResultOutput,
   RaceSubmitResultRewardEntry,
 } from './types';
+import {
+  averageRating,
+  buildBotRoster,
+  pickBotDifficulty,
+} from '../matchmaking/quick_bots';
+import { pickTrack } from '../matchmaking/track_picker';
 import {
   handleRaceCompletedForEconomy,
   type RaceCompletedRewardSummary,
@@ -989,6 +999,254 @@ function mergeRewardSummaries(
   return out;
 }
 
+// ─── race_session_quick_bots (Phase 4 Chunk 3) ────────────────────────────────
+
+/**
+ * Quick-bots session creator. Builds a `RaceSession` with the caller
+ * (and optional pre-paired humans) + AI-synthesized bots to fill the
+ * lobby. The session is auto-started in state `'started'` with
+ * `startedAt = now` so the client can immediately begin the simulation
+ * and submit reports via `race_submit_result`.
+ *
+ * Decisions enforced:
+ *   - D2 (track picker): if `trackId` is omitted, `pickTrack()` excludes
+ *     the last 2 tracks per player.
+ *   - D3 (bot difficulty): clamp(round(avgHumanRating/400)-1, 0, 4).
+ *   - D10 (bot count): `size - humanCount`.
+ *
+ * Storage uses `mode: 'quick'` (the catalog only knows the four core
+ * modes) and adds `flags.botSession = true` so the close path can
+ * distinguish bot-fill sessions from real multi-player quick races.
+ */
+function race_session_quick_bots_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  payload: string,
+): string {
+  const parsed = parsePayload<RaceSessionQuickBotsInput>(payload);
+  if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
+  if (!parsed.ok) return toJson(parsed);
+  const input = parsed.data;
+
+  // Resolve caller. Same authz convention as the other race RPCs:
+  // ctx.userId (socket) wins; HTTP gateway falls back to callerUserId.
+  let callerId: string;
+  if (ctx.userId) {
+    callerId = ctx.userId;
+  } else {
+    if (
+      typeof input.callerUserId !== 'string' ||
+      input.callerUserId.length === 0
+    ) {
+      return toJson(
+        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
+      );
+    }
+    callerId = input.callerUserId;
+  }
+
+  // size validation
+  if (input.size !== 2 && input.size !== 4 && input.size !== 6) {
+    return toJson(err('BAD_REQUEST', `size must be 2|4|6, got ${String(input.size)}`));
+  }
+
+  // hostLoadout validation
+  const lv = validateLoadout(input.hostLoadout);
+  if (!lv.ok) return toJson(lv);
+  const hostLoadout = lv.data;
+
+  // callerRating defaults
+  const callerRating =
+    typeof input.callerRating === 'number' && Number.isFinite(input.callerRating)
+      ? input.callerRating
+      : 1000;
+  const callerRttMs =
+    typeof input.callerRttMs === 'number' && Number.isFinite(input.callerRttMs)
+      ? input.callerRttMs
+      : 50;
+
+  // Build the human roster — default to [caller] when omitted.
+  const humansInput: RaceSessionQuickBotsHuman[] = (() => {
+    if (!Array.isArray(input.humanRoster) || input.humanRoster.length === 0) {
+      return [{ userId: callerId, rttMs: callerRttMs, rating: callerRating }];
+    }
+    // Replace any caller slot with the resolved callerId (the input
+    // might have the caller's userId under a different field).
+    const roster = input.humanRoster.map((h) => ({
+      userId: h.userId,
+      ...(h.rttMs !== undefined ? { rttMs: h.rttMs } : {}),
+      ...(h.rating !== undefined ? { rating: h.rating } : {}),
+    }));
+    // Ensure caller is present at least once (defense against a
+    // humanRoster that omits the caller themselves).
+    if (!roster.some((h) => h.userId === callerId)) {
+      roster.unshift({ userId: callerId, rttMs: callerRttMs, rating: callerRating });
+    }
+    return roster;
+  })();
+
+  // Cross-user defense: caller must be the first entry in the human
+  // roster (so the host is always the caller — bots can never host).
+  if (humansInput[0]?.userId !== callerId) {
+    return toJson(
+      err('FORBIDDEN', 'caller must be the first entry in humanRoster (host is always the caller)'),
+    );
+  }
+  // No duplicate userIds.
+  const seen = new Set<string>();
+  for (const h of humansInput) {
+    if (typeof h.userId !== 'string' || h.userId.length === 0) {
+      return toJson(err('BAD_REQUEST', 'every humanRoster entry needs a non-empty userId'));
+    }
+    if (seen.has(h.userId)) {
+      return toJson(err('BAD_REQUEST', `duplicate userId in humanRoster: ${h.userId}`));
+    }
+    seen.add(h.userId);
+  }
+
+  // Rate limit per caller.
+  const rl = checkRateLimit(nk, {
+    rpcName: 'race_session_quick_bots',
+    userId: callerId,
+    ...RATE_LIMITS.race_session_quick_bots,
+  });
+  if (!rl.allowed) {
+    return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
+  }
+
+  // Track resolution — honor an explicit trackId, otherwise run pickTrack.
+  const allTracks = getTracks(nk);
+  const allowedTrackIds = allTracks
+    .filter((t) => {
+      const tAny = t as { modes?: Record<string, number | undefined> };
+      const laps = tAny.modes?.['quick'];
+      return typeof laps === 'number' && laps > 0;
+    })
+    .map((t) => (t as { id: string }).id);
+
+  let trackId: string;
+  if (typeof input.trackId === 'string' && input.trackId.length > 0) {
+    if (!getTrack(input.trackId, nk)) {
+      return toJson(err('NOT_FOUND', `unknown trackId: ${input.trackId}`));
+    }
+    trackId = input.trackId;
+  } else {
+    const exclude = Array.isArray(input.excludeTrackIds)
+      ? input.excludeTrackIds.filter((x): x is string => typeof x === 'string')
+      : [];
+    const matchId = typeof input.matchId === 'string' && input.matchId.length > 0
+      ? input.matchId
+      : nk.uuidv4();
+    trackId = pickTrack(allowedTrackIds, exclude, matchId);
+    if (trackId === '') {
+      return toJson(err('INTERNAL', 'track catalog is empty'));
+    }
+  }
+
+  // Build roster.
+  let built;
+  try {
+    built = buildBotRoster({
+      size: input.size,
+      humans: humansInput,
+      hostLoadout,
+    });
+  } catch (e) {
+    return toJson(
+      err('BAD_REQUEST', e instanceof Error ? e.message : String(e)),
+    );
+  }
+
+  // Re-derive difficulty from the final average so it matches the
+  // helper's output exactly (single source of truth).
+  const avg = averageRating(humansInput);
+  const botDifficulty = pickBotDifficulty(avg);
+
+  // Persist the session. Storage uses mode:'quick' (catalog-known) and
+  // flags.botSession=true to mark the bot-fill variant. The RPC output
+  // returns mode:'quick_bots' for the client to display.
+  const sessionId = nk.uuidv4();
+  const startedAt = serverNowMs();
+  const session: RaceSession = {
+    schemaVersion: 1,
+    id: sessionId,
+    matchId: typeof input.matchId === 'string' && input.matchId.length > 0
+      ? input.matchId
+      : sessionId,
+    mode: 'quick',
+    trackId,
+    size: input.size,
+    roster: built.roster,
+    host: built.host,
+    hostSuccession: built.hostSuccession,
+    state: 'started',
+    startedAt,
+    results: [],
+    flags: { needsReview: false, botSession: true },
+    version: 1,
+  };
+
+  try {
+    createSession(nk, session);
+  } catch (e) {
+    logger.error(
+      'race_session_quick_bots sid=%s storage error: %s',
+      sessionId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return toJson(err('INTERNAL', 'failed to persist session'));
+  }
+
+  // Build the response roster (mirrors the storage shape + rtt for
+  // each entry). Bots get a synthetic rtt + their difficulty.
+  const responseRoster: RaceSessionQuickBotsRosterEntry[] = built.roster.map((entry, i) => {
+    if (entry.isBot) {
+      const slotIdx = i - humansInput.length;
+      return {
+        userId: entry.userId,
+        isBot: true,
+        rttMs: 50 + botDifficulty * 10 + slotIdx * 5,
+        botDifficulty,
+        loadout: entry.loadout,
+      };
+    }
+    // Human — use the rtt we passed in (or default 50).
+    const humanInput = humansInput.find((h) => h.userId === entry.userId);
+    return {
+      userId: entry.userId,
+      isBot: false,
+      rttMs: humanInput?.rttMs ?? 50,
+      loadout: entry.loadout,
+    };
+  });
+
+  const out: RaceSessionQuickBotsOutput = {
+    sessionId,
+    mode: 'quick_bots',
+    trackId,
+    size: input.size,
+    host: built.host,
+    startedAt,
+    roster: responseRoster,
+    botDifficulty,
+    botCount: built.botCount,
+  };
+
+  logger.info(
+    'race_session_quick_bots sid=%s caller=%s size=%d humans=%d bots=%d difficulty=%d track=%s',
+    sessionId,
+    callerId,
+    input.size,
+    humansInput.length,
+    built.botCount,
+    botDifficulty,
+    trackId,
+  );
+
+  return toJson(ok(out));
+}
+
 // ─── Top-level exports ────────────────────────────────────────────────────────
 
 // goja resolver first looks the RPC fn up by NAME on the global object after
@@ -1004,6 +1262,8 @@ export const race_session_get: RpcHandler = race_session_get_impl;
 // Chunk 7 lands step-1 + idempotency. Step-2 (clock / min / lap-sum)
 // and the bot-auth gate land in Chunk 8.
 export const race_submit_result: RpcHandler = race_submit_result_impl;
+// Phase 4 Chunk 3 — quick-mode bot fill.
+export const race_session_quick_bots: RpcHandler = race_session_quick_bots_impl;
 
 /**
  * Stable name → handler map for tests. The keys here MUST match the
@@ -1016,6 +1276,7 @@ export const raceRpcs: Readonly<Record<string, RpcHandler>> = Object.freeze({
   race_session_start,
   race_session_get,
   race_submit_result,
+  race_session_quick_bots,
 });
 
 export const RACE_RPC_KEYS: readonly string[] = Object.freeze(Object.keys(raceRpcs));

@@ -22,6 +22,7 @@ import {
   race_session_join,
   race_session_start,
   race_session_get,
+  race_session_quick_bots,
   race_submit_result,
   setRaceBus,
 } from './race/rpcs';
@@ -191,6 +192,7 @@ function InitModule(
     initializer.registerRpc('race_session_start', race_session_start);
     initializer.registerRpc('race_session_get', race_session_get);
     initializer.registerRpc('race_submit_result', race_submit_result);
+    initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
     initializer.registerRpc('lb_get', lb_get);
     initializer.registerRpc('profile_get', profile_get);
     initializer.registerRpc('profile_update', profile_update);

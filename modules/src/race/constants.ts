@@ -39,6 +39,7 @@ export const RATE_LIMITS = {
   race_session_start: { maxPerWindow: 6, windowSec: 60 },
   race_session_get: { maxPerWindow: 60, windowSec: 60 },
   race_submit_result: { maxPerWindow: 6, windowSec: 60 },
+  race_session_quick_bots: { maxPerWindow: 6, windowSec: 60 },
 } as const;
 
 /**

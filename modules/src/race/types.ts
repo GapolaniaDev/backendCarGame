@@ -83,7 +83,7 @@ export interface RaceSession {
   startedAt: number | null;
   /** Populated when state moves to 'closed'. Sorted by rank (DNFs last). */
   results: RaceResult[];
-  flags: { needsReview: boolean; reviewReason?: string };
+  flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
   /**
    * Monotonic counter incremented on every conditional write. Used as
    * the optimistic-concurrency token in `multiUpdate` at close-time.
@@ -253,4 +253,77 @@ export interface ConfigGetOutput {
   tracks: ReadonlyArray<unknown>;
   modes: ReadonlyArray<unknown>;
   minClientVersion: string;
+}
+
+// ─── Phase 4 Chunk 3: race_session_quick_bots ─────────────────────────────────
+
+/**
+ * Roster of human players that will join a quick-bots session. The
+ * first entry is the caller's slot; additional entries represent
+ * already-paired humans (e.g. a 2v2 against AI). When omitted the
+ * roster defaults to a single entry — the caller themselves.
+ */
+export interface RaceSessionQuickBotsHuman {
+  userId: string;
+  rttMs?: number;
+  /** Player rating — used to derive the bot difficulty (D3). */
+  rating?: number;
+}
+
+export interface RaceSessionQuickBotsInput {
+  /** Session size — must be 2, 4, or 6. */
+  size: 2 | 4 | 6;
+  /**
+   * Optional explicit trackId. When omitted the server picks one via
+   * `matchmaking/track_picker.ts` honouring D2 (exclude last 2 recent
+   * tracks per player).
+   */
+  trackId?: string;
+  /** Required for HTTP gateway (where ctx.userId is null). */
+  callerUserId: string;
+  /** Caller's current rating — used for D3 bot difficulty. Defaults to 1000. */
+  callerRating?: number;
+  /** Caller's measured round-trip-time in ms. Defaults to 50. */
+  callerRttMs?: number;
+  /** Caller's loadout. Required — bots reuse the same classId. */
+  hostLoadout: Loadout;
+  /** Optional D2 exclusion list (last 2 tracks raced per player). */
+  excludeTrackIds?: string[];
+  /**
+   * Optional pre-paired humans. When omitted the session is a
+   * single-player-vs-bots lobby; when provided the bot count is
+   * `size - humans.length` (D10).
+   */
+  humanRoster?: RaceSessionQuickBotsHuman[];
+  /**
+   * Nakama matchId — opaque relay reference. When omitted the server
+   * generates a uuidv4.
+   */
+  matchId?: string;
+}
+
+export interface RaceSessionQuickBotsRosterEntry {
+  userId: string;
+  isBot: boolean;
+  /** Round-trip-time used for host selection. Bots get a synthetic value. */
+  rttMs: number;
+  /** Present only when isBot === true. */
+  botDifficulty?: number;
+  loadout: Loadout;
+}
+
+export interface RaceSessionQuickBotsOutput {
+  sessionId: string;
+  /** Always 'quick_bots' for the client (storage uses 'quick' for catalog lookup). */
+  mode: 'quick_bots';
+  trackId: string;
+  size: 2 | 4 | 6;
+  host: string;
+  /** Server epoch-ms — the race clock starts here. */
+  startedAt: number;
+  roster: RaceSessionQuickBotsRosterEntry[];
+  /** The bot difficulty applied to every bot (D3). */
+  botDifficulty: number;
+  /** Total bot count (D10 = size - humanCount). */
+  botCount: number;
 }
