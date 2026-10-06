@@ -56,6 +56,7 @@ import { loadStoreCatalog } from './store/catalog';
 import { store_get, store_buy } from './store/rpcs';
 import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
+import { wallet_get } from './economy/rpcs';
 
 function InitModule(
   _ctx: IContext,
@@ -173,6 +174,7 @@ function InitModule(
     initializer.registerRpc('loadout_set', loadout_set);
     initializer.registerRpc('store_get', store_get);
     initializer.registerRpc('store_buy', store_buy);
+    initializer.registerRpc('wallet_get', wallet_get);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }
