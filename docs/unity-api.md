@@ -980,3 +980,325 @@ or `{ matched: false, reason: string }` to drop the suggestion.
 
 See `docs/matchmaking.md` and `docs/ranked.md` for the full
 contract, decision matrix, and the E2E test coverage.
+
+---
+
+## 18. Phase 5 RPCs — LiveOps, account, admin, relay
+
+Phase 5 adds 7 player-facing RPCs + 5 admin RPCs + 1 relay-token RPC.
+Every RPC in this section accepts the optional `clientVersion` (semver
+string) and `platform` (`'ios'|'android'|'windows'|'macos'|'linux'`)
+fields. When either is present, the server enforces a min-version gate
+(`UPGRADE_REQUIRED`) plus the maintenance gate
+(`SERVICE_UNAVAILABLE`) — see `docs/liveops.md` §2 and §3.
+
+**Maintenance gate summary** (which RPCs are gated vs which are exempt):
+
+| RPC | Gated by | Notes |
+|---|---|---|
+| `liveops_config_get` | none (splash) | Always callable |
+| `inbox_list` | none (splash) | Badge renders during maintenance |
+| `account_delete` | none (GDPR) | Erasure cannot be blocked by ops |
+| `admin_*` | `skipForAdmin: true` | Admins work during maintenance |
+| `relay_token` | `skipForAdmin: true` | Clients need a relay URL even during pause |
+| `wallet_get` | `liveopsGate` | full |
+| `garage_get` | `liveopsGate` | full |
+| `car_buy`, `car_upgrade`, `cosmetic_equip`, `loadout_set` | `liveopsGate` | full |
+| `store_get`, `store_buy` | `liveopsGate` | full |
+| `lb_get` | `liveopsGate` | full |
+| `account_link`, `account_link_resolve_conflict` | `liveopsGate` | full |
+| `inbox_claim` | `liveopsGate` | full |
+| `profile_get`, `profile_update` | `liveopsGate` | full |
+| `race_session_*`, `race_host_claim` | maintenance only | no `ClientPlatform` carry |
+| `mm_ticket_params` | maintenance only | MmPlatform ≠ ClientPlatform |
+| `ranked_get` | maintenance only | — |
+
+### 18.1 `liveops_config_get`
+
+Returns the merged LiveOps config (bundle default + storage
+override). The client calls this on app start, during the splash, and
+on every fresh login.
+
+```json
+// request
+{ "callerUserId": "<uuid>" }
+
+// response.data
+{
+  "version":        3,
+  "flags":          { "maintenance": false },
+  "minClientVersion": {
+    "ios":     "1.2.0",
+    "android": "1.2.0",
+    "windows": "1.2.0",
+    "macos":   "1.2.0",
+    "linux":   "1.2.0"
+  },
+  "regions": [{ "id": "us-east-1", "displayName": "US East",
+                "relayUrl": "wss://api.gapolaniadev.com" }],
+  "calendar": [],
+  "configHash": "<sha256-hex>"
+}
+```
+
+`configHash` is a SHA-256 of the canonicalised payload — clients can
+use it to skip processing when the server config is unchanged.
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `SERVICE_UNAVAILABLE` | liveops config is malformed (boot error) |
+
+See `docs/liveops.md`.
+
+### 18.2 `inbox_list`
+
+Returns the user's inbox messages (unread + recent claimed). NOT
+maintenance-gated so the badge can render during the splash.
+
+```json
+// request
+{
+  "callerUserId": "<uuid>",
+  "limit":        50,            // optional, default 50, max 100
+  "cursor":       "<opaque>",    // optional, for pagination
+  "includeClaimed": false        // optional, default false
+}
+
+// response.data
+{
+  "messages": [
+    {
+      "messageId":  "<uuid>",
+      "kind":       "reward",
+      "title":      "Welcome to Season 3",
+      "body":       "Free 500 coins",
+      "reward":     { "coins": 500 },
+      "createdAt":  "2026-10-01T12:00:00Z",
+      "expiresAt":  "2026-11-01T12:00:00Z",   // 30d retention
+      "claimed":    false,
+      "claimedAt":  null
+    }
+  ],
+  "unreadCount": 3,
+  "nextCursor":   "<opaque>"     // null when no more
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `BAD_REQUEST` | malformed payload |
+
+### 18.3 `inbox_claim`
+
+Claim the reward attached to a message. Idempotent — calling twice
+credits the reward exactly once (key = `messageId`).
+
+```json
+// request
+{
+  "callerUserId": "<uuid>",
+  "messageId":    "<uuid>",
+  "clientVersion": "1.2.0",     // optional, see §18 top
+  "platform":      "ios"        // optional, see §18 top
+}
+
+// response.data
+{
+  "messageId":    "<uuid>",
+  "reward":       { "coins": 500 },
+  "newBalance":   { "coins": 1500, "gems": 25 },
+  "alreadyClaimed": false
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `NOT_FOUND` | unknown messageId OR not in this user's inbox |
+| `GONE` | message past `expiresAt` |
+| `SERVICE_UNAVAILABLE` | maintenance (idempotent retries on next launch) |
+
+### 18.4 `account_link`
+
+Attach an external identity (Apple / Google / email) to the
+device-id account. Returns `{linked:true, bonusClaimed:true,
+newBalance:{...}}` on success, or `{linked:false, conflict:{...}}` if
+the provider is already linked elsewhere.
+
+```json
+// request
+{
+  "callerUserId":  "<uuid>",
+  "provider":      "apple" | "google" | "email" | "custom",
+  "token":         "<provider-specific opaque>",
+  "clientVersion": "1.2.0",
+  "platform":      "ios"
+}
+
+// response.data — happy path
+{
+  "linked":         true,
+  "bonusClaimed":   true,
+  "newBalance":     { "coins": 500, "gems": 0 }
+}
+
+// response.data — conflict
+{
+  "linked":  false,
+  "conflict": {
+    "conflictToken": "<opaque>",
+    "otherUserId":   "<uuid>",
+    "otherProfile":  { "displayName": "...", "avatarUrl": "..." },
+    "expiresAt":     "2026-10-08T12:00:00Z"
+  }
+}
+```
+
+The 500-coin bonus is granted **once per profile** (gated by
+`profile.accountLinkBonusClaimed`). See `docs/account-linking.md` §1.
+
+### 18.5 `account_link_resolve_conflict`
+
+Resolve a conflict from `account_link`. Two choices:
+`'link'` (keep current, purge the other account) or `'cancel'`.
+
+```json
+// request
+{
+  "callerUserId":  "<uuid>",
+  "conflictToken": "<from prior account_link conflict>",
+  "choice":        "link" | "cancel",
+  "confirmText":   "DELETE-OTHER-ACCOUNT",   // required when choice='link'
+  "clientVersion": "1.2.0",
+  "platform":      "ios"
+}
+
+// response.data — cancelled
+{ "resolved": "cancelled" }
+
+// response.data — linked
+{
+  "resolved":                "linked",
+  "affectedAccountDeleted":  true,
+  "bonusClaimed":            true,
+  "newBalance":              { "coins": 500, "gems": 0 }
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `BAD_REQUEST` | missing `confirmText` on `'link'`, malformed payload |
+| `NOT_FOUND` | unknown `conflictToken` OR expired (>24h) |
+| `FORBIDDEN` | `conflictToken` belongs to another user |
+
+### 18.6 `account_delete`
+
+GDPR right to erasure. Bypasses the maintenance gate — a broken
+session token still rejects, but an ops pause does not.
+
+```json
+// request
+{
+  "callerUserId": "<uuid>",
+  "confirmText":   "DELETE"   // sentinel — exact match
+}
+
+// response.data
+{
+  "deletedAt": "2026-10-07T12:00:00Z",
+  "summary": {
+    "storageDeleted":      7,
+    "collectionsAffected": ["profiles","loadout","garage","ranked_records", ...],
+    "boardsDeleted":       3,
+    "boardsAffected":      ["ranked_season_2","wins_season_2", ...],
+    "unlinkedAuths":       2,
+    "wasClubLeaderOf":     [],          // always [] in v1 (clubs = Phase 7)
+    "abandonedFromRaces":  0
+  }
+}
+```
+
+Cascade: profiles, loadout, garage, ranked_records, abandons, every
+linked custom auth, every leaderboard record. Skips the `pc-account`
+config and `abandons` aggregate counters.
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `BAD_REQUEST` | `confirmText !== 'DELETE'` |
+
+See `docs/account-linking.md` §6 for the cascade contract.
+
+### 18.7 `relay_token`
+
+Mint a short-lived HMAC token the client presents to the relay
+replica. Always callable — `skipForAdmin: true` on the maintenance
+gate. **Requires `ctx.userId`** (the socket must be authenticated;
+`callerUserId` is ignored).
+
+```json
+// request
+{
+  "callerUserId":  "<uuid>",
+  "clientVersion": "1.2.0",
+  "platform":      "ios"
+}
+
+// response.data
+{
+  "token":     "v1.<base64-payload>.<base64-sig>",
+  "relayUrl":  "wss://api.gapolaniadev.com",
+  "expiresAt": 1762515600,        // unix SECONDS, now+60min
+  "regionId":  "us-east-1"
+}
+```
+
+The token format is `v1.<userId|region|expSec>.<hmacSha256>`. The
+relay-side `beforeAuthenticateDevice` verifies offline (no home
+round-trip) using `LiveopsConfig.relayTokenSecret`. TTL:
+`RELAY_TOKEN_TTL_SEC = 60 * 60`.
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no socket `userId` |
+| `SERVICE_UNAVAILABLE` | no regions configured / `relayTokenSecret` missing |
+| `UPGRADE_REQUIRED` | min-version failed (admin bypass on maintenance only) |
+
+### 18.8 Admin RPCs (compact reference)
+
+All five share the same auth shape: `adminKey` in the body matching
+`LiveopsConfig.adminRpcKey`. They bypass maintenance. Full request /
+response / errors live in `docs/admin.md`.
+
+| RPC | Purpose |
+|---|---|
+| `admin_wallet_adjust` | Grant or remove coins/gems for a single user |
+| `admin_send_inbox` | Push a reward inbox message to N user IDs |
+| `admin_sanitize_session` | Force-close a single race session |
+| `admin_remove_player` | Remove a player from a single race session |
+| `admin_cleanup_race_sessions` | Delete closed race sessions older than N hours |
+
+Each call writes an `admin_action` analytics row.
+
+### 18.9 New fields / headers
+
+| Field | Where it appears | Notes |
+|---|---|---|
+| `clientVersion` | every Phase 5 RPC body | semver string; triggers `UPGRADE_REQUIRED` when stale |
+| `platform` | every Phase 5 RPC body | `ios` \| `android` \| `windows` \| `macos` \| `linux` |
+| `region` | server-stamped on `mm_ticket_params` | defaults to home region (e.g. `us-east-1`); client can override in a future iteration |
+| `http_key` query | every admin RPC | defense-in-depth; see `docs/admin.md` §1 |
+
+### 18.10 Maintenance gate behaviour
+
+| Class | Behaviour during maintenance |
+|---|---|
+| Gated RPCs (player-facing, gated) | Return `SERVICE_UNAVAILABLE`; client shows the splash with the liveops config |
+| Splash RPCs (`liveops_config_get`, `inbox_list`) | Always callable |
+| GDPR RPC (`account_delete`) | Always callable (GDPR > ops) |
+| Admin RPCs (`admin_*`, `relay_token` with `skipForAdmin`) | Always callable |
+
+See `docs/liveops.md` §2 for the full matrix and rationale.

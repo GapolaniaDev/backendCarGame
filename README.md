@@ -2,7 +2,7 @@
 
 Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
 
-**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**, **LiveOps config (no-cache) + maintenance gate + min client version + per-user inbox + account linking + account delete cascade + admin RPCs (shared-secret auth) + analytics events + region relay (nodeRole + HMAC relay_token)**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4, [`docs/liveops.md`](./docs/liveops.md) / [`docs/account-linking.md`](./docs/account-linking.md) / [`docs/admin.md`](./docs/admin.md) for Phase 5.
 
 ## Quick start (Docker)
 
@@ -119,7 +119,11 @@ Ver `docker-compose.yml` para detalles del routing por IP estática (`172.28.0.1
 │       ├── store/               # Phase 3: store catalog, daily rotation, store_get/buy RPCs
 │       ├── matchmaking/         # Phase 4: mm_ticket_params, matchmakerMatched hook, quick_bots, host_choice, track_picker
 │       ├── ranked/              # Phase 4: rating math, divisions, seasons, ranked_get, RaceCompleted → ranked subscriber
-│       ├── liveops/             # Phase 4: liveops config, abandon tracker
+│       ├── liveops/             # Phase 4-5: liveops config (no-cache), abandon tracker, inbox messages
+│       ├── account/             # Phase 5: account_link, account_link_resolve_conflict, account_delete cascade
+│       ├── admin/               # Phase 5: admin RPCs (wallet_adjust, send_inbox, sanitize_session, remove_player, cleanup_race_sessions)
+│       ├── region/              # Phase 5: nodeRole + relay_token HMAC sign/verify + beforeAuthenticateDevice relay gate
+│       ├── core/admin/          # Phase 5: emit() helper for analytics_events + emitAdminAction wrapper
 │       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store, seasons, ranked_config, liveops_config)
 ├── tests/                       # Vitest unit + e2e tests
 ├── docs/                        # Operation docs (see docs/race-protocol-ops.md)
@@ -479,3 +483,106 @@ Phase 4 adds 32 e2e + many unit tests on top of the 378 from Phase 3
 | `tests/unit/host-choice.test.ts` | 9 | Lowest rtt, tie-breaker, empty input |
 | `tests/unit/abandon_tracker.test.ts` | 16 | Pure filter, 3-abandon block, lazy GC, expired block, storage perms |
 | `tests/unit/rating_subscriber.test.ts` | 12 | RaceCompleted → rating update, CAS race, mode gate, abandoned handling |
+
+## Phase 5 — Operation & LiveOps
+
+Phase 5 wraps the racing-game backend for production: remote feature
+flags via LiveOps config, a per-platform min-version gate, a
+maintenance flag with a careful exempt list, a per-user inbox, full
+account linking (Apple / Google / email) with conflict resolution +
+cascade deletion, five admin RPCs for ops, an analytics event stream
+to storage + optional webhook, and a home/relay node split behind an
+HMAC-signed relay token.
+
+### Phase 5 RPCs (player-facing)
+
+| RPC | Purpose | Gated? |
+|---|---|---|
+| `liveops_config_get` | splash-safe config fetch | no |
+| `inbox_list` | splash-safe inbox badge | no |
+| `inbox_claim` | claim an inbox reward | `liveopsGate` |
+| `account_link` | attach Apple / Google / email identity | `liveopsGate` |
+| `account_link_resolve_conflict` | resolve a 24h link conflict | `liveopsGate` |
+| `account_delete` | GDPR right to erasure | no |
+| `relay_token` | mint HMAC relay token (TTL 60min) | maintenance only (`skipForAdmin`) |
+
+### Phase 5 RPCs (admin — `skipForAdmin`)
+
+| RPC | Purpose |
+|---|---|
+| `admin_wallet_adjust` | grant / remove coins/gems for a user |
+| `admin_send_inbox` | push inbox reward to N users |
+| `admin_sanitize_session` | force-close a stuck race session |
+| `admin_remove_player` | remove a player from a session |
+| `admin_cleanup_race_sessions` | delete closed sessions older than N hours |
+
+All admin RPCs require `body.adminKey === LiveopsConfig.adminRpcKey`
+(also accepted via the `?http_key=$KEY` query for curl).
+
+### Phase 5 maintenance gate
+
+- **Gated** by `assertNotInMaintenance` or `liveopsGate`:
+  `wallet_get`, `garage_get`, `car_buy`, `car_upgrade`, `cosmetic_equip`,
+  `loadout_set`, `store_get`, `store_buy`, `lb_get`, `account_link`,
+  `account_link_resolve_conflict`, `inbox_claim`, `profile_get`,
+  `profile_update`, `race_session_create`, `race_session_join`,
+  `race_session_start`, `race_session_quick_bots`, `race_host_claim`,
+  `mm_ticket_params`, `ranked_get`.
+- **NOT gated** (always callable): `liveops_config_get`, `inbox_list`,
+  `account_delete` (GDPR > ops).
+- **NOT gated + admin bypass**: `admin_*` and `relay_token` (clients
+  need a relay URL even during maintenance splash; ops needs admin
+  RPCs).
+
+### Phase 5 decisions locked
+
+| ID | Decision | Where |
+|---|---|---|
+| D1 | LiveOps config is no-cache; re-read storage on every call | `liveops/config.ts::loadLiveopsConfig` |
+| D2 | Min client version enforced per platform (semver compare) | `core/liveops.ts::assertMinClientVersion` |
+| D3 | `account_delete` bypasses maintenance (GDPR right to erasure) | `account/rpcs.ts::account_delete_impl` |
+| D4 | 500-coin link bonus granted once per profile; gated by `accountLinkBonusClaimed` flag | `account/linking.ts::grantLinkBonus` |
+| D5 | `inbox_claim` idempotent on `messageId`; reward lands on claim, not send | `liveops/inbox.ts::claimInboxMessage` |
+| D6 | Inbox messages have 30-day retention; lazily GC'd on read | `liveops/inbox.ts::listInboxMessages` |
+| D7 | Admin RPCs auth = `body.adminKey` matching `LiveopsConfig.adminRpcKey`; JS layer cannot see `http_key` query param | `admin/rpcs.ts` |
+| D8 | Analytics destination = `analytics_events` storage + optional webhook; webhook best-effort, no retry | `core/admin/analytics.ts::emit` |
+| D9 | `relay_token` TTL = 60min (`RELAY_TOKEN_TTL_SEC`) | `region/relay_token.ts` |
+| D10 | Relay token = HMAC-SHA-256 over `<userId|region|expSec>` using `LiveopsConfig.relayTokenSecret` | `region/relay_token.ts::signRelayToken` |
+| D11 | Home/relay split via `LiveopsConfig.nodeRole`; relay registers only `race_session_get` + `race_submit_result` | `main.ts::registerRpc` |
+| D12 | Relay validates `vars.relayToken` in `beforeAuthenticateDevice`; offline HMAC verify | `region/before_auth.ts` |
+| D13 | `MmPlatform` (`mobile`/`console`/`pc`) ≠ `ClientPlatform`; race/matchmaking RPCs use `assertNotInMaintenance` only | `matchmaking/rpcs.ts`, `race/rpcs.ts` |
+
+### Phase 5 tests
+
+Phase 5 adds 76 e2e + unit tests on top of the 688 from Phase 4 (864
+total at the close of Phase 5 Chunk 9, then 873 at Chunk 10).
+
+| Suite | Cases | Coverage |
+|---|---|---|
+| `tests/e2e/region_e2e.test.ts` | 9 | home/relay split, HMAC sign/verify, beforeAuthenticateDevice, maintenance skipForAdmin |
+| `tests/e2e/liveops_full.test.ts` | 17 | every gated RPC returns SERVICE_UNAVAILABLE; liveops_config_get/inbox_list/account_delete/admin_*/relay_token stay OK |
+| `tests/e2e/analytics_full.test.ts` | 5 | every emit() site fires; analytics_events storage rows |
+| `tests/e2e/phase5-flow.test.ts` | 9 | full e2e: liveops_config_get → garage → wallet → account_link → inbox send/list → relay_token → account_delete |
+| `tests/e2e/account_e2e.test.ts` | 11 | link bonus, conflict flow, delete cascade, GDPR bypass |
+| `tests/e2e/inbox_e2e.test.ts` | 11 | send, list, claim, idempotency, retention |
+| `tests/e2e/admin_e2e.test.ts` | 16 | 5 admin RPCs, FORBIDDEN, maintenance bypass, audit trail |
+| `tests/e2e/maintenance_e2e.test.ts` | 8 | liveops_gate + min-version enforcement |
+| `tests/unit/liveops_remaining_gates.test.ts` | 9 | static source-text checks that each RPC has the gate where expected |
+| `tests/unit/analytics.test.ts` | 8 | emit() best-effort, webhook failure, schema |
+| `tests/unit/region_token.test.ts` | 6 | HMAC sign/verify, expiry, tampered payload |
+| `tests/unit/region_node_role.test.ts` | 4 | isHome/isRelay, default |
+
+### Module additions
+
+```
+modules/src/
+├── core/admin/          # emit() helper, emitAdminAction wrapper
+├── region/              # nodeRole, relay_token sign/verify, beforeAuthenticateDevice
+├── admin/               # admin RPCs (wallet, inbox, race)
+└── account/             # account_link, account_link_resolve_conflict, account_delete cascade
+```
+
+See [`docs/liveops.md`](./docs/liveops.md),
+[`docs/account-linking.md`](./docs/account-linking.md),
+[`docs/admin.md`](./docs/admin.md), and `docs/unity-api.md` §18 for
+the full per-RPC contract, validation, and curl examples.
