@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "achievements": [
+    { "id": "ach_first_win", "title": "Primera victoria", "description": "Gana tu primera carrera", "kind": "wins_quick", "filters": {}, "target": 1, "reward": { "coins": 100 } },
+    { "id": "ach_10_races", "title": "Novato", "description": "Termina 10 carreras", "kind": "race_count", "filters": {}, "target": 10, "reward": { "coins": 200 } },
+    { "id": "ach_50_races", "title": "Aficionado", "description": "Termina 50 carreras", "kind": "race_count", "filters": {}, "target": 50, "reward": { "coins": 500 } },
+    { "id": "ach_100_races", "title": "Veterano", "description": "100 carreras completadas", "kind": "race_count", "filters": {}, "target": 100, "reward": { "coins": 1000, "gems": 50 } },
+    { "id": "ach_500_races", "title": "Leyenda del asfalto", "description": "500 carreras completadas", "kind": "race_count", "filters": {}, "target": 500, "reward": { "coins": 5000, "gems": 250 } },
+    { "id": "ach_class_d_master", "title": "Maestro clase D", "description": "50 carreras con clase D", "kind": "race_class", "filters": { "classId": "D" }, "target": 50, "reward": { "coins": 300 } },
+    { "id": "ach_class_c_master", "title": "Maestro clase C", "description": "50 carreras con clase C", "kind": "race_class", "filters": { "classId": "C" }, "target": 50, "reward": { "coins": 400 } },
+    { "id": "ach_class_b_master", "title": "Maestro clase B", "description": "50 carreras con clase B", "kind": "race_class", "filters": { "classId": "B" }, "target": 50, "reward": { "coins": 500, "gems": 10 } },
+    { "id": "ach_class_a_master", "title": "Maestro clase A", "description": "50 carreras con clase A", "kind": "race_class", "filters": { "classId": "A" }, "target": 50, "reward": { "coins": 600, "gems": 25 } },
+    { "id": "ach_class_s_master", "title": "Maestro clase S", "description": "50 carreras con clase S", "kind": "race_class", "filters": { "classId": "S" }, "target": 50, "reward": { "coins": 1000, "gems": 50 } },
+    { "id": "ach_no_abandon_25", "title": "Constante", "description": "25 carreras sin abandonos", "kind": "race_no_abandon", "filters": {}, "target": 25, "reward": { "coins": 300, "xp": 150 } },
+    { "id": "ach_no_abandon_100", "title": "Inquebrantable", "description": "100 carreras sin abandonos", "kind": "race_no_abandon", "filters": {}, "target": 100, "reward": { "coins": 1000, "gems": 50 } },
+    { "id": "ach_rank_winner_10", "title": "10 victorias ranked", "description": "10 victorias en ranked", "kind": "wins_ranked", "filters": {}, "target": 10, "reward": { "coins": 800, "gems": 30 } },
+    { "id": "ach_rank_winner_50", "title": "50 victorias ranked", "description": "50 victorias en ranked", "kind": "wins_ranked", "filters": {}, "target": 50, "reward": { "coins": 3000, "gems": 150 } },
+    { "id": "ach_first_top_3", "title": "Primer podio", "description": "Termina en el podio por primera vez", "kind": "race_position", "filters": { "maxPosition": 3 }, "target": 1, "reward": { "coins": 100 } },
+    { "id": "ach_podium_25", "title": "25 podios", "description": "Termina en el podio 25 veces", "kind": "race_position", "filters": { "maxPosition": 3 }, "target": 25, "reward": { "coins": 500 } },
+    { "id": "ach_podium_100", "title": "100 podios", "description": "Termina en el podio 100 veces", "kind": "race_position", "filters": { "maxPosition": 3 }, "target": 100, "reward": { "coins": 2000, "gems": 100 } },
+    { "id": "ach_first_ranked", "title": "Rankeado", "description": "Termina tu primera carrera ranked", "kind": "race_count", "filters": { "mode": "ranked" }, "target": 1, "reward": { "coins": 200 } },
+    { "id": "ach_track_stadium_5", "title": "Estadio local", "description": "5 victorias en stadium_today", "kind": "race_track", "filters": { "trackId": "stadium_today", "maxPosition": 1 }, "target": 5, "reward": { "coins": 300 } },
+    { "id": "ach_all_classes", "title": "Todoterreno", "description": "Termina al menos 1 carrera en cada clase", "kind": "race_class", "filters": {}, "target": 5, "reward": { "coins": 800, "gems": 30 } },
+    { "id": "ach_first_win_of_day_3", "title": "Madrugador", "description": "Gana tu primera carrera del día 3 veces", "kind": "wins_quick", "filters": { "requireFirstWinOfDay": true }, "target": 3, "reward": { "coins": 250 } },
+    { "id": "ach_first_win_of_day_15", "title": "Veterano madrugador", "description": "Gana tu primera carrera del día 15 veces", "kind": "wins_quick", "filters": { "requireFirstWinOfDay": true }, "target": 15, "reward": { "coins": 1000, "gems": 50 } }
+  ]
+}

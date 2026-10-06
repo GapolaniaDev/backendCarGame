@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "missions": [
+    { "id": "weekly_rank_top_3", "title": "Top 3 en ranked x10", "description": "Top 3 en ranked 10 veces esta semana", "kind": "race_position", "filters": { "mode": "ranked", "maxPosition": 3 }, "target": 10, "reward": { "coins": 500, "xp": 250, "gems": 10 }, "unlockLevel": 5 },
+    { "id": "weekly_wins_15", "title": "15 victorias", "description": "Gana 15 carreras esta semana", "kind": "wins_quick", "filters": {}, "target": 15, "reward": { "coins": 600, "xp": 300 }, "unlockLevel": 3 },
+    { "id": "weekly_race_30", "title": "30 carreras", "description": "Termina 30 carreras esta semana", "kind": "race_count", "filters": {}, "target": 30, "reward": { "coins": 400, "xp": 200 }, "unlockLevel": 3 },
+    { "id": "weekly_ranked_10", "title": "10 ranked", "description": "Termina 10 carreras ranked esta semana", "kind": "race_count", "filters": { "mode": "ranked" }, "target": 10, "reward": { "coins": 500, "xp": 250 }, "unlockLevel": 5 },
+    { "id": "weekly_class_diversity", "title": "Diversificación", "description": "Termina 5 carreras en 3 clases distintas", "kind": "race_class", "filters": {}, "target": 5, "reward": { "coins": 350, "xp": 175 }, "unlockLevel": 4 },
+    { "id": "weekly_track_variety", "title": "Tour mundial", "description": "Termina 10 carreras en al menos 4 circuitos distintos", "kind": "race_track", "filters": {}, "target": 10, "reward": { "coins": 400, "xp": 200 }, "unlockLevel": 4 },
+    { "id": "weekly_no_abandon_15", "title": "Constante semanal", "description": "Termina 15 carreras sin abandonos esta semana", "kind": "race_no_abandon", "filters": {}, "target": 15, "reward": { "coins": 500, "xp": 250 }, "unlockLevel": 5 },
+    { "id": "weekly_wins_ranked_5", "title": "5 victorias ranked", "description": "Gana 5 carreras en ranked esta semana", "kind": "wins_ranked", "filters": {}, "target": 5, "reward": { "coins": 700, "xp": 350, "gems": 15 }, "unlockLevel": 5 },
+    { "id": "weekly_size_6_10", "title": "Llenar la sala", "description": "Termina 10 carreras de 6 jugadores", "kind": "race_count", "filters": { "size": 6 }, "target": 10, "reward": { "coins": 600, "xp": 300 }, "unlockLevel": 6 },
+    { "id": "weekly_first_win_daily", "title": "Primer ganador", "description": "Gana tu primera carrera cada día durante 5 días", "kind": "wins_quick", "filters": { "requireFirstWinOfDay": true }, "target": 5, "reward": { "coins": 800, "xp": 400, "gems": 20 }, "unlockLevel": 3 }
+  ]
+}

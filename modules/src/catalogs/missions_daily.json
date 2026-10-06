@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "missions": [
+    { "id": "daily_win_3", "title": "Tres victorias del día", "description": "Gana 3 carreras hoy", "kind": "wins_quick", "filters": {}, "target": 3, "reward": { "coins": 150, "xp": 75 }, "unlockLevel": 3 },
+    { "id": "daily_race_5", "title": "Cinco carreras del día", "description": "Termina 5 carreras hoy", "kind": "race_count", "filters": {}, "target": 5, "reward": { "coins": 100, "xp": 50 }, "unlockLevel": 3 },
+    { "id": "daily_race_class_c", "title": "Piloto de clase C", "description": "Termina 3 carreras con clase C", "kind": "race_class", "filters": { "classId": "C" }, "target": 3, "reward": { "coins": 120, "xp": 60 }, "unlockLevel": 4 },
+    { "id": "daily_race_class_b", "title": "Piloto de clase B", "description": "Termina 3 carreras con clase B", "kind": "race_class", "filters": { "classId": "B" }, "target": 3, "reward": { "coins": 140, "xp": 70 }, "unlockLevel": 5 },
+    { "id": "daily_track_stadium", "title": "Domina el estadio", "description": "Gana 1 carrera en stadium_today", "kind": "race_track", "filters": { "trackId": "stadium_today", "maxPosition": 1 }, "target": 1, "reward": { "coins": 200, "xp": 100 }, "unlockLevel": 5 },
+    { "id": "daily_first_win", "title": "Primera victoria del día", "description": "Gana tu primera carrera del día", "kind": "wins_quick", "filters": { "requireFirstWinOfDay": true }, "target": 1, "reward": { "coins": 100, "xp": 50 }, "unlockLevel": 3 },
+    { "id": "daily_no_abandon", "title": "Sin abandonos", "description": "Termina 5 carreras sin que nadie abandone", "kind": "race_no_abandon", "filters": {}, "target": 5, "reward": { "coins": 150, "xp": 75 }, "unlockLevel": 5 },
+    { "id": "daily_position_3", "title": "Tres podios", "description": "Termina en el podio 3 veces", "kind": "race_position", "filters": { "maxPosition": 3 }, "target": 3, "reward": { "coins": 150, "xp": 75 }, "unlockLevel": 3 },
+    { "id": "daily_size_6", "title": "Caos de 6", "description": "Termina 2 carreras de 6 jugadores", "kind": "race_count", "filters": { "size": 6 }, "target": 2, "reward": { "coins": 200, "xp": 100 }, "unlockLevel": 6 },
+    { "id": "daily_race_quick_5", "title": "Cinco carreras rápidas", "description": "Termina 5 carreras en modo quick", "kind": "race_count", "filters": { "mode": "quick" }, "target": 5, "reward": { "coins": 120, "xp": 60 }, "unlockLevel": 3 },
+    { "id": "daily_race_ranked_3", "title": "Ranked x3", "description": "Termina 3 carreras en ranked", "kind": "race_count", "filters": { "mode": "ranked" }, "target": 3, "reward": { "coins": 180, "xp": 90 }, "unlockLevel": 5 },
+    { "id": "daily_top_1", "title": "Una victoria más", "description": "Gana una carrera", "kind": "race_position", "filters": { "maxPosition": 1 }, "target": 1, "reward": { "coins": 100, "xp": 50 }, "unlockLevel": 3 },
+    { "id": "daily_class_d_3", "title": "Calentando motores", "description": "Termina 3 carreras con clase D", "kind": "race_class", "filters": { "classId": "D" }, "target": 3, "reward": { "coins": 90, "xp": 45 }, "unlockLevel": 3 },
+    { "id": "daily_class_a_2", "title": "Veterano de clase A", "description": "Termina 2 carreras con clase A", "kind": "race_class", "filters": { "classId": "A" }, "target": 2, "reward": { "coins": 220, "xp": 110 }, "unlockLevel": 7 },
+    { "id": "daily_track_desert_2", "title": "Polvo del desierto", "description": "Termina 2 carreras en desert_circuit", "kind": "race_track", "filters": { "trackId": "desert_circuit" }, "target": 2, "reward": { "coins": 130, "xp": 65 }, "unlockLevel": 4 },
+    { "id": "daily_track_arctic_2", "title": "Frío Ártico", "description": "Termina 2 carreras en arctic_circuit", "kind": "race_track", "filters": { "trackId": "arctic_circuit" }, "target": 2, "reward": { "coins": 130, "xp": 65 }, "unlockLevel": 4 },
+    { "id": "daily_top_3_5", "title": "Cinco podios", "description": "Sube al podio 5 veces", "kind": "race_position", "filters": { "maxPosition": 3 }, "target": 5, "reward": { "coins": 200, "xp": 100 }, "unlockLevel": 4 },
+    { "id": "daily_size_4", "title": "Cuarteto", "description": "Termina 3 carreras de 4 jugadores", "kind": "race_count", "filters": { "size": 4 }, "target": 3, "reward": { "coins": 120, "xp": 60 }, "unlockLevel": 3 },
+    { "id": "daily_no_abandon_3", "title": "Constancia", "description": "Termina 3 carreras sin abandonos", "kind": "race_no_abandon", "filters": {}, "target": 3, "reward": { "coins": 100, "xp": 50 }, "unlockLevel": 3 },
+    { "id": "daily_ranked_win_1", "title": "Primera victoria ranked", "description": "Gana tu primera carrera ranked del día", "kind": "wins_ranked", "filters": {}, "target": 1, "reward": { "coins": 200, "xp": 100, "gems": 5 }, "unlockLevel": 5 },
+    { "id": "daily_class_s_1", "title": "Leyenda clase S", "description": "Termina 1 carrera con clase S", "kind": "race_class", "filters": { "classId": "S" }, "target": 1, "reward": { "coins": 300, "xp": 150, "gems": 10 }, "unlockLevel": 9 },
+    { "id": "daily_quick_win_3", "title": "Tres victorias rápidas", "description": "Gana 3 carreras en modo quick", "kind": "wins_quick", "filters": { "mode": "quick" }, "target": 3, "reward": { "coins": 130, "xp": 65 }, "unlockLevel": 3 }
+  ]
+}

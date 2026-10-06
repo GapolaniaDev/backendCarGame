@@ -52,6 +52,10 @@ import storeJson from './catalogs/store.json';
 import rankedConfigJson from './catalogs/ranked_config.json';
 import seasonsJson from './catalogs/seasons.json';
 import liveopsConfigJson from './catalogs/liveops_config.json';
+import missionsDailyJson from './catalogs/missions_daily.json';
+import missionsWeeklyJson from './catalogs/missions_weekly.json';
+import achievementsJson from './catalogs/achievements.json';
+import passS1Json from './catalogs/pass_s1.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
@@ -62,6 +66,12 @@ import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
 import { loadLiveOpsConfig } from './liveops/mm_config';
 import { bootEnsure as bootEnsureLiveops } from './liveops/config';
+import {
+  loadMissionsDailyCatalog,
+  loadMissionsWeeklyCatalog,
+  loadAchievementsCatalog,
+} from './missions/catalog';
+import { loadPassCatalog } from './pass/catalog';
 import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
 import { account_link, account_link_resolve_conflict, account_delete } from './account/rpcs';
 import {
@@ -176,6 +186,31 @@ function InitModule(
   loadLiveOpsConfig(
     logger,
     liveopsConfigJson as unknown as import('./liveops/mm_config').RawLiveOpsFile,
+    nk,
+  );
+
+  // Phase 6 Chunk 1: daily/weekly missions + achievements + battle pass
+  // catalogs. Loaded after Phase 4 so a malformed Phase 6 catalog
+  // surfaces as CATALOG_INVALID alongside the other catalogs. The
+  // RaceCompleted subscriber + RPCs land in later chunks.
+  loadMissionsDailyCatalog(
+    logger,
+    missionsDailyJson as unknown as import('./missions/catalog').RawMissionsFile,
+    nk,
+  );
+  loadMissionsWeeklyCatalog(
+    logger,
+    missionsWeeklyJson as unknown as import('./missions/catalog').RawMissionsFile,
+    nk,
+  );
+  loadAchievementsCatalog(
+    logger,
+    achievementsJson as unknown as import('./missions/catalog').RawAchievementsFile,
+    nk,
+  );
+  loadPassCatalog(
+    logger,
+    passS1Json as unknown as import('./pass/catalog').RawPassFile,
     nk,
   );
 
