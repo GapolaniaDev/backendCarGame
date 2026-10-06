@@ -2,7 +2,7 @@
 
 Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
 
-**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**. Next up is matchmaking + ranked (Phase 4). See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4.
 
 ## Quick start (Docker)
 
@@ -116,8 +116,11 @@ Ver `docker-compose.yml` para detalles del routing por IP estática (`172.28.0.1
 │       ├── economy/             # Phase 3: wallet (grant/spend/ledger), rewards, wallet_get RPC
 │       ├── progression/         # Phase 3: XP + leveling + RaceCompleted XP subscriber
 │       ├── garage/              # Phase 3: garage storage, car_buy/upgrade/equip/loadout RPCs
-│       └── store/               # Phase 3: store catalog, daily rotation, store_get/buy RPCs
-│       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store)
+│       ├── store/               # Phase 3: store catalog, daily rotation, store_get/buy RPCs
+│       ├── matchmaking/         # Phase 4: mm_ticket_params, matchmakerMatched hook, quick_bots, host_choice, track_picker
+│       ├── ranked/              # Phase 4: rating math, divisions, seasons, ranked_get, RaceCompleted → ranked subscriber
+│       ├── liveops/             # Phase 4: liveops config, abandon tracker
+│       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store, seasons, ranked_config, liveops_config)
 ├── tests/                       # Vitest unit + e2e tests
 ├── docs/                        # Operation docs (see docs/race-protocol-ops.md)
 ├── specs/                       # Phase plan + checklist PDFs (Spanish)
@@ -392,3 +395,87 @@ the close of Phase 3). The most important e2e suites:
 | `tests/e2e/wallet.test.ts` | 7 | wallet_get round-trip + auth checks |
 | `tests/e2e/phase3-flow.test.ts` | 2 | Full new-user lifecycle (auth → wallet → garage → store → upgrade) |
 | `tests/e2e/refund-safety.test.ts` | 3 | Forced CAS failure → spend refunded via :refund |
+
+---
+
+## Phase 4 — matchmaking + ranked
+
+Four new RPCs (`mm_ticket_params`, `race_session_quick_bots`,
+`race_host_claim`, `ranked_get`), one matchmaker hook
+(`registerMatchmakerMatched`), and the foundation for Elo-style ranked
+play landed in Phase 4. Three new catalogs were loaded at boot:
+`seasons`, `ranked_config`, and `liveops_config`. Twelve locked
+decisions (D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11, D12) drive
+the contracts.
+
+| Module | File | What it owns |
+|---|---|---|
+| `matchmaking/ticket_params.ts` | `validateTicketInput` / `buildTicket` / `buildOutput` | query + metadata for `nk.matchmakerAdd` (D1, D8, D9) |
+| `matchmaking/matched_hook.ts` | `pickCandidate` / `buildRaceSessionFromCandidate` / `applyStatsEqualizationToMatchedSession` | validation + skeleton + stats clamp (D1, D12) |
+| `matchmaking/rpcs.ts` | `mm_ticket_params` RPC | server-stamps version + region, returns the ticket the client sends to the matchmaker |
+| `matchmaking/quick_bots.ts` | `pickBotDifficulty` / `pickBotCount` / `buildBotRoster` | bot fill formula (D3, D10) + roster shape (D4) |
+| `matchmaking/host_choice.ts` | `pickHost` / `pickHostSuccession` | lowest rttMs host (D5) |
+| `matchmaking/track_picker.ts` | `pickTrack` / `fnv1a` | deterministic track pick over catalog (D2) |
+| `ranked/rating.ts` | `expectedScore` / `applyEloDelta` / `kFactorFor` | pure Elo math with per-human K-factor |
+| `ranked/division.ts` | `divisionForRating` / `promotionBoundary` / `divisionAtBoundary` | tier helpers + boundary semantics |
+| `ranked/seasons.ts` | `findActiveSeason` / `validateSeasons` | catalog loader + active-season resolution |
+| `ranked/season.ts` | `lazyCloseSeason` / `daysLeftInSeason` | D7 lazy close + inbox reward distribution |
+| `ranked/config.ts` | `loadRankedConfig` / `getRankedConfig` / `ratingWindowFor` | K-factor windows + division bands + grace |
+| `ranked/ranked_repo.ts` | `createRankedRecord` / `readRankedRecord` / `updateRankedRecord` / `readSeasonMeta` | CAS-pattern storage helpers |
+| `ranked/rpcs.ts` | `ranked_get` RPC | public cross-user read (D11), lazy close trigger, abandons surface |
+| `ranked/subscriber.ts` | `subscribeRankedRewards` | RaceCompleted → rating update (idempotent, CAS-locked) |
+| `liveops/mm_config.ts` | `loadLiveOpsConfig` / `getLiveOpsConfig` | read-once-at-boot with storage override |
+| `liveops/abandon_tracker.ts` | `recordAbandon` / `getAbandonsLast24h` / `isBlocked` / `expireAbandons` | D6 rolling 24h window + 15-min block stamp |
+| `race/stats_equalization.ts` | `loadoutStatsFor` / `computeEffectiveStats` | D12 stats clamp to class max for ranked |
+
+### Phase 4 decisions locked
+
+| ID | Decision | Where |
+|---|---|---|
+| D1 | `mm_ticket_params` server-stamps `version` + `region`; client cannot influence them | `matchmaking/rpcs.ts::resolveOptions` |
+| D2 | Track picker deterministic (FNV-1a hash of `sessionId`); exclude last 2 tracks per player | `matchmaking/track_picker.ts` |
+| D3 | Bot difficulty `clamp(round(avgRating/400)-1, 0, 4)` | `matchmaking/quick_bots.ts::pickBotDifficulty` |
+| D4 | Bots share the host human's `classId` (consistent min-time band) | `matchmaking/quick_bots.ts::buildBotRoster` |
+| D5 | Host = lowest `rttMs` human; ties broken by `userId` ASC; bots never host | `matchmaking/host_choice.ts` |
+| D6 | 3 ranked abandons in 24h → 15-min matchmaking block | `liveops/abandon_tracker.ts` |
+| D7 | Lazy close on `ranked_get`: distribute tier rewards, spin up next season, migrate records | `ranked/season.ts::lazyCloseSeason` |
+| D8 | `mm.segmentBy` default `'none'`; liveops override at `liveops_config/current` | `liveops/mm_config.ts` |
+| D9 | Rating band widens with time-since-last-rated (100→600) | `ranked/config.ts::ratingWindowFor` |
+| D10 | `botCount = size - humanCount`; full lobby → 0 bots | `matchmaking/quick_bots.ts::pickBotCount` |
+| D11 | Ranked record is publicly readable (perm 2); no `FORBIDDEN` cross-user path | `ranked/rpcs.ts` |
+| D12 | Ranked sessions equalize every roster entry's `loadout.stats` to the car's class max | `race/stats_equalization.ts::loadoutStatsFor` |
+
+### Phase 4 RPC quick reference
+
+| RPC | Output shape | D-pattern |
+|---|---|---|
+| `mm_ticket_params` | `{ ticket: {query, metadata}, output: {mode, size, version, region, mm, constraints} }` | D1, D8, D9 — server-stamped |
+| `race_session_quick_bots` | `{ sessionId, mode: 'quick_bots', trackId, size, host, startedAt, roster, botDifficulty, botCount }` | D3, D4, D5, D10 — instant-fill |
+| `race_host_claim` | `{ sessionId, newHost, claimedAt }` | D5 — host succession on disconnect |
+| `ranked_get` | `{ userId, seasonId, rating, peak, division, divisionProgress, racesPlayed, wins, topThree, rank, daysLeftInSeason, abandonsLast24h, blockedUntilUtc }` | D7, D11 — public cross-user, lazy close |
+
+See [`docs/matchmaking.md`](./docs/matchmaking.md), [`docs/ranked.md`](./docs/ranked.md), and `docs/unity-api.md` §17 for the full per-RPC contract.
+
+### Phase 4 tests
+
+Phase 4 adds 32 e2e + many unit tests on top of the 378 from Phase 3
+(688 total at the close of Phase 4). The most important e2e suites:
+
+| Suite | Cases | Coverage |
+|---|---|---|
+| `tests/e2e/matchmaking_full.test.ts` | 15 | 6-client pool, mode/version/region mismatch, bot fill, host selection, server-stamped fields |
+| `tests/e2e/ranked_full.test.ts` | 5 | Bronze defaults, stats equalization mixed-class, season roll, public read, rate limit |
+| `tests/e2e/host_recovery.test.ts` | 7 | Happy path, succession, outsider, expired grace, idempotent re-claim, NOT_FOUND, BAD_REQUEST |
+| `tests/e2e/abandon_block_full.test.ts` | 5 | 3-abandon block, expiry, bot filter, 24h rolling, per-user independence |
+| `tests/e2e/race_session_quick_bots.test.ts` | 12 | Bot fill scenarios, track override, host invariants |
+| `tests/e2e/race_host_claim.test.ts` | 9 | CAS race, rate limit, idempotency, outsider |
+| `tests/e2e/ranked_session.test.ts` | 7 | Stats equalization across ranked rosters |
+| `tests/e2e/ranked_get.test.ts` | 8 | Cross-user read, rate limit, season roll, storage perms |
+| `tests/e2e/abandon_block.test.ts` | 7 | Direct storage seed → ranked_get exposure |
+| `tests/unit/rating.test.ts` | 14 | Elo math, overflow, K-factor window |
+| `tests/unit/division.test.ts` | 12 | Boundary semantics, top division, empty config |
+| `tests/unit/season-config.test.ts` | 11 | Catalog validation, active season resolution |
+| `tests/unit/track-picker.test.ts` | 9 | FNV-1a, empty intersection fallback, single-track |
+| `tests/unit/host-choice.test.ts` | 9 | Lowest rtt, tie-breaker, empty input |
+| `tests/unit/abandon_tracker.test.ts` | 16 | Pure filter, 3-abandon block, lazy GC, expired block, storage perms |
+| `tests/unit/rating_subscriber.test.ts` | 12 | RaceCompleted → rating update, CAS race, mode gate, abandoned handling |

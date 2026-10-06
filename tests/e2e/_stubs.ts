@@ -681,8 +681,11 @@ export class FakeInitializer {
   >;
   readonly initializer: IInitializer;
 
+  private readonly _core: FakeInitializerCore;
+
   constructor() {
     const core = new FakeInitializerCore();
+    this._core = core;
     this.rpcs = core.rpcs;
     this.shutdowns = core.shutdowns;
     this.beforeLeaderboardRecordWrites = core.beforeLeaderboardRecordWrites;
@@ -776,7 +779,7 @@ export function loadBundleForTest(): LoadedBundle {
     fakeNakama,
     fakeLogger,
     fakeInitializer,
-    matchmakerMatchedHook: (fakeInitializer as unknown as { _mmHook?: unknown })._mmHook as LoadedBundle['matchmakerMatchedHook'],
+    matchmakerMatchedHook: (fakeInitializer as unknown as { _core: { _mmHook?: unknown } })._core._mmHook as LoadedBundle['matchmakerMatchedHook'],
   };
 }
 

@@ -4,8 +4,10 @@ API reference for the Unity racing-game client. Covers auth, RPC contracts, the
 `RaceCompleted` event payload (now also drives leaderboard writes), storage
 collections, and catalog shapes.
 
-**Status:** Phase 1 (race session + results) and Phase 2 (leaderboards +
-profile) are both shipped. Phase 3 (economy + garage) is next.
+**Status:** Phase 1 (race session + results), Phase 2 (leaderboards +
+profile), Phase 3 (economy + garage + store), and Phase 4 (matchmaking
++ ranked) are all shipped. Phase 5 (LiveOps + account delete +
+admin RPCs) is next.
 
 ---
 
@@ -794,3 +796,187 @@ store_get on every shop screen open (rotation anchor changes at UTC midnight)
 ```
 
 See `docs/economy.md`, `docs/garage.md`, `docs/store.md`.
+
+---
+
+## 17. Phase 4 RPCs — matchmaking, ranked, host recovery
+
+Four new RPCs landed in Phase 4 plus one matchmaker hook installed via
+`initializer.registerMatchmakerMatched`. The matchmaker itself is
+owned by the Nakama runtime — these RPCs cover the contracts the
+client and the runtime depend on.
+
+### 17.1 `mm_ticket_params`
+
+Builds the matchmaker query + metadata the client then passes to
+`nk.matchmakerAdd`. Server-stamps `version` and `region` so clients
+cannot influence them (D1). Returns the rating band for the current
+player's last-rated window (D9) and the `mm.segmentBy` field (D8;
+defaults to `none`, overridable via `liveops_config/current`).
+
+```json
+// body
+"{\"mode\":\"quick\",\"size\":4,\"platform\":\"pc\",\"callerUserId\":\"<uuid>\"}"
+
+// response.data
+{
+  "ticket": {
+    "query":    { "mode":"quick","size":4,"version":"1.0.0","region":"eu-west-1","segmentBy":"none","ratingBand":"unrated" },
+    "metadata": { "mode":"quick","size":"4","version":"1.0.0","region":"eu-west-1","segmentBy":"none" }
+  },
+  "output": {
+    "mode":       "quick",
+    "size":       4,
+    "version":    "1.0.0",
+    "region":     "eu-west-1",
+    "mm":         { "segmentBy": "none" },
+    "constraints":{ "excludeTrackIds": [] }
+  }
+}
+```
+
+For `ranked` mode the `ratingBand` is `low-high` (e.g. `900-1100`)
+derived from the player's `lastRatedAt` per `ranked_config.json`.
+For other modes the band is the literal `unrated` so quick and
+ranked pools never accidentally intersect.
+
+**Authz**: same as §16 — `callerUserId` must match `ctx.userId` on
+socket; HTTP gateway uses payload as authoritative.
+
+Errors: `BAD_REQUEST` (unknown mode / size / platform; malformed
+JSON). Rate limit: 30/60s.
+
+### 17.2 `race_session_quick_bots`
+
+Solo or small-party fill. Builds a `quick` session with humans + bots
+(D10), picks a track deterministically (D2), and starts the race
+immediately. Bot difficulty derived from average human rating (D3).
+Bots never host (D5).
+
+```json
+// body
+"{\"size\":4,\"hostLoadout\":{\"classId\":\"C\",\"bodyId\":\"starter_viper\"},\"humanRoster\":[{\"userId\":\"<uuid>\",\"rttMs\":50,\"rating\":1100},{\"userId\":\"<friend-uuid>\",\"rttMs\":80,\"rating\":1050}],\"callerUserId\":\"<uuid>\"}"
+
+// response.data
+{
+  "sessionId":      "<uuid>",
+  "mode":           "quick_bots",
+  "trackId":        "neon_blvd",
+  "size":           4,
+  "host":           "<uuid>",     // lowest-rttMs human
+  "startedAt":      1740000005000,
+  "roster": [
+    { "userId":"<uuid>",        "isBot":false, "rttMs":50, "loadout":{"classId":"C","bodyId":"starter_viper"} },
+    { "userId":"<friend-uuid>", "isBot":false, "rttMs":80, "loadout":{"classId":"C","bodyId":"starter_viper"} },
+    { "userId":"bot_qb_d2_0",   "isBot":true,  "botDifficulty":2, "loadout":{"classId":"C","bodyId":"bot-body-2"} },
+    { "userId":"bot_qb_d2_1",   "isBot":true,  "botDifficulty":2, "loadout":{"classId":"C","bodyId":"bot-body-2"} }
+  ],
+  "botDifficulty": 2,
+  "botCount":      2
+}
+```
+
+**Authz**: `callerUserId` must be the FIRST entry in `humanRoster`
+(host is always the caller — bots can never host). Cross-user caller
+→ `FORBIDDEN`.
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | invalid size, duplicate userId, empty userId, too many humans for the size |
+| `FORBIDDEN` | caller's userId is not first in `humanRoster` |
+| `NOT_FOUND` | explicit `trackId` not in catalog |
+| `RATE_LIMITED` | 6 calls / 60s per caller |
+
+### 17.3 `race_host_claim`
+
+Host succession on disconnect. The next human in `hostSuccession` may
+claim within the 20-second grace window (`ranked_config.graceSeconds`
++ 5s tolerance). The relay stamps `disconnectReportedAt` on the host's
+roster entry; this RPC promotes the next human to host under CAS.
+
+```json
+// body
+"{\"sessionId\":\"<uuid>\",\"callerUserId\":\"<next-uuid>\"}"
+
+// response.data
+{
+  "sessionId": "<uuid>",
+  "newHost":   "<next-uuid>",
+  "claimedAt": 1740000050000
+}
+```
+
+**Authz**: caller must be in `session.roster` and the next human in
+`hostSuccession` AFTER the current host. Skipping ahead → `BAD_REQUEST`.
+
+| Error | When |
+|---|---|
+| `NOT_FOUND` | sessionId doesn't exist |
+| `FORBIDDEN` | caller not in roster |
+| `BAD_REQUEST` | state ≠ `started`; no disconnect stamp; not next in succession; grace expired |
+| `CONFLICT` | CAS race lost (another caller claimed first) |
+| `RATE_LIMITED` | 3 calls / 60s per caller |
+
+Idempotent re-claim by the same caller returns the same `claimedAt`
+without a CAS write.
+
+### 17.4 `ranked_get`
+
+Public ranked summary for `targetUserId` (defaults to caller). Always
+allows cross-user reads (D11). Lazily closes the active season when
+its `endsAt` is past (D7) — distributes tier rewards via the inbox
+and spins up the next season.
+
+```json
+// body
+"{\"userId\":\"<optional-uuid>\",\"callerUserId\":\"<uuid>\"}"
+
+// response.data
+{
+  "userId":             "<uuid>",
+  "seasonId":           "season_2",
+  "rating":             1247,
+  "peak":               1290,
+  "division":           "oro",
+  "divisionProgress":   0.47,
+  "racesPlayed":        23,
+  "wins":               8,
+  "topThree":           14,
+  "recentAbandons":     0,
+  "rank":               142,
+  "daysLeftInSeason":   412,
+  "abandonsLast24h":    1,           // D6 counter
+  "blockedUntilUtc":    null         // D6 block, or null when clean
+}
+```
+
+**Authz**: `callerUserId` must match `ctx.userId` on socket. NO
+`FORBIDDEN` for cross-user reads — D11 marks ranked as public.
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `FORBIDDEN` | `callerUserId` mismatch on socket |
+| `NOT_FOUND` | no active season in the catalog |
+| `RATE_LIMITED` | 30 calls / 60s per caller |
+| `BAD_REQUEST` | malformed JSON |
+
+### Matchmaker hook (server-side, no client surface)
+
+`initializer.registerMatchmakerMatched` is registered at `InitModule`.
+The runtime calls it on every matchmaker suggestion. The hook
+validates each candidate (mode / version / region alignment, size
+match) and returns `{ matched: true }` for the first valid candidate
+or `{ matched: false, reason: string }` to drop the suggestion.
+
+> **Stats equalization in ranked (D12):** When a ranked session is
+> created via the matchmaker path, every roster entry's
+> `loadout.stats` is clamped UP to the car's class max via
+> `applyStatsEqualizationToMatchedSession`. For non-matched paths
+> (`race_session_create` / `race_session_join`), the same logic
+> runs inline via `loadoutStatsFor`. The bundled `cars` catalog's
+> `maxStats` field is the source of truth; upgrades are ignored in
+> ranked.
+
+See `docs/matchmaking.md` and `docs/ranked.md` for the full
+contract, decision matrix, and the E2E test coverage.
