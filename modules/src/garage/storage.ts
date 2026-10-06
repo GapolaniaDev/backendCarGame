@@ -13,6 +13,7 @@ import type {
   Loadout,
   OwnedCar,
   OwnedCosmetics,
+  UpgradeLine,
 } from './types';
 import type { ClassId } from '../economy/types';
 import { getCarsCatalog, getUpgradesCatalog } from './catalog';
@@ -137,6 +138,7 @@ export function defaultGarage(userId: string, nowMs: number): Garage {
     schemaVersion: 1,
     userId,
     cars: [withStats],
+    cosmeticsBag: [],
     loadout,
     lastDailyWin: 0,
     dailyPrivateCount: 0,
@@ -168,3 +170,109 @@ export function ownedCarFor(
 }
 
 export const EMPTY_OWNED_COSMETICS: OwnedCosmetics = { ...EMPTY_COSMETICS };
+
+// ─── Mutation helpers (used by Chunk 7 RPCs) ─────────────────────────────────
+
+/** Throws `Error` when the car is already owned. Callers translate to CONFLICT. */
+export function ensureCarNotOwned(garage: Garage, carId: string): void {
+  for (const c of garage.cars) {
+    if (c.carId === carId) {
+      throw new Error(`car already owned: ${carId}`);
+    }
+  }
+}
+
+/**
+ * Append a newly-bought car to the garage. The car starts at zero
+ * upgrades with no cosmetics; computedStats is filled in via
+ * `computeStats`. Caller owns the resulting `Garage` (it's a fresh
+ * copy, so mutation is safe).
+ */
+export function addCarToGarage(garage: Garage, car: CarCatalogEntry): Garage {
+  const upgrades = getUpgradesCatalog();
+  const owned = ownedCarFor(car, EMPTY_UPGRADES);
+  const stats = computeStats(car, upgrades, owned.upgrades);
+  const withStats: OwnedCar = { ...owned, computedStats: stats };
+  return {
+    ...garage,
+    cars: [...garage.cars, withStats],
+  };
+}
+
+/**
+ * Set the level of one upgrade line for a car the caller already owns.
+ * Throws when the car isn't owned. Caller passes the *new* level
+ * (1..UPGRADE_MAX); existing deltas are recomputed via `computeStats`.
+ */
+export function applyUpgrade(
+  garage: Garage,
+  carId: string,
+  line: UpgradeLine,
+  newLevel: number,
+): Garage {
+  const idx = garage.cars.findIndex((c) => c.carId === carId);
+  if (idx < 0) throw new Error(`car not owned: ${carId}`);
+  const owned = garage.cars[idx];
+  if (!owned) throw new Error(`car not owned: ${carId}`);
+  const updatedUpgrades: UpgradeLevels = { ...owned.upgrades, [line]: newLevel };
+  const upgrades = getUpgradesCatalog();
+  const cat = getCarsCatalog().cars.find((c) => c.id === carId);
+  if (!cat) throw new Error(`car not in catalog: ${carId}`);
+  const updatedStats = computeStats(cat, upgrades, updatedUpgrades);
+  const updatedCar: OwnedCar = {
+    ...owned,
+    upgrades: updatedUpgrades,
+    computedStats: updatedStats,
+  };
+  const cars = garage.cars.slice();
+  cars[idx] = updatedCar;
+  // Sync loadout.stats if the active car was the one upgraded.
+  const loadout = garage.loadout && garage.loadout.activeCarId === carId
+    ? { ...garage.loadout, stats: updatedStats }
+    : garage.loadout;
+  return { ...garage, cars, loadout };
+}
+
+/**
+ * Equip a cosmetic on a specific slot of a specific car. The cosmetic
+ * must already be in `garage.cosmeticsBag` (populated by Chunk 8
+ * store purchases) — Chunk 7 validates ownership but does NOT add
+ * cosmetics to the bag.
+ *
+ * Throws when the car isn't owned or the cosmetic isn't in the bag.
+ */
+export function equipCosmetic(
+  garage: Garage,
+  carId: string,
+  slot: keyof OwnedCosmetics,
+  cosmeticId: string,
+): Garage {
+  const idx = garage.cars.findIndex((c) => c.carId === carId);
+  if (idx < 0) throw new Error(`car not owned: ${carId}`);
+  const owned = garage.cars[idx];
+  if (!owned) throw new Error(`car not owned: ${carId}`);
+  const updatedCosmetics: OwnedCosmetics = { ...owned.cosmetics, [slot]: cosmeticId };
+  const updatedCar: OwnedCar = { ...owned, cosmetics: updatedCosmetics };
+  const cars = garage.cars.slice();
+  cars[idx] = updatedCar;
+  const loadout = garage.loadout && garage.loadout.activeCarId === carId
+    ? { ...garage.loadout, equipped: updatedCosmetics }
+    : garage.loadout;
+  return { ...garage, cars, loadout };
+}
+
+/**
+ * Change the loadout's active car. Caller must already own the car.
+ * The equipped cosmetics list is taken from the new active car's
+ * `cosmetics` so the loadout always reflects the active car's choices.
+ */
+export function setActiveCar(garage: Garage, carId: string): Garage {
+  const owned = garage.cars.find((c) => c.carId === carId);
+  if (!owned) throw new Error(`car not owned: ${carId}`);
+  const loadout: Loadout = {
+    activeCarId: owned.carId,
+    equipped: { ...owned.cosmetics },
+    stats: { ...owned.computedStats },
+  };
+  return { ...garage, loadout };
+}

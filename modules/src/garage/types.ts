@@ -131,6 +131,13 @@ export interface Garage {
   schemaVersion: 1;
   userId: string;
   cars: OwnedCar[];
+  /**
+   * Catalog cosmetic ids the player has acquired (via the store,
+   * Chunk 8). `equipCosmetic` validates the id is in this bag before
+   * attaching it to a slot. Phase 3 ships the field empty so v1
+   * records round-trip cleanly through `readGarage`.
+   */
+  cosmeticsBag: string[];
   /** Active car + equipped cosmetics; null when the player hasn't picked yet. */
   loadout: Loadout | null;
   /** First daily-win epoch-ms UTC (or 0 if none today). Updated by Phase 3 subscriber. */

@@ -50,7 +50,7 @@ import storeJson from './catalogs/store.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
-import { garage_get } from './garage/rpcs';
+import { garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set } from './garage/rpcs';
 import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { subscribeEconomyRewards } from './economy/subscriber';
@@ -166,6 +166,10 @@ function InitModule(
     initializer.registerRpc('profile_get', profile_get);
     initializer.registerRpc('profile_update', profile_update);
     initializer.registerRpc('garage_get', garage_get);
+    initializer.registerRpc('car_buy', car_buy);
+    initializer.registerRpc('car_upgrade', car_upgrade);
+    initializer.registerRpc('cosmetic_equip', cosmetic_equip);
+    initializer.registerRpc('loadout_set', loadout_set);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }

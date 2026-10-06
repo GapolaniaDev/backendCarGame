@@ -7,6 +7,11 @@ import {
   defaultGarage,
   findStarterCar,
   ownedCarFor,
+  addCarToGarage,
+  applyUpgrade,
+  equipCosmetic,
+  setActiveCar,
+  ensureCarNotOwned,
   EMPTY_OWNED_COSMETICS,
 } from '../../modules/src/garage/storage';
 import {
@@ -159,6 +164,72 @@ describe('garage/storage — ownedCarFor', () => {
     const owned = ownedCarFor(civic, levels);
     owned.upgrades.engine = 99;
     expect(levels.engine).toBe(1);
+  });
+});
+
+describe('garage/storage — mutations (Chunk 7)', () => {
+  beforeEach(() => {
+    _resetGarageForTests();
+    loadGarageCatalog(SILENT_LOGGER, RAW, { localcachePut: () => {} } as unknown as Parameters<typeof loadGarageCatalog>[2]);
+  });
+
+  it('addCarToGarage appends a new owned car with zero upgrades + base stats', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const catalog = getGarageCatalog();
+    const civic = catalog.cars.cars.find((c) => c.id === 'civic_r');
+    if (!civic) throw new Error('civic_r missing');
+    const next = addCarToGarage(initial, civic);
+    expect(next.cars).toHaveLength(2);
+    expect(next.cars[1]?.carId).toBe('civic_r');
+    expect(next.cars[1]?.upgrades).toEqual({ engine: 0, tires: 0, nitro: 0, handling: 0 });
+    // civic_r baseStats all 50-ish; not zero.
+    expect(next.cars[1]?.computedStats.speed).toBeGreaterThan(0);
+  });
+
+  it('ensureCarNotOwned throws when the car is already in the garage', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    expect(() => ensureCarNotOwned(initial, 'starter_viper')).toThrow(/already owned/);
+    expect(() => ensureCarNotOwned(initial, 'civic_r')).not.toThrow();
+  });
+
+  it('applyUpgrade bumps the line and recomputes stats', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const before = initial.cars[0]?.computedStats.speed ?? 0;
+    const next = applyUpgrade(initial, 'starter_viper', 'engine', 1);
+    const after = next.cars[0]?.computedStats.speed ?? 0;
+    expect(next.cars[0]?.upgrades.engine).toBe(1);
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it('applyUpgrade syncs the loadout stats when the active car was upgraded', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const before = initial.loadout?.stats.speed ?? 0;
+    const next = applyUpgrade(initial, 'starter_viper', 'engine', 1);
+    expect(next.loadout?.stats.speed).toBeGreaterThan(before);
+  });
+
+  it('equipCosmetic attaches a cosmetic to the right slot', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const next = equipCosmetic(initial, 'starter_viper', 'paint', 'paint_red_flame');
+    expect(next.cars[0]?.cosmetics.paint).toBe('paint_red_flame');
+    expect(next.loadout?.equipped.paint).toBe('paint_red_flame');
+  });
+
+  it('setActiveCar rejects a car the caller does not own', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    expect(() => setActiveCar(initial, 'civic_r')).toThrow(/not owned/);
+  });
+
+  it('setActiveCar switches the loadout to a different owned car', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const catalog = getGarageCatalog();
+    const civic = catalog.cars.cars.find((c) => c.id === 'civic_r');
+    if (!civic) throw new Error('civic_r missing');
+    const withCivic = addCarToGarage(initial, civic);
+    const next = setActiveCar(withCivic, 'civic_r');
+    expect(next.loadout?.activeCarId).toBe('civic_r');
+    // Stats snapshot reflects civic's base stats.
+    expect(next.loadout?.stats.speed).toBe(civic.baseStats.speed);
   });
 });
 
