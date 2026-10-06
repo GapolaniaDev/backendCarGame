@@ -1,9 +1,10 @@
 // Phase 4 ranked types. Per-player rating record shape plus the
 // public `ranked_get` output. The runtime rating lives in storage at
-// `ranked/{userId}/{seasonId}` (collection "ranked", owner = userId).
+// `ranked/{userId}` (collection "ranked", owner = userId, public-read).
 //
-// Chunk 1 ships the shapes; the storage helpers land in Chunk 3
-// along with the first `ranked_get` wire-up.
+// Chunk 1 shipped the record + input/output. Chunk 6 expands the
+// output shape and adds the storage-meta + inbox shapes that the
+// `ranked_get` handler + the lazy-close reward path consume.
 
 export interface RankedRecord {
   schemaVersion: 1;
@@ -29,19 +30,102 @@ export interface RankedRecord {
 
 export interface RankedGetInput {
   /** When omitted, returns the caller's record. When set, returns the
-   *  public summary for any user (D11). */
+   *  public summary for any user (D11 — always public, never FORBIDDEN). */
   userId?: string;
-  /** When omitted, the current season per `findActiveSeason`. */
-  seasonId?: string;
   callerUserId: string;
 }
 
 export interface RankedGetOutput {
+  userId: string;
   seasonId: string;
-  divisionId: string;
   rating: number;
   peak: number;
-  rank: number;
-  topPercent: number;
+  /** Division id derived from `rating` via `divisionForRating`. */
+  division: string;
+  /** 0.0 at the top of `division` into the next-higher band, 1.0 at the
+   *  bottom (one win from promotion). */
+  divisionProgress: number;
+  racesPlayed: number;
+  wins: number;
+  topThree: number;
   recentAbandons: number;
+  /** Global rank in the season's `ranked_{seasonId}` leaderboard, or
+   *  `null` if the player hasn't recorded a result yet. */
+  rank: number | null;
+  /** Whole days until the season ends (0 once expired). */
+  daysLeftInSeason: number;
+}
+
+// ─── Season meta ────────────────────────────────────────────────────────────
+
+/** Server-owned status of a ranked season. */
+export type SeasonStatus = 'active' | 'closed';
+
+export interface SeasonMeta {
+  schemaVersion: 1;
+  seasonId: string;
+  /** UTC epoch-ms when the season starts. */
+  startedAt: number;
+  /** UTC epoch-ms when the season ends (exclusive). */
+  endsAt: number;
+  /** `active` until the lazy-close runs; `closed` once rewards shipped. */
+  status: SeasonStatus;
+  /** True once every tier reward has been written to the inbox. */
+  rewardsDistributed: boolean;
+}
+
+// ─── LiveOps inbox (season rewards + future give-back rewards) ──────────────
+
+export type InboxRewardType =
+  | 'season_gold'
+  | 'season_silver'
+  | 'season_bronze'
+  | 'season_compensation';
+
+export interface InboxRewardPayload {
+  /** Optional coin grant. */
+  coins?: number;
+  /** Cosmetic ids granted. */
+  cosmetics?: string[];
+  /** Free-form notes for the client. */
+  note?: string;
+}
+
+export interface InboxEntry {
+  schemaVersion: 1;
+  rewardId: string;
+  userId: string;
+  type: InboxRewardType;
+  payload: InboxRewardPayload;
+  createdAt: number;
+  expiresAt: number | null;
+  claimed: boolean;
+}
+
+// ─── Lazy close rewards ─────────────────────────────────────────────────────
+
+export interface SeasonStandingRow {
+  userId: string;
+  /** Final rating in the season's leaderboard. */
+  rating: number;
+  /** 1-indexed global rank. */
+  rank: number;
+}
+
+export interface SeasonRewardGrant {
+  userId: string;
+  rank: number;
+  type: InboxRewardType;
+  payload: InboxRewardPayload;
+}
+
+export interface SeasonCloseOutcome {
+  /** `true` when this call actually transitioned the season to closed. */
+  closed: boolean;
+  /** The seasonId that was closed (or `null` if no-op). */
+  seasonId: string | null;
+  /** The new active seasonId (or `null` if no-op). */
+  nextSeasonId: string | null;
+  /** Reward grants written to the inbox (empty when no-op). */
+  rewards: SeasonRewardGrant[];
 }

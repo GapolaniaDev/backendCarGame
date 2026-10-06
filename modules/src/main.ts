@@ -59,6 +59,7 @@ import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
+import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
 import { subscribeEconomyRewards } from './economy/subscriber';
@@ -207,6 +208,7 @@ function InitModule(
     initializer.registerRpc('store_buy', store_buy);
     initializer.registerRpc('wallet_get', wallet_get);
     initializer.registerRpc('mm_ticket_params', mm_ticket_params);
+    initializer.registerRpc('ranked_get', ranked_get);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }

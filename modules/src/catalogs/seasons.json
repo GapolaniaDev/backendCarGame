@@ -13,6 +13,19 @@
         { "id": "platino",  "displayName": "Platino",  "ratingMin": 1400, "ratingMax": 1599 },
         { "id": "diamante", "displayName": "Diamante", "ratingMin": 1600, "ratingMax": 9999 }
       ]
+    },
+    {
+      "id": "season_2",
+      "displayName": "Season 2",
+      "startsAt": 1759276800000,
+      "endsAt": 1861910400000,
+      "divisions": [
+        { "id": "bronce",   "displayName": "Bronce",   "ratingMin": 0,    "ratingMax": 999 },
+        { "id": "plata",    "displayName": "Plata",    "ratingMin": 1000, "ratingMax": 1199 },
+        { "id": "oro",      "displayName": "Oro",      "ratingMin": 1200, "ratingMax": 1399 },
+        { "id": "platino",  "displayName": "Platino",  "ratingMin": 1400, "ratingMax": 1599 },
+        { "id": "diamante", "displayName": "Diamante", "ratingMin": 1600, "ratingMax": 9999 }
+      ]
     }
   ]
 }
