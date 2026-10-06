@@ -401,6 +401,8 @@ export interface INakama {
     userId: string,
     customId: string,
   ): void;
+  /** Unlink a provider customId from an account. Throws if not linked. */
+  unlinkCustom(provider: string, userId: string): void;
   usersGetId(userIds: string[]): IUser[];
   usersGetUsername(username: string[]): unknown;
   usersGetRandom(count: number): unknown;

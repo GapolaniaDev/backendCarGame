@@ -12,11 +12,18 @@ import type { ClientPlatform } from '../liveops/types';
 import {
   linkAccount,
   resolveConflict,
+  unlinkAllCustomAuths,
   type LinkAccountResult,
   type ResolveConflictResult,
 } from './linking';
+import { purgeFromLeaderboards, purgeUserStorage } from './purge';
+import { removePlayerFromAll } from '../race/remove_player';
 import {
+  ACCOUNT_DELETE_CONFIRM_TEXT,
   isAccountLinkProvider,
+  type AccountDeleteInput,
+  type AccountDeleteOutput,
+  type AccountDeleteSummary,
   type AccountLinkConflictOutput,
   type AccountLinkInput,
   type AccountLinkOutput,
@@ -194,11 +201,92 @@ function renderResolveResult(
 export const account_link: RpcHandler = account_link_impl;
 export const account_link_resolve_conflict: RpcHandler = account_link_resolve_conflict_impl;
 
+// ─── account_delete (Phase 5 Chunk 5) ──────────────────────────────────────
+
+export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  const raw = parsed.raw;
+
+  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
+  const callerId = resolveCaller(ctx, caller, logger);
+  if (!callerId.ok) return callerId.error;
+  const userId = callerId.id;
+
+  // NOTE: account_delete intentionally BYPASSES the maintenance gate
+  // — GDPR "right to erasure" is not allowed to be blocked by an
+  // operational pause. A broken session token still rejects.
+
+  const confirmText = raw['confirmText'];
+  if (typeof confirmText !== 'string' || confirmText !== ACCOUNT_DELETE_CONFIRM_TEXT) {
+    return JSON.stringify(err(
+      'BAD_REQUEST',
+      `confirmation required: pass confirmText="${ACCOUNT_DELETE_CONFIRM_TEXT}"`,
+    ));
+  }
+
+  const nowMs = Date.now();
+
+  // Step 1: mark abandoned in any active race session so the
+  // close-time ordering still records them as DNF — and prevents the
+  // RaceCompleted subscriber from trying to grant rewards to a
+  // userId that's about to be purged.
+  const removeResult = removePlayerFromAll(nk, logger, userId);
+
+  // Step 2: purge storage.
+  const purge = purgeUserStorage(nk, userId);
+
+  // Step 3: purge leaderboard records.
+  const lbPurge = purgeFromLeaderboards(nk, logger, userId);
+
+  // Step 4: unlink every custom auth.
+  const unlinked = unlinkAllCustomAuths(nk, logger, userId);
+
+  // Step 5: soft-delete the account row. `recorded=false` skips
+  // the recorded-channel billable audit trail (we already log a
+  // single high-priority line above for ops).
+  try {
+    nk.accountDeleteId(userId, false);
+  } catch (e) {
+    logger.error(
+      'account_delete: accountDeleteId(%s) failed: %s',
+      userId, e instanceof Error ? e.message : String(e),
+    );
+    return JSON.stringify(err('INTERNAL', 'failed to delete account'));
+  }
+
+  logger.warn(
+    'account_delete user=%s storage=%d boards=%d abandoned=%d unlinked=%j',
+    userId, purge.storageDeleted, lbPurge.boardsDeleted,
+    removeResult.abandonedFrom.length, unlinked.unlinked,
+  );
+
+  const summary: AccountDeleteSummary = {
+    storageDeleted: purge.storageDeleted,
+    collectionsAffected: purge.collectionsAffected,
+    boardsDeleted: lbPurge.boardsDeleted,
+    boardsAffected: lbPurge.boardsAffected,
+    unlinkedAuths: unlinked.unlinked,
+    // Clubs: not implemented yet (Phase 7). Always empty for v1.
+    wasClubLeaderOf: [],
+    abandonedFromRaces: removeResult.abandonedFrom.length,
+  };
+  const output: AccountDeleteOutput = {
+    deletedAt: new Date(nowMs).toISOString(),
+    summary,
+  };
+  return JSON.stringify(ok(output));
+};
+
+export const account_delete: RpcHandler = account_delete_impl;
+
 export type {
   AccountLinkInput,
   AccountLinkOutput,
   AccountLinkResolveConflictInput,
   AccountLinkResolveConflictOutput,
+  AccountDeleteInput,
+  AccountDeleteOutput,
 };
 
 // Side-effect import marker so the bundler keeps the named export of

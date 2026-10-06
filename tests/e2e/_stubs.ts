@@ -506,6 +506,16 @@ class FakeNakamaCore {
     this.links.set(key, userId);
   }
 
+  unlinkCustom(provider: string, userId: string): void {
+    for (const [k, v] of Array.from(this.links.entries())) {
+      if (v === userId && k.startsWith(`${provider}:`)) {
+        this.links.delete(k);
+        return;
+      }
+    }
+    throw new Error('UNLINK_NOT_LINKED');
+  }
+
   accountDeleteId(userId: string, _recorded: boolean): void {
     // Drop the user's wallet, ledger, and every link they own so a
     // re-link with the same customId works.

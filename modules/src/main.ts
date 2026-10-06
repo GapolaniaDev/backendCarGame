@@ -63,7 +63,7 @@ import { loadSeasonsCatalog } from './ranked/seasons';
 import { loadLiveOpsConfig } from './liveops/mm_config';
 import { bootEnsure as bootEnsureLiveops } from './liveops/config';
 import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
-import { account_link, account_link_resolve_conflict } from './account/rpcs';
+import { account_link, account_link_resolve_conflict, account_delete } from './account/rpcs';
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
@@ -246,6 +246,7 @@ function InitModule(
     initializer.registerRpc('inbox_claim', inbox_claim);
     initializer.registerRpc('account_link', account_link);
     initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
+    initializer.registerRpc('account_delete', account_delete);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }

@@ -102,3 +102,32 @@ export const ACCOUNT_LINK_CONFIRM_TEXT = 'TRANSFER';
 export function isAccountLinkProvider(value: unknown): value is AccountLinkProvider {
   return value === 'apple' || value === 'google' || value === 'email' || value === 'custom';
 }
+
+// ─── Phase 5 Chunk 5 — Account delete ───────────────────────────────────────
+
+export const ACCOUNT_DELETE_CONFIRM_TEXT = 'DELETE';
+
+export interface AccountDeleteInput {
+  /** Literal confirmation text. Must equal `'DELETE'`. */
+  confirmText: string;
+  callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
+}
+
+export interface AccountDeleteSummary {
+  storageDeleted: number;
+  collectionsAffected: string[];
+  boardsDeleted: number;
+  boardsAffected: string[];
+  unlinkedAuths: string[];
+  wasClubLeaderOf: string[];
+  /** Number of race sessions where the user was marked abandoned. */
+  abandonedFromRaces: number;
+}
+
+export interface AccountDeleteOutput {
+  /** ISO-8601 of the delete. */
+  deletedAt: string;
+  summary: AccountDeleteSummary;
+}
