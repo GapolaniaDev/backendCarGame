@@ -680,6 +680,14 @@ class FakeInitializerCore {
       envelope: { username: string; userId: string; vars: Record<string, string> },
     ) => void
   > = [];
+  readonly beforeAuthenticateDevices: Array<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void
+  > = [];
 
   registerRpc(key: string, fn: RpcFunction): void {
     this.rpcs.push({ key, fn });
@@ -687,6 +695,17 @@ class FakeInitializerCore {
 
   registerShutdown(_runtime: INakama, fn: ShutdownFn): void {
     this.shutdowns.push(fn);
+  }
+
+  registerBeforeAuthenticateDevice(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void,
+  ): void {
+    this.beforeAuthenticateDevices.push(fn);
   }
 
   registerAfterAuthenticateDevice(
@@ -798,6 +817,14 @@ export class FakeInitializer {
       envelope: { username: string; userId: string; vars: Record<string, string> },
     ) => void
   >;
+  readonly beforeAuthenticateDevices: ReadonlyArray<
+    (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: { username: string; userId: string; vars: Record<string, string> },
+    ) => void
+  >;
   readonly initializer: IInitializer;
 
   private readonly _core: FakeInitializerCore;
@@ -810,6 +837,7 @@ export class FakeInitializer {
     this.beforeLeaderboardRecordWrites = core.beforeLeaderboardRecordWrites;
     this.afterLeaderboardRecordWrites = core.afterLeaderboardRecordWrites;
     this.afterAuthenticates = core.afterAuthenticates;
+    this.beforeAuthenticateDevices = core.beforeAuthenticateDevices;
     this.initializer = wrapWithNotStubbedThrow(core) as IInitializer;
   }
 

@@ -78,6 +78,9 @@ import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
 import { subscribeRankedRewards } from './ranked/subscriber';
 import { wallet_get } from './economy/rpcs';
+import { relay_token } from './region/rpcs';
+import { beforeAuthenticateDeviceRelay } from './region/before_auth';
+import { isHome } from './core/region';
 
 function InitModule(
   _ctx: IContext,
@@ -216,7 +219,7 @@ function InitModule(
   subscribeRankedRewards({ logger, nk, bus });
   setRaceBus(bus);
 
-  // Register the 6 RPCs as individual top-level statements.
+  // Register the RPCs as individual top-level statements.
   //
   // Nakama's goja runtime uses an AST scanner to extract the RPC
   // function names at boot. The scanner walks top-level
@@ -226,39 +229,53 @@ function InitModule(
   // the bare identifier `config_get` (not a member expression) because
   // the scanner returns the first arg as a string and `checkFnScope`
   // then verifies that `globalThis[arg]` is a function.
+  //
+  // Phase 5 Chunk 8: `nodeRole === 'relay'` (region replica) only
+  // registers the race + match primitives. Wallet/garage/store/
+  // profile/account/admin/liveops RPCs stay on the home node.
+  // `nodeRole === 'home'` (default) registers the full surface.
+  const homeRelay = isHome(nk, logger);
+  logger.info('[boot] nodeRole=%s', homeRelay ? 'home' : 'relay');
   try {
-    initializer.registerRpc('config_get', config_get);
-    initializer.registerRpc('race_session_create', race_session_create);
-    initializer.registerRpc('race_session_join', race_session_join);
-    initializer.registerRpc('race_session_start', race_session_start);
+    // ── Both modes: race + match primitives ──
     initializer.registerRpc('race_session_get', race_session_get);
     initializer.registerRpc('race_submit_result', race_submit_result);
-    initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
-    initializer.registerRpc('race_host_claim', race_host_claim);
-    initializer.registerRpc('lb_get', lb_get);
-    initializer.registerRpc('profile_get', profile_get);
-    initializer.registerRpc('profile_update', profile_update);
-    initializer.registerRpc('garage_get', garage_get);
-    initializer.registerRpc('car_buy', car_buy);
-    initializer.registerRpc('car_upgrade', car_upgrade);
-    initializer.registerRpc('cosmetic_equip', cosmetic_equip);
-    initializer.registerRpc('loadout_set', loadout_set);
-    initializer.registerRpc('store_get', store_get);
-    initializer.registerRpc('store_buy', store_buy);
-    initializer.registerRpc('wallet_get', wallet_get);
-    initializer.registerRpc('mm_ticket_params', mm_ticket_params);
-    initializer.registerRpc('ranked_get', ranked_get);
-    initializer.registerRpc('liveops_config_get', liveops_config_get);
-    initializer.registerRpc('inbox_list', inbox_list);
-    initializer.registerRpc('inbox_claim', inbox_claim);
-    initializer.registerRpc('account_link', account_link);
-    initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
-    initializer.registerRpc('account_delete', account_delete);
-    initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
-    initializer.registerRpc('admin_send_inbox', admin_send_inbox);
-    initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
-    initializer.registerRpc('admin_remove_player', admin_remove_player);
-    initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
+    if (homeRelay) {
+      // ── Home-only: race creation + matching + metagame + ops ──
+      initializer.registerRpc('config_get', config_get);
+      initializer.registerRpc('race_session_create', race_session_create);
+      initializer.registerRpc('race_session_join', race_session_join);
+      initializer.registerRpc('race_session_start', race_session_start);
+      initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
+      initializer.registerRpc('race_host_claim', race_host_claim);
+      initializer.registerRpc('lb_get', lb_get);
+      initializer.registerRpc('profile_get', profile_get);
+      initializer.registerRpc('profile_update', profile_update);
+      initializer.registerRpc('garage_get', garage_get);
+      initializer.registerRpc('car_buy', car_buy);
+      initializer.registerRpc('car_upgrade', car_upgrade);
+      initializer.registerRpc('cosmetic_equip', cosmetic_equip);
+      initializer.registerRpc('loadout_set', loadout_set);
+      initializer.registerRpc('store_get', store_get);
+      initializer.registerRpc('store_buy', store_buy);
+      initializer.registerRpc('wallet_get', wallet_get);
+      initializer.registerRpc('mm_ticket_params', mm_ticket_params);
+      initializer.registerRpc('ranked_get', ranked_get);
+      initializer.registerRpc('liveops_config_get', liveops_config_get);
+      initializer.registerRpc('inbox_list', inbox_list);
+      initializer.registerRpc('inbox_claim', inbox_claim);
+      initializer.registerRpc('account_link', account_link);
+      initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
+      initializer.registerRpc('account_delete', account_delete);
+      initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
+      initializer.registerRpc('admin_send_inbox', admin_send_inbox);
+      initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
+      initializer.registerRpc('admin_remove_player', admin_remove_player);
+      initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
+      initializer.registerRpc('relay_token', relay_token);
+    }
+    // ── Auth hook — registered on every node; no-op on home ──
+    initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }
