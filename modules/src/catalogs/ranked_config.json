@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "kFactorNormal": 24,
+  "kFactorInitial": 40,
+  "initialRating": 1000,
+  "divisions": [
+    { "id": "bronce",   "displayName": "Bronce",   "minRating": 0,    "maxRating": 999 },
+    { "id": "plata",    "displayName": "Plata",    "minRating": 1000, "maxRating": 1199 },
+    { "id": "oro",      "displayName": "Oro",      "minRating": 1200, "maxRating": 1399 },
+    { "id": "platino",  "displayName": "Platino",  "minRating": 1400, "maxRating": 1599 },
+    { "id": "diamante", "displayName": "Diamante", "minRating": 1600, "maxRating": 9999 }
+  ],
+  "ratingWindowBySeconds": [
+    { "elapsedMax": 30,    "window": 100 },
+    { "elapsedMax": 120,   "window": 200 },
+    { "elapsedMax": 3600,  "window": 400 },
+    { "elapsedMax": 86400, "window": 400 }
+  ],
+  "hiddenMarkThreshold": 5,
+  "graceSeconds": 20
+}

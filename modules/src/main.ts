@@ -47,12 +47,16 @@ import cosmeticsJson from './catalogs/cosmetics.json';
 import levelsJson from './catalogs/levels.json';
 import rewardsJson from './catalogs/rewards.json';
 import storeJson from './catalogs/store.json';
+import rankedConfigJson from './catalogs/ranked_config.json';
+import seasonsJson from './catalogs/seasons.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
 import { garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set } from './garage/rpcs';
 import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
+import { loadRankedConfig } from './ranked/config';
+import { loadSeasonsCatalog } from './ranked/seasons';
 import { store_get, store_buy } from './store/rpcs';
 import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
@@ -120,6 +124,21 @@ function InitModule(
   loadStoreCatalog(
     logger,
     storeJson as unknown as import('./store/catalog').RawStoreFile,
+    nk,
+  );
+
+  // Phase 4 catalogs: ranked config (K-factor, divisions, rating
+  // windows, grace) and seasons (UTC dates + division cutoffs).
+  // Chained after Phase 3 so a malformed Phase 4 catalog surfaces as
+  // CATALOG_INVALID instead of silently passing.
+  loadRankedConfig(
+    logger,
+    rankedConfigJson as unknown as import('./ranked/config').RawRankedConfigFile,
+    nk,
+  );
+  loadSeasonsCatalog(
+    logger,
+    seasonsJson as unknown as import('./ranked/seasons').RawSeasonsFile,
     nk,
   );
 

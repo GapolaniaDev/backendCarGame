@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "seasons": [
+    {
+      "id": "season_1",
+      "displayName": "Season 1",
+      "startsAt": 1761955200000,
+      "endsAt": 1764547200000,
+      "divisions": [
+        { "id": "bronce",   "displayName": "Bronce",   "ratingMin": 0,    "ratingMax": 999 },
+        { "id": "plata",    "displayName": "Plata",    "ratingMin": 1000, "ratingMax": 1199 },
+        { "id": "oro",      "displayName": "Oro",      "ratingMin": 1200, "ratingMax": 1399 },
+        { "id": "platino",  "displayName": "Platino",  "ratingMin": 1400, "ratingMax": 1599 },
+        { "id": "diamante", "displayName": "Diamante", "ratingMin": 1600, "ratingMax": 9999 }
+      ]
+    }
+  ]
+}
