@@ -45,6 +45,15 @@ export interface RosterEntry {
   totalMs?: number;
   /** True if grace expired with no report. Set at close-time. */
   abandoned?: boolean;
+  /**
+   * Server epoch-ms at which the host reported this player as
+   * disconnected. Phase 4 Chunk 4 — used to gate `race_host_claim`.
+   * The field is server-managed (set by `reportDisconnect`, never by
+   * the client) and stays on the entry for audit even after a claim
+   * succeeds (so Chunk 9's abandon tracker can detect a player who
+   * never came back).
+   */
+  disconnectReportedAt?: number;
 }
 
 // ─── Reports (per-user submissions) ──────────────────────────────────────────
@@ -81,6 +90,15 @@ export interface RaceSession {
   state: RaceState;
   /** Server epoch-ms at which `race_session_start` was accepted. */
   startedAt: number | null;
+  /**
+   * Server epoch-ms at which the current `host` last took ownership.
+   * Phase 4 Chunk 4 — initial value is `startedAt` (set by
+   * `markStarted`), updated by `claimHost` on every successful claim.
+   * Distinct from `startedAt` so a re-claim after the race clock has
+   * been running keeps the original start time but records the new
+   * host's takeover moment.
+   */
+  claimedAt?: number;
   /** Populated when state moves to 'closed'. Sorted by rank (DNFs last). */
   results: RaceResult[];
   flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
@@ -326,4 +344,27 @@ export interface RaceSessionQuickBotsOutput {
   botDifficulty: number;
   /** Total bot count (D10 = size - humanCount). */
   botCount: number;
+}
+
+// ─── Phase 4 Chunk 4: race_host_claim ────────────────────────────────────────
+
+export interface RaceHostClaimInput {
+  sessionId: string;
+  /**
+   * userId of the caller. Required when calling over HTTP gateway.
+   * The RPC verifies the caller is in the roster AND is the next
+   * entry in `hostSuccession` after the current (disconnected) host.
+   */
+  callerUserId: string;
+}
+
+export interface RaceHostClaimOutput {
+  sessionId: string;
+  newHost: string;
+  /** Server epoch-ms at which this claim was recorded (== previous claimedAt for replays). */
+  claimedAt: number;
+  /** Echoed for the client's clock-sync. Undefined when the session hasn't started. */
+  startedAt?: number;
+  /** New monotonic roster version after the claim was accepted. */
+  rosterVersion: number;
 }

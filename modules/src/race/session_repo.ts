@@ -108,6 +108,13 @@ export function updateSession(
  * responsible for all membership / state / capacity checks; this
  * helper does NOT validate.
  *
+ * Also extends `hostSuccession` with the joiner's userId so the
+ * host-claim RPC (Phase 4 Chunk 4) can find a candidate. We append
+ * (rather than insert-by-RTT) because the joiner didn't supply an
+ * RTT at join time — the next claim cycle will re-order if needed.
+ * Bots (`isBot: true`) are NOT added to hostSuccession because bots
+ * have no socket to attest reports.
+ *
  * On version conflict (another join raced us) the runtime refuses the
  * write and the helper throws. The caller should map the throw to a
  * `CONFLICT` envelope.
@@ -118,9 +125,16 @@ export function appendRosterEntry(
   entry: RosterEntry,
   expectedVersion: string,
 ): { version: string } {
+  const succession =
+    entry.isBot
+      ? session.hostSuccession
+      : session.hostSuccession.includes(entry.userId)
+        ? session.hostSuccession
+        : [...session.hostSuccession, entry.userId];
   const next: RaceSession = {
     ...session,
     roster: [...session.roster, entry],
+    hostSuccession: succession,
     version: session.version + 1,
   };
   return updateSession(nk, next, expectedVersion);
@@ -141,9 +155,80 @@ export function markStarted(
     ...session,
     state: 'started',
     startedAt,
+    claimedAt: startedAt,
     version: session.version + 1,
   };
   return updateSession(nk, next, expectedVersion);
+}
+
+// ─── Phase 4 Chunk 4 — host claim + disconnect reporting ─────────────────────
+
+/**
+ * Server-internal helper called by the relay when the host detects a
+ * player disconnect. Sets `disconnectReportedAt` on the matching roster
+ * entry so the next `race_host_claim` RPC can validate the grace
+ * window.
+ *
+ * Idempotent: calling twice on the same entry keeps the FIRST
+ * timestamp (we want the earliest report, so the grace window is
+ * longest).
+ *
+ * Throws when `userId` is not in the roster — relay layer bug.
+ */
+export function reportDisconnect(
+  nk: INakama,
+  session: RaceSession,
+  userId: string,
+  expectedVersion: string,
+  nowMs: number,
+): { version: string } {
+  const idx = session.roster.findIndex((e) => e.userId === userId);
+  if (idx === -1) {
+    throw new Error(`reportDisconnect: ${userId} not in roster`);
+  }
+  const entry = session.roster[idx]!;
+  // Idempotent: don't overwrite an existing report.
+  if (entry.disconnectReportedAt !== undefined) {
+    return { version: expectedVersion };
+  }
+  const newRoster = [...session.roster];
+  newRoster[idx] = { ...entry, disconnectReportedAt: nowMs };
+  const next: RaceSession = {
+    ...session,
+    roster: newRoster,
+    version: session.version + 1,
+  };
+  return updateSession(nk, next, expectedVersion);
+}
+
+/**
+ * Atomic `race_host_claim` write. Updates `host` to `newHost`,
+ * stamps `claimedAt = nowMs`, and bumps the session version. The
+ * caller MUST validate (via `validateHostClaim`) that:
+ *   - newHost is in the roster
+ *   - newHost is the next entry in `hostSuccession` after the current host
+ *   - the current host has a recent `disconnectReportedAt`
+ *   - the session is in state `'started'`
+ *
+ * Idempotent for replays: when the caller is already the host AND
+ * `claimedAt` is unchanged, returns `{ version: expectedVersion }`
+ * without a CAS write (the cache layer upstream makes this safe).
+ */
+export function claimHost(
+  nk: INakama,
+  session: RaceSession,
+  newHost: string,
+  expectedVersion: string,
+  nowMs: number,
+): { version: string; claimedAt: number } {
+  const next: RaceSession = {
+    ...session,
+    host: newHost,
+    claimedAt: nowMs,
+    version: session.version + 1,
+  };
+  const r = updateSession(nk, next, expectedVersion);
+  return { version: r.version, claimedAt: nowMs };
 }
 
 /**

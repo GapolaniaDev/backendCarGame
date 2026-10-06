@@ -31,6 +31,19 @@ export const CLOCK_SKEW_TOLERANCE_MS = 500;
  */
 export const CLOSE_GRACE_MS = 30_000;
 
+/**
+ * Phase 4 Chunk 4 — host-claim grace window. After this many seconds
+ * since `disconnectReportedAt` was stamped on the host's roster entry,
+ * a new claim is rejected (the host is treated as abandoned and the
+ * session is closed by the abandon tracker in Chunk 9). Aligned with
+ * `ranked_config.graceSeconds` = 20.
+ *
+ * The validation tolerates +5s of clock drift on top of this so the
+ * relay's reportedAt and the server's nowMs don't race.
+ */
+export const HOST_CLAIM_GRACE_SECONDS = 20;
+export const HOST_CLAIM_GRACE_TOLERANCE_MS = 5_000;
+
 /** Per-client RPC rate-limit windows (calls per window per user). */
 export const RATE_LIMITS = {
   config_get: { maxPerWindow: 60, windowSec: 60 },
@@ -40,6 +53,7 @@ export const RATE_LIMITS = {
   race_session_get: { maxPerWindow: 60, windowSec: 60 },
   race_submit_result: { maxPerWindow: 6, windowSec: 60 },
   race_session_quick_bots: { maxPerWindow: 6, windowSec: 60 },
+  race_host_claim: { maxPerWindow: 3, windowSec: 60 },
 } as const;
 
 /**

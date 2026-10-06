@@ -17,7 +17,7 @@
 
 import { err } from '../core/response';
 import type { Resp } from '../core/response';
-import { CLOCK_SKEW_TOLERANCE_MS } from './constants';
+import { CLOCK_SKEW_TOLERANCE_MS, HOST_CLAIM_GRACE_SECONDS, HOST_CLAIM_GRACE_TOLERANCE_MS } from './constants';
 import type { RaceReport, RaceSession, RosterEntry } from './types';
 import type { TrackEntry } from '../core/catalog';
 
@@ -168,4 +168,128 @@ export function validateSubmissionStep2(input: Step2Input): Resp<true> {
   }
 
   return { ok: true, data: true };
+}
+
+// ─── Phase 4 Chunk 4 — host-claim validation ─────────────────────────────────
+
+/**
+ * Outcome of `validateHostClaim`. Distinct so the handler can map
+ * rejection reasons to envelope codes (`FORBIDDEN` / `CONFLICT` /
+ * `BAD_REQUEST`) without string-matching the message.
+ */
+export type HostClaimErrorCode =
+  | 'FORBIDDEN'        // caller not in roster
+  | 'CONFLICT'         // session already claimed by someone else
+  | 'BAD_REQUEST';     // session not started, no disconnect, or wrong succession slot
+
+export interface HostClaimInput {
+  session: RaceSession;
+  callerUserId: string;
+  /** Server `serverNowMs()` at validation time. */
+  nowMs: number;
+}
+
+export type HostClaimResult =
+  | { ok: true; /** True when the caller's re-claim is a no-op (already host). */
+      idempotent: boolean;
+      claimedAt: number }
+  | { ok: false; code: HostClaimErrorCode; reason: string };
+
+/**
+ * Validate a `race_host_claim` request without performing any storage
+ * writes. Returns `{ ok: true, idempotent }` when the caller is already
+ * the host (re-claim after a successful claim — return the recorded
+ * `claimedAt` so the response matches the original). For a fresh claim
+ * returns `{ ok: true, idempotent: false, claimedAt: nowMs }`.
+ *
+ * Rejections (mapped to envelope codes by the handler):
+ *   - `FORBIDDEN`  — caller not in roster
+ *   - `BAD_REQUEST` — session.state != 'started', no host disconnect
+ *                     recorded, or caller isn't the next succession slot
+ *
+ * Race / grace checks:
+ *   - Host's `disconnectReportedAt` must exist
+ *   - `nowMs - disconnectReportedAt <= graceMs + toleranceMs` (otherwise
+ *     the host is treated as abandoned — Chunk 9 will close the session)
+ *   - Caller must be the entry immediately after the current host in
+ *     `hostSuccession` (or an `idempotent` re-claim when caller == host)
+ */
+export function validateHostClaim(input: HostClaimInput): HostClaimResult {
+  const { session, callerUserId, nowMs } = input;
+
+  // Roster membership — defense against a forged callerUserId over HTTP.
+  const callerEntry = session.roster.find((e) => e.userId === callerUserId);
+  if (!callerEntry) {
+    return {
+      ok: false,
+      code: 'FORBIDDEN',
+      reason: `caller ${callerUserId} is not in the session roster`,
+    };
+  }
+
+  // State must allow mid-race host transfers.
+  if (session.state !== 'started') {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `session in state ${session.state}; only 'started' allows host claim`,
+    };
+  }
+
+  // Idempotent re-claim: caller is already host AND there's a claimedAt
+  // we can echo. Return the existing claimedAt unchanged so the
+  // response matches the original claim.
+  if (session.host === callerUserId) {
+    const claimedAt = session.claimedAt ?? session.startedAt ?? nowMs;
+    return { ok: true, idempotent: true, claimedAt };
+  }
+
+  // Current host must have a recorded disconnect.
+  const hostEntry = session.roster.find((e) => e.userId === session.host);
+  if (!hostEntry) {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `current host ${session.host} not found in roster (data corruption)`,
+    };
+  }
+  if (hostEntry.disconnectReportedAt === undefined) {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `current host ${session.host} has no disconnectReportedAt; nothing to claim`,
+    };
+  }
+
+  // Grace window — claim must land before grace expires (with skew tolerance).
+  const elapsedMs = nowMs - hostEntry.disconnectReportedAt;
+  const graceMs = HOST_CLAIM_GRACE_SECONDS * 1000 + HOST_CLAIM_GRACE_TOLERANCE_MS;
+  if (elapsedMs > graceMs) {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `host disconnect reported ${elapsedMs}ms ago exceeds grace ${graceMs}ms`,
+    };
+  }
+
+  // Succession order — caller must be the entry immediately after host.
+  const succession = session.hostSuccession;
+  const hostIdx = succession.indexOf(session.host);
+  const callerIdx = succession.indexOf(callerUserId);
+  if (callerIdx === -1) {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `caller ${callerUserId} is not in the host succession list`,
+    };
+  }
+  if (callerIdx !== hostIdx + 1) {
+    return {
+      ok: false,
+      code: 'BAD_REQUEST',
+      reason: `caller ${callerUserId} is succession[${callerIdx}] but must be succession[${hostIdx + 1}]`,
+    };
+  }
+
+  return { ok: true, idempotent: false, claimedAt: nowMs };
 }

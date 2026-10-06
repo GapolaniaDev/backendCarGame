@@ -18,6 +18,7 @@ import { EventBus } from './core/event_bus';
 import { RACE_EVENT_RACE_COMPLETED } from './race/constants';
 import {
   config_get,
+  race_host_claim,
   race_session_create,
   race_session_join,
   race_session_start,
@@ -193,6 +194,7 @@ function InitModule(
     initializer.registerRpc('race_session_get', race_session_get);
     initializer.registerRpc('race_submit_result', race_submit_result);
     initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
+    initializer.registerRpc('race_host_claim', race_host_claim);
     initializer.registerRpc('lb_get', lb_get);
     initializer.registerRpc('profile_get', profile_get);
     initializer.registerRpc('profile_update', profile_update);

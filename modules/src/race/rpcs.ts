@@ -35,19 +35,23 @@ import { canTransition } from './state';
 import {
   allSubmitted,
   appendRosterEntry,
+  claimHost as claimHostRepo,
   createSession,
   lookupLastClosed,
   markStarted,
   readSession,
+  reportDisconnect,
   submitReport,
   tryCloseAndPublish,
 } from './session_repo';
-import { validateSubmissionStep1, validateSubmissionStep2 } from './validation';
+import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
 import type {
   ConfigGetOutput,
   CarClassId,
   Loadout,
   RaceCompletedEvent,
+  RaceHostClaimInput,
+  RaceHostClaimOutput,
   RaceReport,
   RaceSession,
   RaceSessionCreateInput,
@@ -1247,6 +1251,133 @@ function race_session_quick_bots_impl(
   return toJson(ok(out));
 }
 
+// ─── race_host_claim (Phase 4 Chunk 4) ─────────────────────────────────────────
+
+/**
+ * Host-claim RPC. Called by a player in `hostSuccession[1]` (or
+ * later) when the current host has disconnected. Validates:
+ *   - session exists and is in state 'started'
+ *   - caller is in the roster (FORBIDDEN otherwise)
+ *   - current host has `disconnectReportedAt` within the grace window
+ *   - caller is the entry immediately after the current host in
+ *     `hostSuccession`
+ *
+ * On success: CAS-writes the new `host`, stamps `claimedAt = nowMs`,
+ * and returns the new state. Idempotent: re-claims by the same caller
+ * return the existing `claimedAt` unchanged.
+ *
+ * Decision D5 (per plan): the RPC rejects with CONFLICT only when
+ * ANOTHER caller has claimed the host between two consecutive
+ * attempts. Replays by the same caller are NOT conflicts.
+ */
+function race_host_claim_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  payload: string,
+): string {
+  const parsed = parsePayload<RaceHostClaimInput>(payload);
+  if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
+  if (!parsed.ok) return toJson(parsed);
+  const input = parsed.data;
+
+  // Caller resolution — same convention as the other race RPCs.
+  let callerId: string;
+  if (ctx.userId) {
+    callerId = ctx.userId;
+  } else {
+    if (
+      typeof input.callerUserId !== 'string' ||
+      input.callerUserId.length === 0
+    ) {
+      return toJson(
+        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
+      );
+    }
+    callerId = input.callerUserId;
+  }
+
+  const sessionId =
+    typeof input.sessionId === 'string' && input.sessionId.length > 0
+      ? input.sessionId
+      : '';
+  if (!sessionId) {
+    return toJson(err('BAD_REQUEST', 'sessionId is required'));
+  }
+
+  const rl = checkRateLimit(nk, {
+    rpcName: 'race_host_claim',
+    userId: callerId,
+    ...RATE_LIMITS.race_host_claim,
+  });
+  if (!rl.allowed) {
+    return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
+  }
+
+  const cur = readSession(nk, sessionId);
+  if (!cur) {
+    return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
+  }
+
+  const nowMs = serverNowMs();
+  const v = validateHostClaim({ session: cur.session, callerUserId: callerId, nowMs });
+  if (!v.ok) {
+    return toJson(err(v.code, v.reason));
+  }
+
+  // Idempotent re-claim — no storage write needed.
+  if (v.idempotent) {
+    logger.info(
+      'race_host_claim sid=%s caller=%s idempotent (already host) claimedAt=%d',
+      sessionId,
+      callerId,
+      v.claimedAt,
+    );
+    const out: RaceHostClaimOutput = {
+      sessionId,
+      newHost: callerId,
+      claimedAt: v.claimedAt,
+      ...(cur.session.startedAt !== null ? { startedAt: cur.session.startedAt } : {}),
+      rosterVersion: cur.session.version,
+    };
+    return toJson(ok(out));
+  }
+
+  // Fresh claim — CAS write.
+  let newVersion: string;
+  let newClaimedAt: number;
+  try {
+    const r = claimHostRepo(nk, cur.session, callerId, cur.version, v.claimedAt);
+    newVersion = r.version;
+    newClaimedAt = r.claimedAt;
+  } catch (e) {
+    logger.warn(
+      'race_host_claim sid=%s caller=%s CAS conflict: %s',
+      sessionId,
+      callerId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return toJson(err('CONFLICT', 'concurrent host-claim raced — please retry'));
+  }
+
+  logger.info(
+    'race_host_claim sid=%s newHost=%s (was %s) claimedAt=%d',
+    sessionId,
+    callerId,
+    cur.session.host,
+    newClaimedAt,
+  );
+
+  const out: RaceHostClaimOutput = {
+    sessionId,
+    newHost: callerId,
+    claimedAt: newClaimedAt,
+    ...(cur.session.startedAt !== null ? { startedAt: cur.session.startedAt } : {}),
+    rosterVersion: parseInt(newVersion.replace(/^v/, ''), 10) || cur.session.version + 1,
+  };
+  return toJson(ok(out));
+}
+
 // ─── Top-level exports ────────────────────────────────────────────────────────
 
 // goja resolver first looks the RPC fn up by NAME on the global object after
@@ -1264,6 +1395,8 @@ export const race_session_get: RpcHandler = race_session_get_impl;
 export const race_submit_result: RpcHandler = race_submit_result_impl;
 // Phase 4 Chunk 3 — quick-mode bot fill.
 export const race_session_quick_bots: RpcHandler = race_session_quick_bots_impl;
+// Phase 4 Chunk 4 — host claim on disconnect.
+export const race_host_claim: RpcHandler = race_host_claim_impl;
 
 /**
  * Stable name → handler map for tests. The keys here MUST match the
@@ -1277,6 +1410,7 @@ export const raceRpcs: Readonly<Record<string, RpcHandler>> = Object.freeze({
   race_session_get,
   race_submit_result,
   race_session_quick_bots,
+  race_host_claim,
 });
 
 export const RACE_RPC_KEYS: readonly string[] = Object.freeze(Object.keys(raceRpcs));
