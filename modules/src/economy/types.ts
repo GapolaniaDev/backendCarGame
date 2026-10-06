@@ -21,7 +21,7 @@ export interface WalletChangeset {
  * Reason attached to every wallet move. Drives both the idempotency
  * cache key and the ledger metadata that ops audits later.
  */
-export type LedgerReason = 'race' | 'mission' | 'store' | 'level' | 'admin';
+export type LedgerReason = 'race' | 'mission' | 'store' | 'level' | 'admin' | 'inbox';
 
 /**
  * Compact metadata attached to each wallet move. Nakama accepts ~256

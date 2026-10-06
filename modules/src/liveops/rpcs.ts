@@ -17,6 +17,11 @@ import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import { loadLiveopsConfig, type LiveopsConfig } from './config';
 import type { ClientPlatform, LiveopsRegion, LiveopsCalendarEntry } from './types';
+import { claimInbox, listInbox, sendInbox, type InboxMessage } from './messages';
+import { grant } from '../economy/wallet';
+import { addCarToGarage, addCosmeticToBag, readGarage, readGarageObject, writeGarageCreate, writeGarageUpdate, defaultGarage } from '../garage/storage';
+import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
+import { liveopsGate } from '../core/liveops';
 
 export interface LiveopsConfigGetInput {
   /** Required when called via HTTP gateway; the socket path reads it from ctx.userId. */
@@ -91,6 +96,8 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 interface ParseOk<T> {
   ok: true;
   value: T;
+  /** Raw payload so handlers can access arbitrary keys not in the typed shape. */
+  raw: Record<string, unknown>;
 }
 interface ParseErr {
   ok: false;
@@ -113,7 +120,7 @@ function parseInput(body: string): ParseOk<LiveopsConfigGetInput> | ParseErr {
   const out: LiveopsConfigGetInput = {
     callerUserId: typeof obj['callerUserId'] === 'string' ? (obj['callerUserId'] as string) : '',
   };
-  return { ok: true, value: out };
+  return { ok: true, value: out, raw: obj };
 }
 
 interface CallerOk {
@@ -163,3 +170,156 @@ function toJson<T>(r: Resp<T>): string {
 
 // Top-level binding for the goja AST scanner.
 export const liveops_config_get: RpcHandler = liveops_config_get_impl;
+
+// ─── inbox_list ────────────────────────────────────────────────────────────
+
+export interface InboxListInput {
+  callerUserId: string;
+  limit?: number;
+  cursor?: string;
+  includeClaimed?: boolean;
+}
+
+export interface InboxListOutput {
+  messages: InboxMessage[];
+  nextCursor: string;
+  unreadCount: number;
+}
+
+export const inbox_list_impl: RpcHandler = (ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+
+  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  if (!callerId.ok) return callerId.error;
+  const userId = callerId.id;
+
+  // NOT maintenance-gated — the client must see the inbox messages
+  // even while the splash is shown.
+  const opts: { limit?: number; cursor?: string; includeClaimed?: boolean } = {};
+  const p = parsed.raw;
+  if (typeof p['limit'] === 'number') opts.limit = p['limit'] as number;
+  if (typeof p['cursor'] === 'string') opts.cursor = p['cursor'] as string;
+  if (typeof p['includeClaimed'] === 'boolean') opts.includeClaimed = p['includeClaimed'] as boolean;
+
+  const result = listInbox(nk, userId, opts, Date.now());
+  logger.info('inbox_list user=%s returned=%d unread=%d', userId, result.messages.length, result.unreadCount);
+  return toJson(ok({
+    messages: result.messages,
+    nextCursor: result.nextCursor,
+    unreadCount: result.unreadCount,
+  }));
+};
+
+// ─── inbox_claim ───────────────────────────────────────────────────────────
+
+export interface InboxClaimInput {
+  messageId: string;
+  callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
+}
+
+export interface InboxClaimOutput {
+  message: InboxMessage;
+  newBalance?: { coins: number; gems: number };
+  /** Car/cosmetic ids delivered (for client-side confirmation toast). */
+  delivered?: { carId?: string; cosmeticId?: string };
+}
+
+export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+
+  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  if (!callerId.ok) return callerId.error;
+  const userId = callerId.id;
+  const rawP = parsed.raw;
+  const messageId = rawP['messageId'];
+  if (typeof messageId !== 'string' || messageId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'messageId is required'));
+  }
+
+  // LiveOps gate (maintenance + min client version).
+  const gate = liveopsGate(
+    logger,
+    nk,
+    userId,
+    typeof rawP['clientVersion'] === 'string' ? (rawP['clientVersion'] as string) : undefined,
+    typeof rawP['platform'] === 'string' ? (rawP['platform'] as ClientPlatform) : 'ios',
+  );
+  if (gate !== null) return toJson(gate);
+
+  const result = claimInbox(nk, userId, messageId, Date.now(), (nkArg, uid, changeset, idempKey) => {
+    const grantResp = grant(nkArg, uid, changeset, { reason: 'inbox', sourceId: messageId }, idempKey);
+    if (!grantResp.ok) {
+      // The CAS already succeeded; surface the error so the client retries
+      // and the idempotency key prevents double-credit.
+      throw new Error(`inbox grant failed: ${grantResp.error.code} ${grantResp.error.message}`);
+    }
+    return { coins: grantResp.data.coins, gems: grantResp.data.gems };
+  });
+  if (!result.ok) {
+    return toJson(err(result.code, result.message));
+  }
+
+  // Apply car/cosmetic rewards AFTER the claim CAS so a delivery
+  // failure doesn't roll back the claim (idempotency on the wallet
+  // side keeps coins/gems safe).
+  const delivered: { carId?: string; cosmeticId?: string } = {};
+  const reward = result.message.reward;
+  if (reward !== undefined) {
+    if (typeof reward.carId === 'string' && reward.carId.length > 0) {
+      const car = getCarsCatalog().cars.find((c) => c.id === reward.carId);
+      if (car) {
+        const existing = readGarage(nk, userId);
+        if (existing === null) {
+          // No garage yet — create one with the car as the first owned car.
+          const created = defaultGarage(userId, Date.now());
+          const withCar = addCarToGarage(created, car);
+          writeGarageCreate(nk, withCar);
+        } else {
+          const next = addCarToGarage(existing, car);
+          // Use the read-with-version helper so the CAS write is correct.
+          const read = readGarageWithVersion(nk, userId);
+          if (read !== null) writeGarageUpdate(nk, next, read.version);
+        }
+        delivered.carId = reward.carId;
+      }
+    }
+    if (typeof reward.cosmeticId === 'string' && reward.cosmeticId.length > 0) {
+      const cosmetic = getCosmeticsCatalog().items.find((c) => c.id === reward.cosmeticId);
+      if (cosmetic) {
+        const existing = readGarage(nk, userId);
+        if (existing === null) {
+          writeGarageCreate(nk, defaultGarage(userId, Date.now()));
+        } else {
+          const next = addCosmeticToBag(existing, reward.cosmeticId);
+          const read = readGarageWithVersion(nk, userId);
+          if (read !== null) writeGarageUpdate(nk, next, read.version);
+        }
+        delivered.cosmeticId = reward.cosmeticId;
+      }
+    }
+  }
+
+  logger.info(
+    'inbox_claim user=%s message=%s delivered=%j',
+    userId, messageId, delivered,
+  );
+  const out: InboxClaimOutput = {
+    message: result.message,
+    ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
+    ...(Object.keys(delivered).length > 0 ? { delivered } : {}),
+  };
+  return toJson(ok(out));
+};
+
+// Top-level bindings for the goja AST scanner.
+export const inbox_list: RpcHandler = inbox_list_impl;
+export const inbox_claim: RpcHandler = inbox_claim_impl;
+
+/** Read garage with version (thin wrapper that returns null on miss). */
+function readGarageWithVersion(nk: INakama, userId: string): { value: import('../garage/types').Garage; version: string } | null {
+  return readGarageObject(nk, userId);
+}
