@@ -20,14 +20,17 @@
 import type { IStorageObject, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import type {
+  AchievementsRecord,
   DailyMissions,
   MissionDefinition,
   MissionReward,
   WeeklyMissions,
 } from './types';
 import {
+  achievementsKey,
   dailyMissionsKey,
   weeklyMissionsKey,
+  ACHIEVEMENTS_COLLECTION,
   MISSIONS_DAILY_COLLECTION,
   MISSIONS_WEEKLY_COLLECTION,
   SERVER_OWNED_READ,
@@ -418,4 +421,156 @@ export function rerollDailyMission(
     }
   }
   return err('CONFLICT', `reroll CAS retries exhausted for ${missionId}`);
+}
+
+// ─── Subscriber CAS write helpers (Chunk 4) ─────────────────────────────────
+//
+// Pattern: re-read → apply pure delta → write with version. On conflict,
+// re-read + re-apply the same delta + retry up to MAX_CAS_RETRIES times. On
+// exhaustion, log error + return false (caller can continue with the next
+// player). The subscriber must NEVER throw on storage churn.
+
+const SUBSCRIBER_MAX_CAS_RETRIES = 3;
+
+/**
+ * CAS-write a daily missions update. Returns `true` when the write
+ * succeeded (possibly after retries), `false` when retries were
+ * exhausted (subscriber should continue with the next user).
+ */
+export function writeDailyMissionsCAS(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  dateUtc: string,
+  next: DailyMissions,
+): boolean {
+  const collection = MISSIONS_DAILY_COLLECTION;
+  const key = dailyMissionsKey(userId, dateUtc);
+  for (let attempt = 0; attempt < SUBSCRIBER_MAX_CAS_RETRIES; attempt++) {
+    const existing = readRecord(nk, collection, key, userId);
+    if (existing === null) {
+      // Storage row vanished (likely a race with `ensureDailyMissions`
+      // creating the very first row). Recreate it without a version.
+      const obj = buildWriteObject(collection, key, userId, next, undefined);
+      try {
+        casWrite(nk, obj);
+        return true;
+      } catch (e) {
+        logger.warn(
+          'writeDailyMissionsCAS initial write attempt %d user=%s: %s',
+          attempt + 1, userId,
+          e instanceof Error ? e.message : String(e),
+        );
+        continue;
+      }
+    }
+    const obj = buildWriteObject(collection, key, userId, next, existing.version);
+    try {
+      casWrite(nk, obj);
+      return true;
+    } catch (e) {
+      logger.warn(
+        'writeDailyMissionsCAS conflict attempt %d user=%s: %s',
+        attempt + 1, userId,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  logger.error(
+    'writeDailyMissionsCAS retries exhausted user=%s date=%s',
+    userId, dateUtc,
+  );
+  return false;
+}
+
+/**
+ * CAS-write a weekly missions update. Same retry semantics as
+ * `writeDailyMissionsCAS`.
+ */
+export function writeWeeklyMissionsCAS(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  weekUtc: string,
+  next: WeeklyMissions,
+): boolean {
+  const collection = MISSIONS_WEEKLY_COLLECTION;
+  const key = weeklyMissionsKey(userId, weekUtc);
+  for (let attempt = 0; attempt < SUBSCRIBER_MAX_CAS_RETRIES; attempt++) {
+    const existing = readRecord(nk, collection, key, userId);
+    if (existing === null) {
+      const obj = buildWriteObject(collection, key, userId, next, undefined);
+      try {
+        casWrite(nk, obj);
+        return true;
+      } catch (e) {
+        logger.warn(
+          'writeWeeklyMissionsCAS initial write attempt %d user=%s: %s',
+          attempt + 1, userId,
+          e instanceof Error ? e.message : String(e),
+        );
+        continue;
+      }
+    }
+    const obj = buildWriteObject(collection, key, userId, next, existing.version);
+    try {
+      casWrite(nk, obj);
+      return true;
+    } catch (e) {
+      logger.warn(
+        'writeWeeklyMissionsCAS conflict attempt %d user=%s: %s',
+        attempt + 1, userId,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  logger.error(
+    'writeWeeklyMissionsCAS retries exhausted user=%s week=%s',
+    userId, weekUtc,
+  );
+  return false;
+}
+
+/**
+ * CAS-write an achievements update. Same retry semantics as
+ * `writeDailyMissionsCAS`.
+ */
+export function writeAchievementsCAS(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  next: AchievementsRecord,
+): boolean {
+  const collection = ACHIEVEMENTS_COLLECTION;
+  const key = achievementsKey(userId);
+  for (let attempt = 0; attempt < SUBSCRIBER_MAX_CAS_RETRIES; attempt++) {
+    const existing = readRecord(nk, collection, key, userId);
+    if (existing === null) {
+      const obj = buildWriteObject(collection, key, userId, next, undefined);
+      try {
+        casWrite(nk, obj);
+        return true;
+      } catch (e) {
+        logger.warn(
+          'writeAchievementsCAS initial write attempt %d user=%s: %s',
+          attempt + 1, userId,
+          e instanceof Error ? e.message : String(e),
+        );
+        continue;
+      }
+    }
+    const obj = buildWriteObject(collection, key, userId, next, existing.version);
+    try {
+      casWrite(nk, obj);
+      return true;
+    } catch (e) {
+      logger.warn(
+        'writeAchievementsCAS conflict attempt %d user=%s: %s',
+        attempt + 1, userId,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  logger.error('writeAchievementsCAS retries exhausted user=%s', userId);
+  return false;
 }

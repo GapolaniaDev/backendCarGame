@@ -74,6 +74,7 @@ import {
 import { loadPassCatalog } from './pass/catalog';
 import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
 import { missions_get, mission_claim, mission_reroll } from './missions/rpcs';
+import { subscribeMissionsProgress } from './missions/subscriber';
 import { account_link, account_link_resolve_conflict, account_delete } from './account/rpcs';
 import {
   admin_wallet_adjust,
@@ -253,6 +254,9 @@ function InitModule(
   subscribeProgressionRewards({ logger, nk, bus });
   // Phase 4: ranked rating updates for every closed ranked race.
   subscribeRankedRewards({ logger, nk, bus });
+  // Phase 6 Chunk 4: missions + achievements progress for every
+  // closed race (all modes). Bots filtered; lazy storage skipped.
+  subscribeMissionsProgress({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
