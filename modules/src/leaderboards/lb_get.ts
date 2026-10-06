@@ -21,6 +21,10 @@ import {
   getLeaderboardTable,
 } from './catalog';
 import { err, ok, type Resp } from '../core/response';
+import { liveopsGate } from '../core/liveops';
+import type { ClientPlatform } from '../liveops/types';
+
+const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
 export type LbView = 'global' | 'around_me' | 'friends';
 
@@ -43,6 +47,10 @@ export interface LbGetInput {
    * null). Verified against ctx.userId on socket calls.
    */
   callerUserId: string;
+  /** Client semver — sent in payload (RPC handler can't read HTTP headers). */
+  clientVersion?: string;
+  /** Client platform (defaults to 'ios' when omitted). */
+  platform?: ClientPlatform;
 }
 
 export interface LbRecordWithRank {
@@ -106,6 +114,16 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   } else {
     return toJson(err('UNAUTHENTICATED', 'no caller identity'));
   }
+
+  // LiveOps gate (maintenance + min client version).
+  const gate = liveopsGate(
+    logger,
+    nk,
+    callerId,
+    typeof payload.clientVersion === 'string' ? payload.clientVersion : undefined,
+    typeof payload.platform === 'string' ? (payload.platform as ClientPlatform) : PLATFORM_DEFAULT,
+  );
+  if (gate !== null) return toJson(gate);
 
   // Validate inputs.
   const leaderboardId = payload.leaderboardId;

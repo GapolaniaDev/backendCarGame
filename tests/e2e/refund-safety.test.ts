@@ -33,7 +33,11 @@ function call<T>(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   const ctx = { ...FakeContext, userId: caller };
-  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  // Inject liveops gate bypass (clientVersion/platform) into object payloads
+  // so the Phase 5 Chunk 2 UPGRADE_REQUIRED doesn't trip every legacy test.
+  const body = typeof payload === 'string'
+    ? payload
+    : JSON.stringify({ clientVersion: '1.0.0', platform: 'ios', ...(payload as Record<string, unknown>) });
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }
 

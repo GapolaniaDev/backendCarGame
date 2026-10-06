@@ -35,11 +35,19 @@ import type {
   UpgradeLine,
 } from './types';
 import { COSMETIC_SLOTS, UPGRADE_LINES } from './types';
+import { liveopsGate } from '../core/liveops';
+import type { ClientPlatform } from '../liveops/types';
+
+const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
 export interface GarageGetInput {
   /** Target userId. Defaults to the caller. */
   userId?: string;
   callerUserId: string;
+  /** Client semver — sent in payload (RPC handler can't read HTTP headers). */
+  clientVersion?: string;
+  /** Client platform (defaults to 'ios' when omitted). */
+  platform?: ClientPlatform;
 }
 
 export interface GarageGetOutput {
@@ -84,6 +92,8 @@ export const garage_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
 
   const targetUserId = parsed.value.userId ?? callerId.id;
 
@@ -135,6 +145,8 @@ function parseInput<T>(body: string): ParseOk<T> | ParseErr {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return { ok: false, error: toJson(err('BAD_REQUEST', 'payload must be an object')) };
   }
+  // Pass the parsed object through; gate fields (clientVersion, platform)
+  // are extracted by the gate helper from `parsed.value` directly.
   return { ok: true, value: raw as T };
 }
 
@@ -215,6 +227,8 @@ export const garage_get: RpcHandler = garage_get_impl;
 export interface CarBuyInput {
   carId: string;
   callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
 }
 
 export interface CarBuyOutput {
@@ -241,6 +255,8 @@ export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
 
   const userId = callerId.id;
 
@@ -330,6 +346,8 @@ export interface CarUpgradeInput {
   line: UpgradeLine;
   newLevel: number;
   callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
 }
 
 export interface CarUpgradeOutput {
@@ -348,6 +366,8 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
   const userId = callerId.id;
 
   // Validate inputs.
@@ -439,6 +459,8 @@ export interface CosmeticEquipInput {
   slot: CosmeticSlot;
   cosmeticId: string;
   callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
 }
 
 export interface CosmeticEquipOutput {
@@ -460,6 +482,8 @@ export const cosmetic_equip_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
   const userId = callerId.id;
 
   // Validate inputs.
@@ -522,6 +546,8 @@ export const cosmetic_equip_impl: RpcHandler = (ctx, logger, nk, body) => {
 export interface LoadoutSetInput {
   carId: string;
   callerUserId: string;
+  clientVersion?: string;
+  platform?: ClientPlatform;
 }
 
 export interface LoadoutSetOutput {
@@ -540,6 +566,8 @@ export const loadout_set_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
   const userId = callerId.id;
 
   const car = getCarsCatalog().cars.find((c) => c.id === parsed.value.carId);

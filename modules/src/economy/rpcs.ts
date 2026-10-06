@@ -19,11 +19,19 @@
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import { walletGet } from './wallet';
+import { liveopsGate } from '../core/liveops';
+import type { ClientPlatform } from '../liveops/types';
+
+const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
 export interface WalletGetInput {
   /** Required when called via HTTP gateway; the socket canonical path
    *  reads it from `ctx.userId` instead. */
   callerUserId: string;
+  /** Client semver — sent in payload (RPC handler can't read HTTP headers). */
+  clientVersion?: string;
+  /** Client platform (defaults to 'ios' when omitted). */
+  platform?: ClientPlatform;
 }
 
 export interface PendingCredit {
@@ -69,6 +77,8 @@ export const wallet_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
   if (!callerId.ok) return callerId.error;
+  const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
+  if (gate !== null) return toJson(gate);
   const userId = callerId.id;
 
   const view = walletGet(nk, userId);
@@ -148,6 +158,8 @@ function parseInput(body: string): ParseOk<WalletGetInput> | ParseErr {
   const obj = raw as Record<string, unknown>;
   const out: WalletGetInput = {
     callerUserId: typeof obj['callerUserId'] === 'string' ? (obj['callerUserId'] as string) : '',
+    ...(typeof obj['clientVersion'] === 'string' ? { clientVersion: obj['clientVersion'] as string } : {}),
+    ...(typeof obj['platform'] === 'string' ? { platform: obj['platform'] as ClientPlatform } : {}),
   };
   return { ok: true, value: out };
 }

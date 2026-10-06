@@ -15,6 +15,8 @@ export const ERROR_CODES = [
   'INTERNAL',
   'CATALOG_INVALID',
   'INSUFFICIENT_FUNDS',
+  'SERVICE_UNAVAILABLE',
+  'UPGRADE_REQUIRED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -31,6 +33,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   INTERNAL: 'An unexpected server error occurred',
   CATALOG_INVALID: 'A game-data catalog failed validation at boot',
   INSUFFICIENT_FUNDS: 'Wallet balance is too low for this operation',
+  SERVICE_UNAVAILABLE: 'El servidor está en mantenimiento. Vuelve pronto.',
+  UPGRADE_REQUIRED: 'Tu versión del juego está desactualizada. Actualiza para continuar.',
 };
 
 /** Type guard for narrowing user input / storage payloads to a known code. */

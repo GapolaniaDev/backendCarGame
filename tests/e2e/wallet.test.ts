@@ -29,7 +29,12 @@ function call<T>(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   const ctx = { ...FakeContext, userId: caller };
-  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  // Inject liveops gate bypass (clientVersion/platform) into object payloads
+  // so the Phase 5 Chunk 2 UPGRADE_REQUIRED doesn't trip every legacy test.
+  // String payloads pass through (intentionally — used to test BAD_REQUEST).
+  const body = typeof payload === 'string'
+    ? payload
+    : JSON.stringify({ clientVersion: '1.0.0', platform: 'ios', ...(payload as Record<string, unknown>) });
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }
 
@@ -44,6 +49,21 @@ function callAnonymous<T>(
   delete (ctx as { userId?: string }).userId;
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
+}
+
+/**
+ * Wrapper around `call` that injects `clientVersion: '1.0.0'` so the
+ * Phase 5 Chunk 2 liveops gate (`UPGRADE_REQUIRED` on missing version) doesn't
+ * trip every legacy test in this file. Use this for RPCs that go through
+ * the maintenance + min-version gate (wallet_get today).
+ */
+function callWallet<T>(
+  env: ReturnType<typeof loadBundleForTest>,
+  rpc: string,
+  caller: string,
+  payload: Record<string, unknown>,
+): T {
+  return call<T>(env, rpc, caller, { clientVersion: '1.0.0', platform: 'ios', ...payload });
 }
 
 function setWallet(env: ReturnType<typeof loadBundleForTest>, userId: string, coins: number, gems = 0): void {
