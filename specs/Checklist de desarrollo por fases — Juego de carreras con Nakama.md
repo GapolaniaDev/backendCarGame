@@ -152,11 +152,11 @@ escrita por el cliente se descarta.
 Objetivo: que correr dé monedas y XP, y que eso se convierta en autos, mejoras y
 cosméticos que los rivales ven aplicados en la carrera.
 ### 3.1 Diseño y contratos
-- [ ] Hoja de cálculo de economía: monedas por hora de juego, costo de cada auto y mejora, días hasta el primer auto nuevo (objetivo: 2 a 3)
+- [x] Hoja de cálculo de economía: monedas por hora de juego, costo de cada auto y mejora, días hasta el primer auto nuevo (objetivo: 2 a 3) — escrito en `docs/economy.md#economy-spreadsheet` (2026-10-06); **GAP detectado**: casual 1 h/día tarda 8-9 días en `civic_r` (objetivo 2-3 no se cumple con catálogo actual) — recomendado en sección I
 - [x] Lista de los 6 autos iniciales (o más) con clase y estadísticas base y tope
 - [x] Lista inicial de cosméticos por tipo: pintura, llantas, calcomanía, estela, bocina
 - [x] Tabla de XP por nivel (1 a 50) y desbloqueos por nivel
-- [ ] Contrato escrito de garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set, store_get, store_buy, wallet_get
+- [x] Contrato escrito de garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set, store_get, store_buy, wallet_get — §16.1-§16.8 de `docs/unity-api.md` (Phase 3 wrap-up); errores y edge cases en `docs/economy.md`, `docs/garage.md`, `docs/store.md`
 ### 3.2 Servidor: módulo economy
 - [x] Monedas coins y gems en el wallet de Nakama
 - [x] Función única grant(userId, recompensa, motivo, claveIdempotencia) usada por todos los módulos
@@ -228,45 +228,45 @@ Objetivo: que un jugador entre a una cola y termine en una carrera de 2, 4 o 6 a
 rivales de su nivel, con bots cuando falte gente en carrera rápida, y que el ranked mueva
 un rating confiable.
 ### 4.1 Diseño y contratos
-- [ ] Propiedades y consulta del ticket escritas para cada modo: mode, version, region, size, rating, class, platform, input, rtt
-- [ ] Regla de tamaños: en rápida el jugador elige 2, 4 o 6 y los bots completan; en ranked hay una sola cola sin bots que forma carreras de 2, 4 o 6 humanos (mínimo 2, máximo 6, múltiplos de 2)
+- [x] Propiedades y consulta del ticket escritas para cada modo: mode, version, region, size, rating, class, platform, input, rtt — `docs/matchmaking.md#ticket-properties`
+- [x] Regla de tamaños: en rápida el jugador elige 2, 4 o 6 y los bots completan; en ranked hay una sola cola sin bots que forma carreras de 2, 4 o 6 humanos (mínimo 2, máximo 6, múltiplos de 2) — `docs/matchmaking.md#size-rules`
 
 
 ---
 
 
-- [ ] Contrato escrito de ranked_get, mm_ticket_params y race_session_quick_bots
-- [ ] Parámetros de rating en el catálogo ranked: K inicial y normal, rating inicial, límites de división
+- [x] Contrato escrito de ranked_get, mm_ticket_params y race_session_quick_bots — §17 `docs/unity-api.md` + `docs/matchmaking.md` + `docs/ranked.md`
+- [x] Parámetros de rating en el catálogo ranked: K inicial y normal, rating inicial, límites de división — `modules/src/catalogs/ranked.json` + `tests/unit/rating.test.ts`
 ### 4.2 Servidor: módulo matchmaking
-- [ ] mm_ticket_params: devuelve al cliente las propiedades y la consulta que debe usar, según modo y configuración
-- [ ] Hook matchmakerMatched: valida que todos los tickets coincidan en modo, versión y región
-- [ ] El hook crea la RaceSession con el roster emparejado y deja el match como relay
-- [ ] Elección de pista: aleatoria entre las desbloqueadas por todos, sin repetir la última de cada jugador
-- [ ] Elección de host por menor rtt y lista de sucesión ordenada
-- [ ] Relleno con bots: la sesión indica cuántos bots y de qué dificultad según el rating medio race_session_quick_bots: crea una sesión de carrera rápida de un humano con bots cuando la cola vence sin rivales
-- [ ] Soporte de Parties: el grupo entra con un solo ticket y su rating es el más alto de sus miembros
-- [ ] Clave mm.segmentBy en liveops/config con valores none, input, platform
-- [ ] Tiempos de espera y ventanas de rating en configuración remota
-- [ ] Evento de analítica por emparejamiento: tiempo en cola, humanos, bots, diferencia de rating
+- [x] mm_ticket_params: devuelve al cliente las propiedades y la consulta que debe usar, según modo y configuración
+- [x] Hook matchmakerMatched: valida que todos los tickets coincidan en modo, versión y región
+- [x] El hook crea la RaceSession con el roster emparejado y deja el match como relay
+- [x] Elección de pista: aleatoria entre las desbloqueadas por todos, sin repetir la última de cada jugador — FNV-1a (`modules/src/matchmaking/track_picker.ts`)
+- [x] Elección de host por menor rtt y lista de sucesión ordenada
+- [x] Relleno con bots: la sesión indica cuántos bots y de qué dificultad según el rating medio race_session_quick_bots: crea una sesión de carrera rápida de un humano con bots cuando la cola vence sin rivales
+- [ ] Soporte de Parties: el grupo entra con un solo ticket y su rating es el más alto de sus miembros — Phase 7
+- [x] Clave mm.segmentBy en liveops/config con valores none, input, platform
+- [x] Tiempos de espera y ventanas de rating en configuración remota — `modules/src/catalogs/liveops.json`
+- [ ] Evento de analítica por emparejamiento: tiempo en cola, humanos, bots, diferencia de rating — Phase 5 (analítica events)
 ### 4.3 Servidor: reconexión y abandono
-- [ ] race_session_get devuelve ID de match y estado para reincorporarse
-- [ ] Marca de desconexión por jugador reportada por el host, con hora del servidor
-- [ ] Gracia de 20 s; pasado ese tiempo el jugador queda como abandono
-- [ ] RPC race_host_claim: el siguiente en la sucesión toma el rol de host; el servidor lo confirma una sola vez
-- [ ] Contador de abandonos en ranked por 24 h y bloqueo de cola de 15 minutos al tercero
+- [x] race_session_get devuelve ID de match y estado para reincorporarse
+- [x] Marca de desconexión por jugador reportada por el host, con hora del servidor
+- [x] Gracia de 20 s; pasado ese tiempo el jugador queda como abandono
+- [x] RPC race_host_claim: el siguiente en la sucesión toma el rol de host; el servidor lo confirma una sola vez
+- [x] Contador de abandonos en ranked por 24 h y bloqueo de cola de 15 minutos al tercero
 ### 4.4 Servidor: módulo ranked
-- [ ] Objeto ranked/s{N} por jugador: rating, división, división más alta, carreras jugadas Catálogo seasons con la temporada 1 y sus fechas
-- [ ] Función de rating para N humanos según la fórmula del plan, con pruebas unitarias
+- [x] Objeto ranked/s{N} por jugador: rating, división, división más alta, carreras jugadas Catálogo seasons con la temporada 1 y sus fechas — `modules/src/ranked/storage.ts` + seassons 1+2 en `modules/src/catalogs/seasons.json`
+- [x] Función de rating para N humanos según la fórmula del plan, con pruebas unitarias — `tests/unit/rating.test.ts` cubre 2/4/6 humanos + abandonos + empates
 
 
 ---
 
 
-- [ ] Suscripción a RaceCompleted en modo ranked: calcula y guarda el cambio de rating de cada humano
-- [ ] Solo resultados con confianza quorum o server mueven rating El abandono cuenta como último lugar Tabla ranked_s1 actualizada con operador set
-- [ ] Estadísticas igualadas al tope de clase en las sesiones ranked
-- [ ] Ranked bloqueado hasta el nivel 5 ranked_get: rating, división, progreso a la siguiente, puesto en la tabla, días restantes de temporada
-- [ ] La respuesta de resultados incluye rating anterior, nuevo y cambio de división
+- [x] Suscripción a RaceCompleted en modo ranked: calcula y guarda el cambio de rating de cada humano — Chunk 7
+- [x] Solo resultados con confianza quorum o server mueven rating El abandono cuenta como último lugar Tabla ranked_s1 actualizada con operador set — Chunk 7+8
+- [x] Estadísticas igualadas al tope de clase en las sesiones ranked — Chunk 8 (loadoutStatsFor + computeStatsForRanked)
+- [x] Ranked bloqueado hasta el nivel 5 ranked_get: rating, división, progreso a la siguiente, puesto en la tabla, días restantes de temporada — Chunk 6 (`ranked_get` RPC + level gate)
+- [x] La respuesta de resultados incluye rating anterior, nuevo y cambio de división — Chunk 7 (RaceCompleted payload)
 ### 4.5 Cliente Unity
 - [ ] Interfaces IMatchmakingService e IRankedService con implementación Nakama
 - [ ] Medición de rtt contra el servidor antes de entrar a la cola Pantalla de selección de modo y tamaño (2, 4, 6)
@@ -283,25 +283,25 @@ un rating confiable.
 - [ ] Pantalla ranked: división, barra de progreso, puesto, cuenta regresiva de temporada
 - [ ] Animación de cambio de rating y de división en resultados Aviso de bloqueo de cola por abandonos
 ### 4.6 Pruebas
-- [ ] Pruebas unitarias de rating con 2, 4 y 6 humanos, incluyendo empates de rating y abandonos
-- [ ] 6 clientes en cola rápida de tamaño 6: una sola carrera con todos
-- [ ] 3 clientes en cola rápida de tamaño 4: carrera con 3 humanos y 1 bot al vencer la espera 1 cliente solo: carrera con bots a los 20 s
+- [x] Pruebas unitarias de rating con 2, 4 y 6 humanos, incluyendo empates de rating y abandonos — `tests/unit/rating.test.ts`, `tests/unit/division.test.ts`
+- [x] 6 clientes en cola rápida de tamaño 6: una sola carrera con todos — `tests/e2e/matchmaking_full.test.ts`
+- [x] 3 clientes en cola rápida de tamaño 4: carrera con 3 humanos y 1 bot al vencer la espera 1 cliente solo: carrera con bots a los 20 s — `tests/e2e/matchmaking_full.test.ts`
 
 
 ---
 
 
-- [ ] 5 clientes en cola ranked: carrera de 4 humanos y uno sigue en cola Clientes con versión distinta nunca se emparejan Clientes de distinta región nunca se emparejan
-- [ ] Grupo de 2 más 2 sueltos: los del grupo quedan en la misma carrera
-- [ ] Desconexión de 10 s: el jugador vuelve y termina la carrera Desconexión de 30 s: abandono y último lugar
-- [ ] Caída del host a mitad de carrera: la carrera continúa con el sucesor
-- [ ] Tres abandonos en ranked: cola bloqueada 15 minutos
-- [ ] Con 150 ms de latencia y 5 % de pérdida simulados, la carrera sigue siendo jugable
+- [x] 5 clientes en cola ranked: carrera de 4 humanos y uno sigue en cola Clientes con versión distinta nunca se emparejan Clientes de distinta región nunca se emparejan — `tests/e2e/ranked_full.test.ts`
+- [ ] Grupo de 2 más 2 sueltos: los del grupo quedan en la misma carrera — Phase 7 (clubs+parties)
+- [x] Desconexión de 10 s: el jugador vuelve y termina la carrera Desconexión de 30 s: abandono y último lugar — `tests/e2e/host_recovery.test.ts`
+- [x] Caída del host a mitad de carrera: la carrera continúa con el sucesor — `tests/e2e/host_recovery.test.ts`
+- [x] Tres abandonos en ranked: cola bloqueada 15 minutos — `tests/e2e/abandon_block_full.test.ts`
+- [ ] Con 150 ms de latencia y 5 % de pérdida simulados, la carrera sigue siendo jugable — cliente Unity scope
 ### 4.7 Criterio de terminado
-- [ ] La cola rápida arranca una carrera en 20 s o menos, con bots si hace falta
-- [ ] Una carrera ranked de 4 humanos cambia los ratings según la fórmula y actualiza ranked_s1
-- [ ] Un jugador que pierde conexión vuelve a su carrera dentro de la gracia La caída del host no termina la carrera
-- [ ] Las salas privadas siguen funcionando con el flujo de la Fase 1
+- [x] La cola rápida arranca una carrera en 20 s o menos, con bots si hace falta
+- [x] Una carrera ranked de 4 humanos cambia los ratings según la fórmula y actualiza ranked_s1
+- [x] Un jugador que pierde conexión vuelve a su carrera dentro de la gracia La caída del host no termina la carrera
+- [x] Las salas privadas siguen funcionando con el flujo de la Fase 1
 ## Fase 5 — Operación y lanzamiento en pruebas
 Objetivo: pasar de un servidor de desarrollo a uno que aguante jugadores reales en
 América y Europa, con cuentas que siguen al jugador entre móvil y PC. Al terminar esta
