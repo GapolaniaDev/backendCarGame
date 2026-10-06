@@ -139,6 +139,7 @@ export function defaultGarage(userId: string, nowMs: number): Garage {
     userId,
     cars: [withStats],
     cosmeticsBag: [],
+    purchasedPacks: [],
     loadout,
     lastDailyWin: 0,
     dailyPrivateCount: 0,
@@ -275,4 +276,24 @@ export function setActiveCar(garage: Garage, carId: string): Garage {
     stats: { ...owned.computedStats },
   };
   return { ...garage, loadout };
+}
+
+/**
+ * Append a cosmetic id to the garage's cosmetics bag. Idempotency
+ * is the caller's job — Chunk 8's `store_buy` checks the bag before
+ * calling this helper.
+ */
+export function addCosmeticToBag(garage: Garage, cosmeticId: string): Garage {
+  if (garage.cosmeticsBag.includes(cosmeticId)) {
+    throw new Error(`cosmetic already in bag: ${cosmeticId}`);
+  }
+  return { ...garage, cosmeticsBag: [...garage.cosmeticsBag, cosmeticId] };
+}
+
+/** Mark a pack as redeemed in the garage doc. */
+export function markPackPurchased(garage: Garage, packRefId: string): Garage {
+  if (garage.purchasedPacks.includes(packRefId)) {
+    throw new Error(`pack already purchased: ${packRefId}`);
+  }
+  return { ...garage, purchasedPacks: [...garage.purchasedPacks, packRefId] };
 }

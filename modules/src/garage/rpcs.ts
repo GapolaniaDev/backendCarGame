@@ -50,6 +50,7 @@ export interface GarageView {
   userId: string;
   cars: OwnedCarView[];
   cosmeticsBag: string[];
+  purchasedPacks: string[];
   loadout: LoadoutView | null;
   lastDailyWin: number;
   dailyPrivateCount: number;
@@ -176,6 +177,7 @@ function toView(g: GarageRecord): GarageView {
     userId: g.userId,
     cars: g.cars.map(toOwnedCarView),
     cosmeticsBag: [...g.cosmeticsBag],
+    purchasedPacks: [...g.purchasedPacks],
     loadout: g.loadout ? toLoadoutView(g.loadout) : null,
     lastDailyWin: g.lastDailyWin,
     dailyPrivateCount: g.dailyPrivateCount,

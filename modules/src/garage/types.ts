@@ -138,6 +138,12 @@ export interface Garage {
    * records round-trip cleanly through `readGarage`.
    */
   cosmeticsBag: string[];
+  /**
+   * Pack `refId`s the player has already redeemed. Packs are
+   * one-time entitlements; the filter hides any pack whose refId is
+   * in this list.
+   */
+  purchasedPacks: string[];
   /** Active car + equipped cosmetics; null when the player hasn't picked yet. */
   loadout: Loadout | null;
   /** First daily-win epoch-ms UTC (or 0 if none today). Updated by Phase 3 subscriber. */
