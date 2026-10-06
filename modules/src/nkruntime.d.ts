@@ -385,6 +385,22 @@ export interface INakama {
     username?: string,
   ): void;
   accountDeleteId(userId: string, recorded: boolean): void;
+  /**
+   * Link an external provider customId to an existing account. Throws
+   * with the literal string `'ACCOUNT_LINK_CONFIRM_REQUIRED'` when the
+   * customId is already owned by a different user — caller must present
+   * the user with a confirmation prompt before deleting the conflicting
+   * account and re-linking.
+   *
+   * (The Nakama 3.27 JS runtime exposes the underlying Go call as
+   * `accountLinkCustom`; the throw-string projection is what surfaces
+   * inside goja — verified empirically.)
+   */
+  accountLinkCustom(
+    provider: string,
+    userId: string,
+    customId: string,
+  ): void;
   usersGetId(userIds: string[]): IUser[];
   usersGetUsername(username: string[]): unknown;
   usersGetRandom(count: number): unknown;

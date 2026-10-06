@@ -55,6 +55,12 @@ export interface ProfileRecord {
    * (typically once per UTC day by the RaceCompleted subscriber).
    */
   dailyResetAt?: number;
+  /**
+   * Phase 5 Chunk 4: whether the 500-coin account-link bonus has been
+   * credited for this account. Optional on legacy profiles; defaults
+   * to `false` via `ensureAccountLinkField`.
+   */
+  accountLinkBonusClaimed?: boolean;
 }
 
 export function readProfile(
@@ -137,4 +143,14 @@ export function getProgression(profile: ProfileRecord): ProfileProgression {
     level: profile.progression.level,
     lastDailyWinAt: profile.progression.lastDailyWinAt,
   };
+}
+
+/**
+ * Phase 5 Chunk 4 migration helper. Profiles written before the
+ * account-link bonus shipped don't carry `accountLinkBonusClaimed`.
+ * Returns the bonus-claimed flag for the given profile, defaulting
+ * to `false` for legacy records. Pure — no I/O.
+ */
+export function ensureAccountLinkField(profile: ProfileRecord): boolean {
+  return profile.accountLinkBonusClaimed === true;
 }

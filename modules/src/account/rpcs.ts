@@ -1,0 +1,206 @@
+// Phase 5 Chunk 4 — account_link + account_link_resolve_conflict.
+//
+// Both RPCs are maintenance-gated (Phase 5 Chunk 2 `liveopsGate`) and
+// require a signed caller. The first attempts the link; on conflict
+// it returns a `conflictToken` handle that the client passes back to
+// `account_link_resolve_conflict` with `choice: 'link' | 'cancel'`.
+
+import type { IContext, ILogger, INakama } from '../nkruntime';
+import { err, ok, toJson as toJsonEnv, type Resp } from '../core/response';
+import { liveopsGate } from '../core/liveops';
+import type { ClientPlatform } from '../liveops/types';
+import {
+  linkAccount,
+  resolveConflict,
+  type LinkAccountResult,
+  type ResolveConflictResult,
+} from './linking';
+import {
+  isAccountLinkProvider,
+  type AccountLinkConflictOutput,
+  type AccountLinkInput,
+  type AccountLinkOutput,
+  type AccountLinkProvider,
+  type AccountLinkResolveConflictInput,
+  type AccountLinkResolveConflictOutput,
+} from './types';
+
+export type RpcHandler = (
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+) => string;
+
+export interface ParseOk<T> {
+  ok: true;
+  value: T;
+  raw: Record<string, unknown>;
+}
+export interface ParseErr {
+  ok: false;
+  error: string;
+}
+
+function parseInput(body: string): ParseOk<unknown> | ParseErr {
+  const t = body.trim();
+  let raw: unknown = {};
+  if (t.length > 0) {
+    try {
+      raw = JSON.parse(t);
+    } catch {
+      return { ok: false, error: JSON.stringify(err('BAD_REQUEST', 'payload is not valid JSON')) };
+    }
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: JSON.stringify(err('BAD_REQUEST', 'payload must be an object')) };
+  }
+  return { ok: true, value: raw, raw: raw as Record<string, unknown> };
+}
+
+interface CallerOk { ok: true; id: string; }
+interface CallerErr { ok: false; error: string; }
+function resolveCaller(ctx: IContext, declared: string, logger: ILogger): CallerOk | CallerErr {
+  const socketCaller = ctx.userId ?? null;
+  const declaredCaller = declared.length > 0 ? declared : null;
+  if (socketCaller !== null) {
+    if (declaredCaller !== null && declaredCaller !== socketCaller) {
+      return { ok: false, error: JSON.stringify(err('FORBIDDEN', 'callerUserId does not match authenticated user')) };
+    }
+    return { ok: true, id: socketCaller };
+  }
+  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
+  logger.warn('account_link RPC called with no caller identity');
+  return { ok: false, error: JSON.stringify(err('UNAUTHENTICATED', 'no caller identity')) };
+}
+
+// ─── account_link ───────────────────────────────────────────────────────────
+
+export const account_link_impl: RpcHandler = (ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  const raw = parsed.raw;
+
+  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
+  const callerId = resolveCaller(ctx, caller, logger);
+  if (!callerId.ok) return callerId.error;
+  const userId = callerId.id;
+
+  const gate = liveopsGate(
+    logger,
+    nk,
+    userId,
+    typeof raw['clientVersion'] === 'string' ? raw['clientVersion'] as string : undefined,
+    typeof raw['platform'] === 'string' ? raw['platform'] as ClientPlatform : 'ios',
+  );
+  if (gate !== null) return JSON.stringify(gate);
+
+  const provider = raw['provider'];
+  if (!isAccountLinkProvider(provider)) {
+    return JSON.stringify(err('BAD_REQUEST', `unknown provider: ${String(provider)}`));
+  }
+  const token = raw['token'];
+  if (typeof token !== 'string' || token.length === 0) {
+    return JSON.stringify(err('BAD_REQUEST', 'token is required'));
+  }
+
+  const nowMs = Date.now();
+  const result = linkAccount(nk, logger, userId, provider, token, nowMs);
+  return renderLinkResult(logger, userId, provider, result);
+};
+
+function renderLinkResult(
+  logger: ILogger,
+  userId: string,
+  provider: AccountLinkProvider,
+  result: LinkAccountResult,
+): string {
+  if (result.kind === 'linked') {
+    logger.info(
+      'account_link user=%s provider=%s bonus=%s',
+      userId, provider, String(result.bonusClaimed),
+    );
+    const out: AccountLinkOutput = {
+      linked: true,
+      bonusClaimed: result.bonusClaimed,
+      ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
+    };
+    return JSON.stringify(ok(out));
+  }
+  if (result.kind === 'conflict') {
+    return JSON.stringify(ok({ linked: false, conflict: result.conflict } satisfies { linked: false; conflict: AccountLinkConflictOutput }));
+  }
+  // error
+  return JSON.stringify(err(result.code, result.message));
+}
+
+// ─── account_link_resolve_conflict ─────────────────────────────────────────
+
+export const account_link_resolve_conflict_impl: RpcHandler = (ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  const raw = parsed.raw;
+
+  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
+  const callerId = resolveCaller(ctx, caller, logger);
+  if (!callerId.ok) return callerId.error;
+  const userId = callerId.id;
+
+  const gate = liveopsGate(
+    logger,
+    nk,
+    userId,
+    typeof raw['clientVersion'] === 'string' ? raw['clientVersion'] as string : undefined,
+    typeof raw['platform'] === 'string' ? raw['platform'] as ClientPlatform : 'ios',
+  );
+  if (gate !== null) return JSON.stringify(gate);
+
+  const conflictToken = raw['conflictToken'];
+  if (typeof conflictToken !== 'string' || conflictToken.length === 0) {
+    return JSON.stringify(err('BAD_REQUEST', 'conflictToken is required'));
+  }
+  const choice = raw['choice'];
+  if (choice !== 'link' && choice !== 'cancel') {
+    return JSON.stringify(err('BAD_REQUEST', `choice must be 'link' or 'cancel'`));
+  }
+  const confirmText = typeof raw['confirmText'] === 'string' ? raw['confirmText'] as string : undefined;
+
+  const nowMs = Date.now();
+  const result = resolveConflict(nk, logger, userId, { conflictToken, choice, ...(confirmText !== undefined ? { confirmText } : {}) }, nowMs);
+  return renderResolveResult(logger, userId, result);
+};
+
+function renderResolveResult(
+  logger: ILogger,
+  userId: string,
+  result: ResolveConflictResult,
+): string {
+  if (result.kind === 'cancelled') {
+    return JSON.stringify(ok({ resolved: 'cancelled' as const } satisfies Pick<AccountLinkResolveConflictOutput, 'resolved'>));
+  }
+  if (result.kind === 'linked') {
+    const out: AccountLinkResolveConflictOutput = {
+      resolved: 'linked',
+      affectedAccountDeleted: result.affectedAccountDeleted,
+      bonusClaimed: result.bonusClaimed,
+      ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
+    };
+    return JSON.stringify(ok(out));
+  }
+  return JSON.stringify(err(result.code, result.message));
+}
+
+// Top-level bindings for the goja AST scanner.
+export const account_link: RpcHandler = account_link_impl;
+export const account_link_resolve_conflict: RpcHandler = account_link_resolve_conflict_impl;
+
+export type {
+  AccountLinkInput,
+  AccountLinkOutput,
+  AccountLinkResolveConflictInput,
+  AccountLinkResolveConflictOutput,
+};
+
+// Side-effect import marker so the bundler keeps the named export of
+// toJsonEnv available for callers that prefer the helper.
+void toJsonEnv;

@@ -9,7 +9,7 @@
 //
 // Reused across Chunks 5-9 of the racing-game backend.
 
-import { createHash as cryptoCreateHash, randomUUID } from 'node:crypto';
+import { createHash as cryptoCreateHash, createHmac as cryptoCreateHmac, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
@@ -126,6 +126,14 @@ class FakeNakamaCore {
   readonly wallets = new Map<string, Record<string, number>>();
   /** userId → ledger entries (oldest first). Populated by walletLedgerUpdate. */
   readonly ledger = new Map<string, Record<string, unknown>[]>();
+  /**
+   * provider:customId → userId. Maintained by `accountLinkCustom` and
+   * `accountDeleteId` so the conflict-detection logic mirrors the
+   * production runtime. The first link of a (provider, customId) pair
+   * succeeds; a subsequent attempt with a *different* userId throws
+   * the literal string `'ACCOUNT_LINK_CONFIRM_REQUIRED'`.
+   */
+  readonly links = new Map<string, string>();
   private versionCounter = 0;
 
   storageRead(keys: IStorageKey[]): IStorageObject[] {
@@ -302,6 +310,29 @@ class FakeNakamaCore {
     return randomUUID();
   }
 
+  hmacSha256Hash(input: string, key: string): string {
+    // Real Nakama returns the raw HMAC bytes via goja `ArrayBuffer`;
+    // `r.ToValue(r.NewArrayBuffer(mac.Sum(nil)))`. The .d.ts type says
+    // `string` (which the runtime-side verifier treats as a Uint8Array
+    // via goja's array-buffer passthrough). The verifier normalises via
+    // `bytesToBase64Url` regardless of whether it received raw bytes or
+    // a string.
+    //
+    // The test stub returns base64url so the verifier's byte-detection
+    // path is exercised by a stable ASCII form. The string compares
+    // directly against the token's base64url signature, so both sides
+    // must agree on the encoding.
+    return cryptoCreateHmac('sha256', key).update(input).digest('base64url');
+  }
+
+  base64UrlEncode(input: string): string {
+    return Buffer.from(input, 'utf8').toString('base64url');
+  }
+
+  base64UrlDecode(input: string): string {
+    return Buffer.from(input, 'base64url').toString('utf8');
+  }
+
   // ── Leaderboards ──
   /** id → leaderboard. Created via `leaderboardCreate`. */
   readonly leaderboards = new Map<string, ILeaderboard>();
@@ -460,6 +491,36 @@ class FakeNakamaCore {
     };
     return fake;
   }
+
+  accountLinkCustom(
+    provider: string,
+    userId: string,
+    customId: string,
+  ): void {
+    const key = `${provider}:${customId}`;
+    const existing = this.links.get(key);
+    if (existing !== undefined && existing !== userId) {
+      // The Nakama JS runtime surfaces this as a thrown string error.
+      throw new Error('ACCOUNT_LINK_CONFIRM_REQUIRED');
+    }
+    this.links.set(key, userId);
+  }
+
+  accountDeleteId(userId: string, _recorded: boolean): void {
+    // Drop the user's wallet, ledger, and every link they own so a
+    // re-link with the same customId works.
+    this.wallets.delete(userId);
+    this.ledger.delete(userId);
+    this.users.delete(userId);
+    for (const [k, v] of Array.from(this.links.entries())) {
+      if (v === userId) this.links.delete(k);
+    }
+    // Also delete every storage object owned by the user — the
+    // production runtime cascades.
+    for (const k of Array.from(this.store.keys())) {
+      if (k.endsWith(`/${userId}`)) this.store.delete(k);
+    }
+  }
 }
 
 /**
@@ -498,6 +559,8 @@ export class FakeNakama {
   readonly wallets: Map<string, Record<string, number>>;
   /** userId → ledger entries (insertion order). Populated by `walletLedgerUpdate`. */
   readonly ledger: Map<string, Record<string, unknown>[]>;
+  /** provider:customId → userId. Maintained by `accountLinkCustom`. */
+  readonly links: Map<string, string>;
   /** Leaderboard id → ILeaderboard. Populated by `leaderboardCreate`. */
   readonly leaderboards: Map<string, ILeaderboard>;
   /** Leaderboard id → map(ownerId → ILeaderboardRecord). */
@@ -523,6 +586,7 @@ export class FakeNakama {
     this.users = core.users;
     this.wallets = core.wallets;
     this.ledger = core.ledger;
+    this.links = core.links;
     this.leaderboards = core.leaderboards;
     this.leaderboardRecords = core.leaderboardRecords;
     this.deletedLeaderboards = core.deletedLeaderboards;
