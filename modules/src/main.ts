@@ -61,6 +61,7 @@ import { loadStoreCatalog } from './store/catalog';
 import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
 import { loadLiveOpsConfig } from './liveops/mm_config';
+import { bootEnsure as bootEnsureLiveops } from './liveops/config';
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
@@ -165,6 +166,20 @@ function InitModule(
     liveopsConfigJson as unknown as import('./liveops/mm_config').RawLiveOpsFile,
     nk,
   );
+
+  // Phase 5 Chunk 1: ensure the liveops config object is present in
+  // storage. Wrapped in try/catch so a transient storage failure
+  // (Postgres restart, etc.) never crashes boot — `loadLiveopsConfig`
+  // returns the bundled default on every read, so a missing storage
+  // row is non-fatal for normal operation.
+  try {
+    bootEnsureLiveops(nk, logger);
+  } catch (e) {
+    logger.error(
+      'liveops bootEnsure failed (continuing with bundled default): %s',
+      e instanceof Error ? e.message : String(e),
+    );
+  }
 
   // Wire the in-process event bus and install the default subscribers
   // for `RaceCompleted`. Phase 2:

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "flags": {
+    "maintenance": false
+  },
+  "minClientVersion": {
+    "ios": "0.1.0",
+    "android": "0.1.0",
+    "windows": "0.1.0",
+    "macos": "0.1.0",
+    "linux": "0.1.0"
+  },
+  "regions": [
+    { "id": "us", "displayName": "America", "relayUrl": "wss://api.gapolaniadev.com" },
+    { "id": "eu", "displayName": "Europe", "relayUrl": "wss://eu.gapolaniadev.com" }
+  ],
+  "calendar": []
+}

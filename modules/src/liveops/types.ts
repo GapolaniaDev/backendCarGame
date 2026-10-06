@@ -1,26 +1,37 @@
-// Phase 4 liveops types. Live-ops flag catalog shape (consumed by
-// `config_get` when the runtime wants to surface feature flags to
-// the client). The catalog itself lands in a later chunk; this file
-// ships the shape so Chunk 2+ can reference it.
+// Phase 5 Chunk 1 — Liveops config types.
+//
+// The runtime shape consumed by the boot path (`bootEnsure`) and
+// every maintenance/version gate. The shape is intentionally
+// conservative: every field that an admin can override at runtime
+// (flags, minClientVersion, regions, calendar) is here, and the
+// validator in `config.ts` rejects anything that doesn't conform.
 
-export type LiveOpsFlagId =
-  | 'ranked_enabled'
-  | 'quick_bots_enabled'
-  | 'season_banner_visible'
-  | 'club_create_enabled';
+export type ClientPlatform = 'ios' | 'android' | 'windows' | 'macos' | 'linux';
+export type CalendarEntryType = 'event' | 'tournament' | 'maintenance';
 
-export interface LiveOpsFlag {
-  id: LiveOpsFlagId;
-  enabled: boolean;
-  /** When the flag enables (UTC epoch-ms). 0 = always-on. */
-  startsAt: number;
-  /** When the flag disables (UTC epoch-ms). 0 = always-on. */
-  endsAt: number;
-  /** Optional free-form payload sent to clients. */
-  payload?: Record<string, unknown>;
+export interface LiveopsRegion {
+  id: string;
+  displayName: string;
+  relayUrl: string;
 }
 
-export interface LiveOpsCatalog {
+export interface LiveopsCalendarEntry {
+  id: string;
+  type: CalendarEntryType;
+  /** ISO-8601 UTC string (e.g. "2026-10-31T12:00:00Z"). */
+  startUtc: string;
+  endUtc: string;
+}
+
+export interface LiveopsConfig {
+  schemaVersion: 1;
   version: number;
-  flags: ReadonlyArray<LiveOpsFlag>;
+  flags: {
+    maintenance: boolean;
+    maintenanceMessage?: string;
+    maintenanceExemptUserIds?: string[];
+  };
+  minClientVersion: Record<ClientPlatform, string>;
+  regions: ReadonlyArray<LiveopsRegion>;
+  calendar: ReadonlyArray<LiveopsCalendarEntry>;
 }
