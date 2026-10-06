@@ -30,6 +30,19 @@ export interface Loadout {
   bodyId: string;
   /** Optional paint / livery identifier (UI only). */
   liveryId?: string;
+  /**
+   * Server-populated effective stats (post-upgrades, clamped per
+   * mode). Present for ranked sessions (equalized to the car's
+   * `maxStats`) and for non-ranked sessions (base + upgrades). The
+   * client ignores the field when constructing the local render; the
+   * server uses it to validate per-lap plausibility.
+   */
+  stats?: {
+    speed: number;
+    acceleration: number;
+    handling: number;
+    nitro: number;
+  };
 }
 
 export interface RosterEntry {

@@ -15,8 +15,9 @@
 // the RPC layer that subscribes to `RaceCreated` (lives in Chunk 4 —
 // this chunk only validates + builds the payload).
 
-import type { IMatchmakerMatchedEnvelope } from '../nkruntime';
-import type { RaceSession } from '../race/types';
+import type { IMatchmakerMatchedEnvelope, INakama } from '../nkruntime';
+import type { Loadout, RaceSession } from '../race/types';
+import { loadoutStatsFor } from '../race/stats_equalization';
 
 export interface MatchedCandidate {
   sessionId: string;
@@ -135,4 +136,33 @@ export function buildRaceSessionFromCandidate(candidate: MatchedCandidate): Race
     flags: { needsReview: false },
     version: 1,
   };
+}
+
+/**
+ * Phase 4 Chunk 8: stats equalization for matched sessions. The
+ * skeleton built by `buildRaceSessionFromCandidate` has `loadout: null`
+ * on every roster entry — this helper walks the roster, resolves each
+ * player's loadout from the candidate's metadata (the matchmaking
+ * ticket can carry `bodyId` / `liveryId` per player), and when the mode
+ * is `ranked` populates `loadout.stats` from the equalized catalog.
+ *
+ * Mutates and returns the session for convenience.
+ *
+ * For non-matched sessions, `race_session_create` and `race_session_join`
+ * already wire `loadoutStatsFor` directly into the Loadout they pass
+ * to `appendRosterEntry`.
+ */
+export function applyStatsEqualizationToMatchedSession(
+  nk: INakama,
+  session: RaceSession,
+  playerLoadouts: ReadonlyMap<string, Loadout>,
+): RaceSession {
+  const mode = session.mode === 'ranked' ? 'ranked' : 'normal';
+  for (const entry of session.roster) {
+    const loadout = playerLoadouts.get(entry.userId);
+    if (loadout === undefined) continue;
+    const stats = loadoutStatsFor(nk, entry.userId, loadout, mode);
+    entry.loadout = stats ? { ...loadout, stats } : { ...loadout };
+  }
+  return session;
 }

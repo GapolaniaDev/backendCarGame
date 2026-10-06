@@ -101,25 +101,27 @@ export function computeStats(
 }
 
 /**
- * Variant for ranked mode: every stat is clamped to the class's
- * `maxStats` regardless of how the player upgraded. The intent is
- * that ranked races reward driver skill, not wallet size.
+ * Variant for ranked mode: every stat is forced to the car's
+ * `maxStats` (the class-top) regardless of how the player upgraded.
+ * Ranked rosters compete on driver skill, not wallet size — the
+ * server equalizes every car to its class ceiling so a fresh D-class
+ * competes on equal footing with a maxed A-class.
  *
- * Implementation: compute the regular stats, then take the min with
- * `maxStats`. Empty upgrades → identical to baseStats (still within
- * maxStats), fully upgraded → identical to maxStats.
+ * Implementation: copy `maxStats` verbatim. The `upgrades` / `levels`
+ * parameters are accepted for signature parity with `computeStats`
+ * but are intentionally ignored.
  */
 export function computeStatsForRanked(
   car: CarCatalogEntry,
-  upgrades: UpgradesCatalog,
-  levels: UpgradeLevels,
+  _upgrades: UpgradesCatalog,
+  _levels: UpgradeLevels,
 ): CarStats {
-  const regular = computeStats(car, upgrades, levels);
-  const out: CarStats = { speed: 0, acceleration: 0, handling: 0, nitro: 0 };
-  for (const key of STAT_KEYS) {
-    out[key] = Math.min(regular[key], car.maxStats[key]);
-  }
-  return out;
+  return {
+    speed: car.maxStats.speed,
+    acceleration: car.maxStats.acceleration,
+    handling: car.maxStats.handling,
+    nitro: car.maxStats.nitro,
+  };
 }
 
 /**

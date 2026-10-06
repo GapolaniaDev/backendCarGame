@@ -45,6 +45,7 @@ import {
   tryCloseAndPublish,
 } from './session_repo';
 import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
+import { loadoutStatsFor } from './stats_equalization';
 import type {
   ConfigGetOutput,
   CarClassId,
@@ -290,6 +291,11 @@ function race_session_create_impl(
 
   // Build minimal session — host is the only roster entry, no reports yet.
   const sessionId = nk.uuidv4();
+  // Phase 4 Chunk 8: stats equalization for ranked sessions.
+  const hostStats = loadoutStatsFor(nk, hostId, input.hostLoadout, input.mode === 'ranked' ? 'ranked' : 'normal');
+  const hostLoadout: Loadout = hostStats
+    ? { ...input.hostLoadout, stats: hostStats }
+    : { ...input.hostLoadout };
   const session: RaceSession = {
     schemaVersion: 1,
     id: sessionId,
@@ -300,7 +306,7 @@ function race_session_create_impl(
     roster: [
       {
         userId: hostId,
-        loadout: input.hostLoadout,
+        loadout: hostLoadout,
         isBot: false,
       },
     ],
@@ -547,11 +553,24 @@ function race_session_join_impl(
     );
   }
 
+  // Phase 4 Chunk 8: stats equalization for ranked joiners. When the
+  // session is ranked, the joiner's loadout.stats must be clamped to
+  // their car's maxStats so the race rewards driver skill, not wallet.
+  const joinerStats = loadoutStatsFor(
+    nk,
+    joinerId,
+    loadout,
+    cur.session.mode === 'ranked' ? 'ranked' : 'normal',
+  );
+  const joinerLoadout: Loadout = joinerStats
+    ? { ...loadout, stats: joinerStats }
+    : { ...loadout };
+
   try {
     appendRosterEntry(
       nk,
       cur.session,
-      { userId: joinerId, loadout, isBot: false },
+      { userId: joinerId, loadout: joinerLoadout, isBot: false },
       cur.version,
     );
   } catch (e) {

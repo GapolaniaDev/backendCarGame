@@ -308,27 +308,27 @@ describe('garage/stats — computeStatsForRanked', () => {
     );
   });
 
-  it('returns baseStats clamped to maxStats for a brand new car', () => {
+  it('equalizes a brand new car to its maxStats (class-top)', () => {
     const car = findCar('starter_viper');
     const stats = computeStatsForRanked(car, getUpgrades(), ZERO_LEVELS);
-    // base 50 ≤ max 70 → identity
-    expect(stats).toEqual({ speed: 50, acceleration: 50, handling: 50, nitro: 50 });
+    // Phase 4 Chunk 8: ranked forces every stat to maxStats regardless
+    // of upgrades — baseStats 50 → equalized to 70.
+    expect(stats).toEqual({ speed: 70, acceleration: 70, handling: 70, nitro: 70 });
   });
 
-  it('caps to maxStats even when fully upgraded', () => {
+  it('equalizes a fully upgraded car to its maxStats', () => {
     const car = findCar('phantom_rsx');
     const stats = computeStatsForRanked(car, getUpgrades(), MAX_LEVELS);
-    // fully upgraded phantom_rsx would be 111 → clamped to 100 (the class cap)
+    // Upgrades are intentionally ignored — maxStats is the answer.
+    // Test fixture has phantom_rsx maxStats = 100/100/100/100.
     expect(stats).toEqual({ speed: 100, acceleration: 100, handling: 100, nitro: 100 });
   });
 
-  it('agrees with computeStats when baseStats already at maxStats', () => {
-    // Phantom max is 100, base is 60. With MAX upgrades regular returns 100.
-    // The two helpers should agree.
+  it('ignores upgrades entirely — empty and max upgrades return identical stats', () => {
     const car = findCar('phantom_rsx');
-    const regular = computeStats(car, getUpgrades(), MAX_LEVELS);
-    const ranked = computeStatsForRanked(car, getUpgrades(), MAX_LEVELS);
-    expect(regular).toEqual(ranked);
+    const empty = computeStatsForRanked(car, getUpgrades(), ZERO_LEVELS);
+    const full = computeStatsForRanked(car, getUpgrades(), MAX_LEVELS);
+    expect(empty).toEqual(full);
   });
 });
 
