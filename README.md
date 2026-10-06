@@ -4,6 +4,94 @@ Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/
 
 **Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**. Next up is matchmaking + ranked (Phase 4). See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3.
 
+## Quick start (Docker)
+
+Toda la stack corre en Docker — Postgres, Nakama, Prometheus y Grafana. El build del bundle JS de Nakama se hace con Node en el host porque `esbuild` no está en la imagen de Nakama. Una vez arriba, todo se reinicia con `docker compose`.
+
+| Servicio | Puerto host | URL local | Notas |
+|---|---|---|---|
+| **Nakama API** (HTTP/gRPC) | `8081` | `http://localhost:8081` | gRPC + REST API gateway |
+| **Nakama console** (admin) | `8090` | `http://localhost:8090` | UI de administración |
+| **Prometheus** (métricas) | `9090` | `http://localhost:9090` | Scrape cada 15s; retención 30d |
+| **Grafana** (dashboards) | `3000` | `http://localhost:3000` | Datasources auto-provisioned (Viewer anónimo) |
+| **Postgres** (DB) | — | `172.28.0.2:5432` interno | Red `172.28.0.0/16` fija para IP routing del tunnel |
+
+#### Prereqs en tu máquina:
+- **Docker** ≥ 24 con `docker compose` v2
+- **Node.js** ≥ 20 (solo para el build del bundle JS — no corre runtime)
+- **git**
+
+#### Setup desde cero:
+
+```bash
+# 1. Clonar
+git clone https://github.com/GapolaniaDev/backendCarGame.git
+cd backendCarGame
+
+# 2. Configurar variables (copiar plantilla y editar)
+cp .env.example .env
+#   Completar: POSTGRES_PASSWORD, NAKAMA_SERVER_KEY, NAKAMA_GWP_SECRET,
+#   NAKAMA_SESSION_ENCRYPTION_KEY, NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY,
+#   NAKAMA_RUNTIME_HTTP_KEY, NAKAMA_CONSOLE_PASSWORD, NAKAMA_CONSOLE_SIGNING_KEY,
+#   GRAFANA_ADMIN_PASSWORD
+#   Sugerencia: openssl rand -hex 32 para cada *_KEY
+
+# 3. Instalar deps de Node y buildear el módulo JS que Nakama carga
+npm install
+npm run build
+#   Esto produce modules/index.js (gitignored) que se monta en el container
+
+# 5. Levantar la stack completa
+docker compose up -d
+#   Primera vez: tarda ~30s mientras Postgres inicializa + Nakama corre migrate up
+
+# 6. Verificar
+curl -sf http://localhost:8081/v2/console/account | jq . || echo "Nakama not ready yet, retry"
+docker compose logs nakama | tail -20
+
+# 7. Smoke test RPC
+HTTP_KEY=$(grep ^NAKAMA_RUNTIME_HTTP_KEY .env | cut -d= -f2)
+SERVER_KEY=$(grep ^NAKAMA_SERVER_KEY .env | cut -d= -f2)
+B64=$(printf "%s:" "$SERVER_KEY" | base64)
+curl -s -X POST "http://localhost:8081/v2/account/authenticate/device?http_key=$HTTP_KEY" \
+  -H "Authorization: Basic $B64" -H 'Content-Type: application/json' \
+  -d '{"id":"smoke-test"}' | jq .
+```
+
+#### Comandos comunes:
+
+```bash
+# Rebuild + restart Nakama tras editar modules/src/**
+npm run build && docker compose up -d --force-recreate nakama
+
+# Logs en vivo de un servicio
+docker compose logs -f nakama
+docker compose logs -f postgres
+
+# Parar todo (mantiene volúmenes)
+docker compose down
+
+# Parar + borrar volúmenes (BORRAR DB — todo el progreso se pierde)
+docker compose down -v
+
+# Conectar a Postgres directamente
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+```
+
+#### Túnel a internet (opcional)
+
+Si querés exponer la API fuera de tu red local para que un cliente externo (Unity build, otro dev) se conecte:
+
+```bash
+# Quick tunnel — URL random *.trycloudflare.com
+docker compose --profile tunnel-quick up -d tunnel-quick
+
+# Named tunnel — URL fija con tu dominio (configurar TUNNEL_TOKEN en .env primero)
+docker compose --profile tunnel-named up -d tunnel-named
+```
+
+Ver `docker-compose.yml` para detalles del routing por IP estática (`172.28.0.10` para Nakama) — necesario porque Cloudflare tunnel no puede resolver docker service names, solo IPs.
+
 ## Stack
 
 - **Runtime**: Nakama 3.27.0 (Docker image `heroiclabs/nakama:3.27.0`) running the **JavaScript runtime** (single bundled `index.js`, no Lua modules)

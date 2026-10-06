@@ -64,6 +64,7 @@ import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
 import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
+import { subscribeRankedRewards } from './ranked/subscriber';
 import { wallet_get } from './economy/rpcs';
 
 function InitModule(
@@ -175,6 +176,8 @@ function InitModule(
   // Phase 3: wallet + XP rewards for every closed race.
   subscribeEconomyRewards({ logger, nk, bus });
   subscribeProgressionRewards({ logger, nk, bus });
+  // Phase 4: ranked rating updates for every closed ranked race.
+  subscribeRankedRewards({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the 6 RPCs as individual top-level statements.
