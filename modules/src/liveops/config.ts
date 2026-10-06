@@ -64,6 +64,10 @@ const bundled: Readonly<LiveopsConfig> = Object.freeze({
       (c) => Object.freeze({ ...c }),
     ),
   ),
+  // adminRpcKey is intentionally NOT bundled — there's no default
+  // secret. Admins bootstrap via `liveops_config_override` after the
+  // first boot. The field is undefined here, which `validate()` and
+  // `freeze()` both handle.
 });
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -168,6 +172,13 @@ export function validate(raw: unknown): asserts raw is LiveopsConfig {
       fail(`calendar[${i}].endUtc must be after startUtc`);
     }
   }
+
+  // adminRpcKey: optional. When present must be a non-empty string.
+  // When absent, admin RPCs fail closed (SERVICE_UNAVAILABLE).
+  const ak = r['adminRpcKey'];
+  if (ak !== undefined && (typeof ak !== 'string' || (ak as string).length === 0)) {
+    fail('adminRpcKey must be a non-empty string when present');
+  }
 }
 
 // ─── Read path (NO cache) ─────────────────────────────────────────────────
@@ -264,5 +275,6 @@ function freeze(cfg: LiveopsConfig): LiveopsConfig {
     minClientVersion: Object.freeze({ ...cfg.minClientVersion }),
     regions: Object.freeze(cfg.regions.map((r) => Object.freeze({ ...r }))),
     calendar: Object.freeze(cfg.calendar.map((c) => Object.freeze({ ...c }))),
+    ...(cfg.adminRpcKey !== undefined ? { adminRpcKey: cfg.adminRpcKey } : {}),
   });
 }

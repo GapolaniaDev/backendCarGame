@@ -14,7 +14,8 @@
 // server is in maintenance to display the splash.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
-import { err, ok, type Resp } from '../core/response';
+import { err, ok, toJson, type Resp } from '../core/response';
+import { parseInput } from '../core/parse_input';
 import { loadLiveopsConfig, type LiveopsConfig } from './config';
 import type { ClientPlatform, LiveopsRegion, LiveopsCalendarEntry } from './types';
 import { claimInbox, listInbox, sendInbox, type InboxMessage } from './messages';
@@ -50,7 +51,7 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
   if (!callerId.ok) return callerId.error;
 
   const cfg = loadLiveopsConfig(nk, logger);
@@ -93,36 +94,6 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-interface ParseOk<T> {
-  ok: true;
-  value: T;
-  /** Raw payload so handlers can access arbitrary keys not in the typed shape. */
-  raw: Record<string, unknown>;
-}
-interface ParseErr {
-  ok: false;
-  error: string;
-}
-function parseInput(body: string): ParseOk<LiveopsConfigGetInput> | ParseErr {
-  const t = body.trim();
-  let raw: unknown = {};
-  if (t.length > 0) {
-    try {
-      raw = JSON.parse(t);
-    } catch {
-      return { ok: false, error: toJson(err('BAD_REQUEST', 'payload is not valid JSON')) };
-    }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { ok: false, error: toJson(err('BAD_REQUEST', 'payload must be an object')) };
-  }
-  const obj = raw as Record<string, unknown>;
-  const out: LiveopsConfigGetInput = {
-    callerUserId: typeof obj['callerUserId'] === 'string' ? (obj['callerUserId'] as string) : '',
-  };
-  return { ok: true, value: out, raw: obj };
-}
-
 interface CallerOk {
   ok: true;
   id: string;
@@ -164,10 +135,6 @@ function stripHash<T extends Record<string, unknown>>(obj: T): Record<string, un
   return out;
 }
 
-function toJson<T>(r: Resp<T>): string {
-  return JSON.stringify(r);
-}
-
 // Top-level binding for the goja AST scanner.
 export const liveops_config_get: RpcHandler = liveops_config_get_impl;
 
@@ -190,7 +157,7 @@ export const inbox_list_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -231,7 +198,7 @@ export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
   const rawP = parsed.raw;

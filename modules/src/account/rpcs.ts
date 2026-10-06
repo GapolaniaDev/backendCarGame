@@ -7,6 +7,7 @@
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, toJson as toJsonEnv, type Resp } from '../core/response';
+import { parseInput } from '../core/parse_input';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import {
@@ -38,32 +39,6 @@ export type RpcHandler = (
   nk: INakama,
   body: string,
 ) => string;
-
-export interface ParseOk<T> {
-  ok: true;
-  value: T;
-  raw: Record<string, unknown>;
-}
-export interface ParseErr {
-  ok: false;
-  error: string;
-}
-
-function parseInput(body: string): ParseOk<unknown> | ParseErr {
-  const t = body.trim();
-  let raw: unknown = {};
-  if (t.length > 0) {
-    try {
-      raw = JSON.parse(t);
-    } catch {
-      return { ok: false, error: JSON.stringify(err('BAD_REQUEST', 'payload is not valid JSON')) };
-    }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { ok: false, error: JSON.stringify(err('BAD_REQUEST', 'payload must be an object')) };
-  }
-  return { ok: true, value: raw, raw: raw as Record<string, unknown> };
-}
 
 interface CallerOk { ok: true; id: string; }
 interface CallerErr { ok: false; error: string; }

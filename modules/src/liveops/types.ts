@@ -34,4 +34,16 @@ export interface LiveopsConfig {
   minClientVersion: Record<ClientPlatform, string>;
   regions: ReadonlyArray<LiveopsRegion>;
   calendar: ReadonlyArray<LiveopsCalendarEntry>;
+  /**
+   * Shared secret that admin RPCs (`admin_*`) compare against the
+   * request body's `adminKey`. When unset, every admin RPC fails
+   * closed with `SERVICE_UNAVAILABLE`.
+   *
+   * The secret must also match Nakama's HTTP `http_key` query param
+   * (the gateway validates it server-side; the JS layer can't see it,
+   * so the admin tool sends the same value via the body field).
+   *
+   * D7 (Phase 5 Chunk 6).
+   */
+  adminRpcKey?: string;
 }
