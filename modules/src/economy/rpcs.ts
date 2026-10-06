@@ -116,7 +116,7 @@ function countLedgerLast30d(nk: INakama, userId: string): number {
       count += 1;
     }
     return count;
-  } catch (e) {
+  } catch {
     // Treat any runtime error as zero — the ledger count is purely
     // diagnostic and must never fail the RPC.
     return 0;

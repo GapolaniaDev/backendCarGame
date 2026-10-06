@@ -2,7 +2,7 @@
 
 Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
 
-**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ⏳**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create. Next up is economy, garage, and progression. See [`docs/leaderboards.md`](./docs/leaderboards.md) for the Phase 2 leaderboard spec.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**. Next up is matchmaking + ranked (Phase 4). See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3.
 
 ## Stack
 
@@ -23,7 +23,13 @@ Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/
 │       ├── main.ts              # InitModule — wires core, registers RPCs, installs EventBus
 │       ├── core/                # envelope, errors, logger, event bus, rate limit, idempotency, storage, catalog, time
 │       ├── race/                # race session RPCs + validation + ordering + state machine + close path
-│       └── catalogs/            # versioned JSON catalogs (tracks, modes)
+│       ├── leaderboards/        # Phase 2: leaderboard catalog, writer, lb_get RPC
+│       ├── profiles/             # Phase 3: profile module with after-auth auto-create
+│       ├── economy/             # Phase 3: wallet (grant/spend/ledger), rewards, wallet_get RPC
+│       ├── progression/         # Phase 3: XP + leveling + RaceCompleted XP subscriber
+│       ├── garage/              # Phase 3: garage storage, car_buy/upgrade/equip/loadout RPCs
+│       └── store/               # Phase 3: store catalog, daily rotation, store_get/buy RPCs
+│       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store)
 ├── tests/                       # Vitest unit + e2e tests
 ├── docs/                        # Operation docs (see docs/race-protocol-ops.md)
 ├── specs/                       # Phase plan + checklist PDFs (Spanish)
@@ -235,3 +241,66 @@ The `time_trial` mode is special-cased: even at `client` confidence, the time ta
 - Runtime disconnect hook that drives `removePlayerFromAll` (Phase 4)
 
 See [`/Users/gustavo/.claude/plans/graceful-mapping-clarke.md`](file:///Users/gustavo/.claude/plans/graceful-mapping-clarke.md) for the full Phase 1 implementation plan, [`docs/leaderboards.md`](./docs/leaderboards.md) for the Phase 2 leaderboard spec, and [`docs/race-protocol-ops.md`](./docs/race-protocol-ops.md) for the operational protocol codes the client uses.
+
+## Phase 3 — economy, garage, store
+
+Eight new RPCs landed in Phase 3 (`wallet_get`, `garage_get`, `car_buy`, `car_upgrade`, `cosmetic_equip`, `loadout_set`, `store_get`, `store_buy`) plus the foundation work for the wallet, garage, and store subsystems. Three new catalogs were loaded at boot: `cars + upgrades + cosmetics`, `rewards + levels`, and `store`.
+
+| Module | File | What it owns |
+|---|---|---|
+| `economy/wallet.ts` | `grant/spend/walletGet/applyLedger` helpers + ledger metadata packing | wallet idempotency (7-day TTL via `nk.localcachePut`) |
+| `economy/rewards.ts` | position-aware reward computation per mode/size/rank/confidence | consumed by `RaceCompleted` subscriber |
+| `economy/rpcs.ts` | `wallet_get` RPC | sub-ms wallet viewer for the header HUD |
+| `economy/subscriber.ts` | `subscribeEconomyRewards` | wires wallet grants into the `RaceCompleted` event bus |
+| `progression/leveling.ts` | XP + level computation | additive on top of `profile.progression` field |
+| `progression/subscriber.ts` | `subscribeProgressionRewards` | wires XP grants into the `RaceCompleted` event bus |
+| `garage/storage.ts` | `readGarage/writeGarageCreate/writeGarageUpdate/addCarToGarage/applyUpgrade/equipCosmetic/setActiveCar/addCosmeticToBag/markPackPurchased` | CAS-pattern helpers for the garage doc |
+| `garage/stats.ts` | `computeStats + computeStatsRanked` | equalize-to-class-cap stat guarantees |
+| `garage/rpcs.ts` | `garage_get/car_buy/car_upgrade/cosmetic_equip/loadout_set` | owner-only enforcement + D3 compensating refund |
+| `garage/after_auth.ts` | `registerGarageAutoCreate` | seeds the starter `viper` garage on first auth (4 channels) |
+| `store/rotation.ts` | `withDailyRotation` + `resolveDailyRotation` | FNV-1a daily rotation, deterministic per UTC day |
+| `store/filter.ts` | `filterOffersForSection` + `ownershipFromGarage` | drops expired/level_low/already_owned offers |
+| `store/packs.ts` | `PACK_TABLE` | 4 one-time entitlement packs |
+| `store/rpcs.ts` | `store_get/store_buy` | D3 compensating refund, refund-on-pack-CAS-conflict |
+
+### Phase 3 decisions locked
+
+| ID | Decision | Where |
+|---|---|---|
+| D1 | Auto-create profile + garage on first auth | `profiles/after_auth.ts`, `garage/after_auth.ts` |
+| D2 | `garage_get` returns the full garage in one call (no pagination) | `garage/rpcs.ts::garage_get` |
+| D3 | Compensating-refund pattern for wallet + storage (Nakama JS runtime does NOT support wallet ops inside `multiUpdate`) | `economy/wallet.ts` + every mutation RPC |
+| D4 | Cosmetic compatibility Strict — `cosmetic_equip` validates ownership + bag + slot + class | `garage/rpcs.ts::cosmetic_equip` |
+| D5 | Loadout publicly readable (but only via future `player_get`; today `garage_get` enforces owner-only) | `garage/rpcs.ts::loadout_set` |
+| D6 | XP grant per `RaceCompleted` finisher (capped at 50 per race) | `progression/subscriber.ts` |
+| D7 | `RaceCompleted` event is NOT enriched with rewards — authoritative server-side grants only | `economy/subscriber.ts` |
+| D8 | Wallet ledger metadata packed as compact `motivo:idOrigen[;k=v,...]` ≤ 200 bytes | `economy/wallet.ts::formatLedgerMetadata` |
+
+### Phase 3 RPC quick reference
+
+| RPC | Output shape | D-pattern |
+|---|---|---|
+| `wallet_get` | `{ coins, gems, pending, ledger }` | sub-ms, no storage reads |
+| `garage_get` | `{ garage: GarageView }` | D2 — full garage |
+| `car_buy` | `{ garage, newBalance }` | D3 compensating refund |
+| `car_upgrade` | `{ garage, costPaid }` | D3 compensating refund |
+| `cosmetic_equip` | `{ garage }` | D4 Strict validation |
+| `store_get` | `{ dailySeed, sections }` | daily rotation + filters |
+| `store_buy` | `{ delivery, newBalance }` | D3 + pack grant/reverse |
+| `loadout_set` | `{ loadout }` | owner-only storage write |
+
+See [`docs/economy.md`](./docs/economy.md), [`docs/garage.md`](./docs/garage.md), [`docs/store.md`](./docs/store.md), and `docs/unity-api.md` §16 for the full per-RPC contract.
+
+### Tests
+
+Phase 3 adds 90+ tests on top of the 288 from Phase 2 (378 total at
+the close of Phase 3). The most important e2e suites:
+
+| Suite | Cases | Coverage |
+|---|---|---|
+| `tests/e2e/garage.test.ts` | 7 | First-auth auto-create + garage_get round-trip |
+| `tests/e2e/garage-mutations.test.ts` | 15 | car_buy / upgrade / equip / loadout_set |
+| `tests/e2e/store.test.ts` | 14 | store_get filtering + store_buy success + every error |
+| `tests/e2e/wallet.test.ts` | 7 | wallet_get round-trip + auth checks |
+| `tests/e2e/phase3-flow.test.ts` | 2 | Full new-user lifecycle (auth → wallet → garage → store → upgrade) |
+| `tests/e2e/refund-safety.test.ts` | 3 | Forced CAS failure → spend refunded via :refund |

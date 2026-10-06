@@ -583,3 +583,214 @@ allocation respectively; in the Unity client, wire them from the
 
 For these, refer to the corresponding `~/.claude/plans/phase-N-*.md` plan once it
 exists.
+
+---
+
+## 16. Phase 3 RPCs — economy, garage, store
+
+Eight new RPCs landed in Phase 3. All are owner-only (the socket
+`ctx.userId` must equal the payload `callerUserId`; HTTP gateways send
+`callerUserId` explicitly). Cross-user reads/writes return
+`FORBIDDEN`. Missing identity returns `UNAUTHENTICATED`.
+
+### 16.1 `wallet_get`
+
+Returns the current spendable wallet plus a forward-compatible
+pending/ledger summary. Sub-millisecond: one `nk.accountGetId` call
+plus a 30-day ledger window scan.
+
+**Input** — `{}` or `{ callerUserId?: string }`.
+
+**Output**:
+
+```ts
+interface WalletGetOutput {
+  coins: number;
+  gems: number;
+  /** Always empty in Phase 3 — gift/season-drop subsystem lands in Phase 5. */
+  pending: PendingCredit[];
+  ledger: { last30dCount: number };
+}
+
+interface PendingCredit {
+  currency: 'coins' | 'gems';
+  amount: number;          // positive
+  reason: string;          // sourceId (race session, mission id, etc.)
+  expiresAt?: number;      // epoch-ms; absent = no expiry
+}
+```
+
+> **Note**: `pending` is always `[]` in Phase 3. The shape is here so
+> the client can render a generic "Tienes X regalos pendientes" badge
+> today without a follow-up RPC. See `docs/economy.md`.
+
+### 16.2 `garage_get`
+
+Returns the entire garage (cars + cosmetics + loadout + daily
+counters) in one call — no pagination, no per-car fetches. Auto-creates
+the starter garage (viper + zero upgrades) on first read so a client
+that authenticates via an after-auth channel the hook doesn't cover
+still gets a usable garage immediately.
+
+**Input** — `{ userId?: string; callerUserId: string }`. Defaults to
+self when `userId` is omitted.
+
+**Output** — `{ garage: GarageView }`:
+
+```ts
+interface GarageView {
+  userId: string;
+  cars: OwnedCarView[];
+  cosmeticsBag: string[];        // cosmetic ids the player owns
+  purchasedPacks: string[];      // pack ids already redeemed
+  loadout: LoadoutView | null;
+  lastDailyWin: number;
+  dailyPrivateCount: number;
+  dailyResetAt: number;
+}
+
+interface OwnedCarView {
+  carId: string;
+  classId: 'D' | 'C' | 'B' | 'A' | 'S';
+  upgrades: { engine: number; tires: number; nitro: number; handling: number };
+  cosmetics: Partial<Record<CosmeticSlot, string>>;
+  computedStats: { speed: number; acceleration: number; handling: number; nitro: number };
+}
+
+interface LoadoutView {
+  activeCarId: string;
+  equipped: Partial<Record<CosmeticSlot, string>>;
+  stats: { speed: number; acceleration: number; handling: number; nitro: number };
+}
+```
+
+See `docs/garage.md`.
+
+### 16.3 `car_buy`
+
+Buy a car from the catalog by `carId`. Wallet reads BEFORE the spend
+(`nk.accountGetId`), then `nk.walletUpdate` (deducted via `spend()`
+with idempotency key `garage:buy:{userId}:{carId}`), then CAS write
+of the garage. On CAS conflict the spend is refunded via `grant()`
+with key `garage:buy:refund:{userId}:{carId}` so the player can
+retry without losing coins.
+
+**Input** — `{ carId: string; callerUserId: string }`.
+
+**Output** — `{ garage: GarageView; newBalance: { coins: number; gems: number } }`.
+
+| Error | When |
+|---|---|
+| `INSUFFICIENT_FUNDS` | wallet balance < offer price |
+| `CONFLICT` | car already owned OR CAS garage write failed (refund issued — retry safely) |
+| `NOT_FOUND` | `carId` not in catalog |
+
+### 16.4 `car_upgrade`
+
+Upgrade one of `engine | tires | nitro | handling` on an owned car to
+a new level (1..UPGRADE_MAX). Cost is `upgrades.perCarClass[classId][line][newLevel]`.
+Stats are recomputed server-side; the response includes the new
+`garage.cars[].computedStats` snapshot.
+
+**Input** — `{ carId: string; line: UpgradeLine; newLevel: number; callerUserId: string }`.
+
+**Output** — `{ garage: GarageView; costPaid: { coins: number; gems: number } }`.
+
+### 16.5 `cosmetic_equip`
+
+Equip a cosmetic on a specific slot of a specific car. Validates:
+- car is owned
+- cosmetic is in `garage.cosmeticsBag`
+- cosmetic type matches the slot
+- cosmetic's `compatibleClasses` includes the car's `classId`
+
+**Input** — `{ carId: string; slot: CosmeticSlot; cosmeticId: string; callerUserId: string }`.
+
+**Output** — `{ garage: GarageView }`.
+
+### 16.6 `loadout_set`
+
+Change the active car in the loadout. Equipped cosmetics are pulled
+from the new active car's `cosmetics` so the loadout always reflects
+the active car's choices.
+
+**Input** — `{ carId: string; callerUserId: string }`.
+
+**Output** — `{ loadout: LoadoutView }`.
+
+### 16.7 `store_get`
+
+Returns the catalog sections after applying the player's filters
+(level, ownership, packs-purchased) plus the daily rotation. Rotation
+is deterministic per UTC day (FNV-1a hash of `${offerId}:${dayIndex}`
+over the `daily` section's offers, top `dailyRotationPoolSize` wins).
+All players see the same rotation on the same day.
+
+**Input** — `{ nowMs?: number; callerUserId: string }`. `nowMs` is
+optional client-supplied "now" for deterministic tests.
+
+**Output**:
+
+```ts
+interface StoreGetOutput {
+  /** base36 day index the rotation is anchored to. */
+  dailySeed: string;
+  sections: ReadonlyArray<{
+    section: { id: 'permanent' | 'daily' | 'level_gated'; displayName: string };
+    offers: ReadonlyArray<{ offer: StoreOffer; isDailyOffer: boolean }>;
+  }>;
+}
+```
+
+### 16.8 `store_buy`
+
+Redeem a `store_get` offer. Spend first via `spend()` with key
+`store:buy:{kind}:{userId}:{refId}`, then mutate the garage (add car
+to garage / cosmetic to bag / mark pack purchased), then CAS write
+the garage. On CAS conflict refund via `grant()` with `:refund` suffix.
+For packs, the pack contents are granted with `:pack` and reversed
+on CAS conflict with `:pack:reverse`.
+
+**Input** — `{ offerId: string; nowMs?: number; callerUserId: string }`.
+
+**Output**:
+
+```ts
+interface StoreBuyOutput {
+  delivery:
+    | { kind: 'car'; refId: string }
+    | { kind: 'cosmetic'; refId: string }
+    | { kind: 'pack'; refId: string; changeset: { coins?: number; gems?: number } };
+  newBalance: { coins: number; gems: number };
+}
+```
+
+| Error | When |
+|---|---|
+| `NOT_FOUND` | `offerId` not in catalog |
+| `BAD_REQUEST` | offer expired |
+| `CONFLICT` | car/cosmetic/pack already owned OR CAS conflict (refund issued — retry safely) |
+| `INSUFFICIENT_FUNDS` | wallet balance < offer price |
+| `FORBIDDEN` | player level below `requiredLevel` |
+
+### 16.9 Phase 3 client integration checklist
+
+```
+auth → wallet_get (read)         // optional, mostly for refreshes
+auth → garage_get                // auto-creates starter garage on first call
+                                 // → after-auth hook handles auth channels 1-4
+                                  //   (device, email, custom, apple); channel 5+
+                                  //   falls back to garage_get auto-create
+
+header HUD refresh after every wallet mutation:
+  race_session → wallet_get (coins + gems after RaceCompleted reward)
+  car_buy      → wallet_get + garage_get
+  car_upgrade  → wallet_get + garage_get
+  store_buy    → wallet_get + garage_get
+  cosmetic_equip / garage_get
+  loadout_set  / garage_get
+
+store_get on every shop screen open (rotation anchor changes at UTC midnight)
+```
+
+See `docs/economy.md`, `docs/garage.md`, `docs/store.md`.

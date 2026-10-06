@@ -222,15 +222,11 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   const garageVersion = garageRead.version;
   const currentGarage = garageRead.value;
 
-  let postBuyBalance: { coins: number; gems: number };
   if (Object.keys(spendChangeset).length > 0) {
     const spendResp = spend(nk, userId, spendChangeset, metadata, grantKey);
     if (!spendResp.ok) {
       return toJson(err(spendResp.error.code, spendResp.error.message, spendResp.error.details));
     }
-    postBuyBalance = spendResp.data;
-  } else {
-    postBuyBalance = walletGetLocal(nk, userId);
   }
 
   // 7) Apply the delivery. Each kind mutates the garage + may also
