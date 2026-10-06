@@ -30,7 +30,13 @@ export type AnalyticsEventName =
   | 'wallet_moved'
   | 'store_purchase'
   | 'matchmaker_matched'
-  | 'host_claimed';
+  | 'host_claimed'
+  | 'profile_updated'
+  | 'mm_ticket_params_called'
+  | 'account_linked'
+  | 'account_link_conflict'
+  | 'account_link_conflict_resolved'
+  | 'account_deleted';
 
 export interface AnalyticsWebhook {
   url: string;

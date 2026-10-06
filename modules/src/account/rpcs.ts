@@ -9,6 +9,7 @@ import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, toJson as toJsonEnv, type Resp } from '../core/response';
 import { parseInput } from '../core/parse_input';
 import { liveopsGate } from '../core/liveops';
+import { emit } from '../core/admin/analytics';
 import type { ClientPlatform } from '../liveops/types';
 import {
   linkAccount,
@@ -88,10 +89,11 @@ export const account_link_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const nowMs = Date.now();
   const result = linkAccount(nk, logger, userId, provider, token, nowMs);
-  return renderLinkResult(logger, userId, provider, result);
+  return renderLinkResult(nk, logger, userId, provider, result);
 };
 
 function renderLinkResult(
+  nk: INakama,
   logger: ILogger,
   userId: string,
   provider: AccountLinkProvider,
@@ -102,6 +104,10 @@ function renderLinkResult(
       'account_link user=%s provider=%s bonus=%s',
       userId, provider, String(result.bonusClaimed),
     );
+    // Analytics (Chunk 9).
+    emit(nk, logger, 'account_linked', {
+      userId, provider, bonusClaimed: result.bonusClaimed,
+    });
     const out: AccountLinkOutput = {
       linked: true,
       bonusClaimed: result.bonusClaimed,
@@ -110,6 +116,8 @@ function renderLinkResult(
     return JSON.stringify(ok(out));
   }
   if (result.kind === 'conflict') {
+    // Analytics (Chunk 9).
+    emit(nk, logger, 'account_link_conflict', { userId, provider });
     return JSON.stringify(ok({ linked: false, conflict: result.conflict } satisfies { linked: false; conflict: AccountLinkConflictOutput }));
   }
   // error
@@ -149,18 +157,27 @@ export const account_link_resolve_conflict_impl: RpcHandler = (ctx, logger, nk, 
 
   const nowMs = Date.now();
   const result = resolveConflict(nk, logger, userId, { conflictToken, choice, ...(confirmText !== undefined ? { confirmText } : {}) }, nowMs);
-  return renderResolveResult(logger, userId, result);
+  return renderResolveResult(nk, logger, userId, result);
 };
 
 function renderResolveResult(
+  nk: INakama,
   logger: ILogger,
   userId: string,
   result: ResolveConflictResult,
 ): string {
   if (result.kind === 'cancelled') {
+    // Analytics (Chunk 9).
+    emit(nk, logger, 'account_link_conflict_resolved', {
+      userId, choice: 'cancel', affectedAccountDeleted: false,
+    });
     return JSON.stringify(ok({ resolved: 'cancelled' as const } satisfies Pick<AccountLinkResolveConflictOutput, 'resolved'>));
   }
   if (result.kind === 'linked') {
+    // Analytics (Chunk 9).
+    emit(nk, logger, 'account_link_conflict_resolved', {
+      userId, choice: 'link', affectedAccountDeleted: result.affectedAccountDeleted,
+    });
     const out: AccountLinkResolveConflictOutput = {
       resolved: 'linked',
       affectedAccountDeleted: result.affectedAccountDeleted,
@@ -235,6 +252,20 @@ export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
     userId, purge.storageDeleted, lbPurge.boardsDeleted,
     removeResult.abandonedFrom.length, unlinked.unlinked,
   );
+
+  // Analytics (Chunk 9). Emitted only after `nk.accountDeleteId`
+  // succeeds — a failed delete must NOT generate a 'deleted' event.
+  emit(nk, logger, 'account_deleted', {
+    userId,
+    summary: {
+      storageDeleted: purge.storageDeleted,
+      collectionsAffected: purge.collectionsAffected,
+      boardsDeleted: lbPurge.boardsDeleted,
+      boardsAffected: lbPurge.boardsAffected,
+      unlinkedAuths: unlinked.unlinked,
+      abandonedFromRaces: removeResult.abandonedFrom.length,
+    },
+  });
 
   const summary: AccountDeleteSummary = {
     storageDeleted: purge.storageDeleted,

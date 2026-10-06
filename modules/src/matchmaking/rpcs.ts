@@ -17,6 +17,7 @@
 
 import type { IContext, IMatchmakerMatchedEnvelope, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
+import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { getRankedConfig } from '../ranked/config';
 import {
@@ -46,7 +47,7 @@ export type RpcHandler = (
   body: string,
 ) => string;
 
-export const mm_ticket_params_impl: RpcHandler = (ctx, logger, _nk, body) => {
+export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
@@ -54,6 +55,13 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, _nk, body) => {
   if (!v.ok) {
     return toJson(err('BAD_REQUEST', 'invalid ticket params', { errors: v.errors }));
   }
+
+  // LiveOps gate (Chunk 9) — maintenance only (mm_ticket_params doesn't
+  // carry ClientPlatform-shaped fields; MmPlatform is "mobile|console|pc").
+  const m = assertNotInMaintenance(
+    logger, nk, ctx.userId ?? parsed.value.callerUserId ?? 'anon',
+  );
+  if (m !== null) return toJson(m);
 
   const options = resolveOptions(ctx, parsed.value);
   const config = getRankedConfig();
@@ -70,6 +78,14 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, _nk, body) => {
     output.mm.segmentBy,
     String(ticket.query['ratingBand'] ?? 'n/a'),
   );
+
+  // Analytics (Chunk 9).
+  emit(nk, logger, 'mm_ticket_params_called', {
+    mode: output.mode,
+    segmentBy: output.mm.segmentBy,
+    version: output.version,
+    region: output.region,
+  });
 
   return toJson(ok({ ticket, output }));
 };

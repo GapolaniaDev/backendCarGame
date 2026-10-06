@@ -21,6 +21,7 @@
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
+import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import {
   getCatalogsHash,
@@ -254,6 +255,12 @@ function race_session_create_impl(
   }
   if (!parsed.ok) return toJson(parsed);
 
+  // Maintenance gate (Phase 5 Chunk 9 — exhaustive LiveOps coverage).
+  // Race RPCs don't carry clientVersion/platform, so we only check
+  // maintenance (no min-version).
+  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.hostUserId ?? '');
+  if (m !== null) return toJson(m);
+
   // Resolve hostId:
   //   1. ctx.userId when set (authenticated socket call — trusted)
   //   2. otherwise payload.hostUserId (HTTP gateway / scripts)
@@ -485,6 +492,10 @@ function race_session_join_impl(
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
 
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.userId ?? '');
+  if (m !== null) return toJson(m);
+
   // Resolve the joiner (the player being added to the roster).
   //   - ctx.userId (socket) wins over payload.userId
   //   - HTTP gateway falls back to payload.userId
@@ -617,6 +628,10 @@ function race_session_start_impl(
   const parsed = parsePayload<RaceSessionStartInput>(payload);
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
+
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.callerUserId ?? '');
+  if (m !== null) return toJson(m);
 
   let callerId: string;
   if (ctx.userId) {
@@ -1074,6 +1089,10 @@ function race_session_quick_bots_impl(
   if (!parsed.ok) return toJson(parsed);
   const input = parsed.data;
 
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? input.callerUserId ?? '');
+  if (m !== null) return toJson(m);
+
   // Resolve caller. Same authz convention as the other race RPCs:
   // ctx.userId (socket) wins; HTTP gateway falls back to callerUserId.
   let callerId: string;
@@ -1339,6 +1358,10 @@ function race_host_claim_impl(
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
   const input = parsed.data;
+
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? input.callerUserId ?? '');
+  if (m !== null) return toJson(m);
 
   // Caller resolution — same convention as the other race RPCs.
   let callerId: string;

@@ -25,7 +25,18 @@ function call<T>(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
-  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  let body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  // Phase 5 Chunk 9: profile_get + profile_update are maintenance-gated
+  // AND enforce a minimum client version. Inject a fresh client
+  // version for tests that pre-date the gate.
+  if (rpc === 'profile_get' || rpc === 'profile_update') {
+    const obj = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {};
+    obj['clientVersion'] = obj['clientVersion'] ?? '1.0.0';
+    obj['platform'] = obj['platform'] ?? 'ios';
+    body = JSON.stringify(obj);
+  }
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }
 

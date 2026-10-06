@@ -27,6 +27,7 @@
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
+import { assertNotInMaintenance } from '../core/liveops';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { RATE_LIMITS } from './constants';
 import { getAbandonsLast24h, isBlocked } from '../liveops/abandon_tracker';
@@ -79,6 +80,10 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   } else {
     return toJson(err('UNAUTHENTICATED', 'no caller identity'));
   }
+
+  // LiveOps gate (Chunk 9) — maintenance only.
+  const m = assertNotInMaintenance(logger, nk, callerId);
+  if (m !== null) return toJson(m);
 
   // Rate limit per caller (30/60s — generous because ranked_get is
   // called on every UI render of the badge).
