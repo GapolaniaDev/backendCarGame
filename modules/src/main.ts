@@ -57,6 +57,7 @@ import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
+import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
 import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
@@ -86,6 +87,13 @@ function InitModule(
   loadLeaderboardsCatalog(logger, leaderboardsJson as unknown as import('./leaderboards/catalog').RawTablesFile, nk);
   ensureLeaderboards(logger, nk);
   registerLeaderboardWriteGuard(initializer);
+
+  // Phase 4: register the matchmaker matched-hook. The hook validates
+  // candidate groups (mode/version/region aligned, size in {2,4,6})
+  // and accepts the first qualifying candidate; rejection tells the
+  // matchmaker to keep tickets queued. The full RaceSession creation
+  // is in Chunk 4 (reconnection + host_claim).
+  initializer.registerMatchmakerMatched(matchmakerMatchedImpl);
 
   // Profiles catalog: blocked-words list + displayName rules.
   loadProfilesCatalog(
@@ -194,6 +202,7 @@ function InitModule(
     initializer.registerRpc('store_get', store_get);
     initializer.registerRpc('store_buy', store_buy);
     initializer.registerRpc('wallet_get', wallet_get);
+    initializer.registerRpc('mm_ticket_params', mm_ticket_params);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }

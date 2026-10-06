@@ -17,6 +17,12 @@ export interface MmTicketParamsInput {
   input?: Record<string, string>;
   /** Client platform tag — used by the region picker (D8). */
   platform?: MmPlatform;
+  /**
+   * Server-only field used to authorize the RPC on the HTTP gateway path.
+   * The socket path reads `ctx.userId` instead; here it lets the
+   * auth middleware confirm the caller's identity. Defaults to ''.
+   */
+  callerUserId?: string;
 }
 
 export interface MmTicketParamsOutput {

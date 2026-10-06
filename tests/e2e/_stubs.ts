@@ -21,6 +21,7 @@ import type {
   ILeaderboardRecord,
   ILeaderboardRecordEnvelope,
   ILogger,
+  IMatchmakerMatchedEnvelope,
   IMultiUpdateResult,
   INakama,
   IStorageKey,
@@ -631,6 +632,19 @@ class FakeInitializerCore {
   ): void {
     this.afterLeaderboardRecordWrites.push(fn);
   }
+
+  registerMatchmakerMatched(
+    fn: (
+      ctx: unknown,
+      logger: ILogger,
+      nk: INakama,
+      envelope: IMatchmakerMatchedEnvelope,
+    ) => { matched: boolean } | null,
+  ): void {
+    // Captured by the FakeInitializer wrapper; tests can inspect
+    // `.fakeInitializer.matchmakerMatchedHook` to assert behaviour.
+    (this as unknown as { _mmHook: unknown })._mmHook = fn;
+  }
 }
 
 /**
@@ -708,6 +722,13 @@ export interface LoadedBundle {
   fakeLogger: FakeLogger;
   /** The FakeInitializer — exposes `.rpcs` / `.shutdowns` for assertions. */
   fakeInitializer: FakeInitializer;
+  /** The matchmaker matched-hook installed via `registerMatchmakerMatched`. */
+  matchmakerMatchedHook?: (
+    ctx: unknown,
+    logger: ILogger,
+    nk: INakama,
+    envelope: IMatchmakerMatchedEnvelope,
+  ) => { matched: boolean } | null;
 }
 
 /**
@@ -755,6 +776,7 @@ export function loadBundleForTest(): LoadedBundle {
     fakeNakama,
     fakeLogger,
     fakeInitializer,
+    matchmakerMatchedHook: (fakeInitializer as unknown as { _mmHook?: unknown })._mmHook as LoadedBundle['matchmakerMatchedHook'],
   };
 }
 
