@@ -73,6 +73,7 @@ import {
 } from './missions/catalog';
 import { loadPassCatalog } from './pass/catalog';
 import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
+import { missions_get, mission_claim, mission_reroll } from './missions/rpcs';
 import { account_link, account_link_resolve_conflict, account_delete } from './account/rpcs';
 import {
   admin_wallet_adjust,
@@ -299,6 +300,9 @@ function InitModule(
       initializer.registerRpc('liveops_config_get', liveops_config_get);
       initializer.registerRpc('inbox_list', inbox_list);
       initializer.registerRpc('inbox_claim', inbox_claim);
+      initializer.registerRpc('missions_get', missions_get);
+      initializer.registerRpc('mission_claim', mission_claim);
+      initializer.registerRpc('mission_reroll', mission_reroll);
       initializer.registerRpc('account_link', account_link);
       initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
       initializer.registerRpc('account_delete', account_delete);
