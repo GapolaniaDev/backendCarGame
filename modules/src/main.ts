@@ -102,6 +102,12 @@ import blockedWordsJson from './catalogs/blocked_words.json';
 import { loadBlockedWordsCatalog } from './chat/blocked_words';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
+  report_player,
+  admin_view_reports,
+  admin_silence,
+  admin_unsilence,
+} from './moderation/rpcs';
+import {
   achievements_get,
   achievement_claim,
 } from './missions/achievements_rpcs';
@@ -414,6 +420,11 @@ function InitModule(
       // Phase 7 Chunk 6: chat (2 RPCs).
       initializer.registerRpc('chat_send', chat_send);
       initializer.registerRpc('chat_list', chat_list);
+      // Phase 7 Chunk 7: moderation (1 player RPC + 3 admin RPCs).
+      initializer.registerRpc('report_player', report_player);
+      initializer.registerRpc('admin_view_reports', admin_view_reports);
+      initializer.registerRpc('admin_silence', admin_silence);
+      initializer.registerRpc('admin_unsilence', admin_unsilence);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);

@@ -143,3 +143,21 @@ export function silenceUser(
   }
   throw new Error('silenceUser: unreachable');
 }
+
+/**
+ * Phase 7 Chunk 7: alias for `silenceUser` used by the reports
+ * pipeline (auto-silence + admin_silence). Same semantics: max-of
+ * extension + CAS retry. The two names exist so reports code doesn't
+ * have to reach into chat internals — it just imports
+ * `addToSilence(userId, reason, durationMs, nowMs)` and reads
+ * `chat/silenced.ts` from there.
+ */
+export function addToSilence(
+  nk: INakama,
+  userId: string,
+  reason: string,
+  durationMs: number,
+  nowMs: number,
+): number {
+  return silenceUser(nk, userId, reason, durationMs, nowMs);
+}
