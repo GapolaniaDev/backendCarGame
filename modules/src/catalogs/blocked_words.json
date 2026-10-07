@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "blocked": {
+    "es": [
+      "idiota",
+      "tonto",
+      "imbecil",
+      "puta",
+      "mierda",
+      "cabron",
+      "joder",
+      "coño",
+      "verga",
+      "marica",
+      "negro",
+      "gitano"
+    ],
+    "en": [
+      "idiot",
+      "stupid",
+      "fuck",
+      "shit",
+      "bitch",
+      "asshole",
+      "dick",
+      "piss",
+      "cunt",
+      "fag",
+      "nigger",
+      "kike"
+    ],
+    "pt": [
+      "idiota",
+      "burro",
+      "porra",
+      "merda",
+      "caralho",
+      "puta",
+      "buceta",
+      "foder",
+      "macaco",
+      "crioulo"
+    ]
+  }
+}

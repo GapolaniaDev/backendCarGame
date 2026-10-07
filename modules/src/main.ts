@@ -98,6 +98,9 @@ import {
   club_leave,
 } from './clubs/rpcs';
 import { loadEmblemasCatalog } from './clubs/catalog';
+import blockedWordsJson from './catalogs/blocked_words.json';
+import { loadBlockedWordsCatalog } from './chat/blocked_words';
+import { chat_send, chat_list } from './chat/rpcs';
 import {
   achievements_get,
   achievement_claim,
@@ -260,6 +263,15 @@ function InitModule(
     emblemasJson as unknown as import('./clubs/types').EmblemDef[],
   );
 
+  // Phase 7 Chunk 6: chat blocked-words catalog (es / en / pt). Loaded
+  // AFTER emblemas so a malformed chat catalog surfaces with the same
+  // CATALOG_INVALID diagnostic, not a silently-missing moderation list.
+  loadBlockedWordsCatalog(
+    logger,
+    blockedWordsJson as unknown as import('./chat/blocked_words').RawBlockedWordsFile,
+    nk,
+  );
+
   // Phase 5 Chunk 1: ensure the liveops config object is present in
   // storage. Wrapped in try/catch so a transient storage failure
   // (Postgres restart, etc.) never crashes boot — `loadLiveopsConfig`
@@ -399,6 +411,9 @@ function InitModule(
       initializer.registerRpc('club_promote', club_promote);
       initializer.registerRpc('club_demote', club_demote);
       initializer.registerRpc('club_leave', club_leave);
+      // Phase 7 Chunk 6: chat (2 RPCs).
+      initializer.registerRpc('chat_send', chat_send);
+      initializer.registerRpc('chat_list', chat_list);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
