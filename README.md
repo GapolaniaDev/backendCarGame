@@ -704,3 +704,74 @@ Phase 5 (~1226 total at the close of Phase 6 Chunk 7).
 | Chunk 6 | ✅ `14510c8` | pass core (4 RPCs + lazy season close + reward granter) |
 | Chunk 7 | ✅ `5a0a9f4` | XP engine (race + mission/achievement → pass XP) |
 | Chunk 8 | ✅ (this) | wrap (e2e + docs + unity-api §19 + README) |
+---
+
+## Phase 7 — Social, Parties, Moderation
+
+Phase 7 ships the cross-player surface: friend codes, invites, blocks,
+clubs (with weekly leaderboards), chat (with multi-lang blocked words
++ leet-normalization), moderation (with auto-silence), and parties
+(with matchmaker grouping). 26 RPCs + 1 fix across 9 chunks.
+
+### Module table (Phase 7)
+
+| Module | Source | RPCs | Hooks |
+|---|---|---|---|
+| Friend codes + recent rivals | `modules/src/social/{friend_code,friends_repo,recent_rivals}.ts` | 5 | `friend_added`, `friend_removed` |
+| Invites + blocks | `modules/src/social/{invites,invites_repo,blocks_repo}.ts` | 6 | `invite_sent`, `invite_responded`, `block_added`, `block_removed` |
+| Clubs CRUD + members + roles | `modules/src/clubs/{rpcs,roles,clubs_repo,week}.ts` | 9 | `club_*`, `club_week_rewarded` |
+| Chat | `modules/src/chat/{rpcs,silenced,blocked_words,history}.ts` | 2 | `chat_sent`, `chat_silenced` |
+| Moderation (player + admin) | `modules/src/moderation/{rpcs,reports_repo,silence}.ts` | 4 | `report_filed`, `chat_silenced` (auto) |
+| Parties + matchmaker grouping | `modules/src/parties/{types,parties_repo,rpcs}.ts` + `modules/src/matchmaking/{matched_hook,ticket_params,rpcs}.ts` | 6 + 1 extension | `party_*` (5 events) |
+
+### Phase 7 decision matrix
+
+| # | Decision |
+|---|---|
+| D1 | Invite TTL = 24h |
+| D2 | Self-invite → BAD_REQUEST |
+| D3 | Either-side block → FORBIDDEN on invite + party_invite |
+| D4 | Invite status transitions: `pending → accepted/declined/expired` (lazy) |
+| D5 | Invite ID via `nk.uuidv4()` |
+| D6 | Friend code 8 chars, 31-char alphabet, salted (`cv-friend-code-v1`) |
+| D7 | Friend edges mutual (both sides stored as separate rows) |
+| D8 | Per-reporter rate: 5 reports/hour |
+| D9 | Auto-silence = 3 distinct reporters in 24h → 1h silence (max-of extension) |
+| D10 | Reports anonymous to targets; only `admin_view_reports` exposes `reporterUserId` |
+| D11 | `admin_unsilence` writes `untilUtc=0` (lazy clear, preserves audit) |
+| D12 | Chat rate: 1 msg/sec + 20/min per user; 200 char cap; 7-day history TTL |
+| D13 | Chat blocked words: multi-lang (es/en/pt) + leet-normalized; 3 reports in 24h → 1h chat-only silence |
+| D14 | Storage-based parties (3.27 JS lacks `registerParty*` API) |
+| D15 | `PARTY_MAX_SIZE = 6`, maxSize ∈ {2, 4, 6}, default 4 |
+| D16 | Leader-only kick + invite; non-leader leave always OK; leader alone → disband |
+| D17 | Party size honored in matchmaker grouping (rejects splits + partials) |
+| D18 | `invite_respond(accept=true)` on `kind='group'` calls `joinParty`; errors do NOT undo the invite acceptance |
+
+### Known Nakama 3.27 JS runtime gaps (4 documented)
+
+1. **`nk.socketSend` missing** → online invite push always returns
+   `delivered: 'offline'`. Clients poll `invite_list` for inbox.
+2. **`registerBeforeAddGroupUsers` missing** → `checkClubJoinGate` is a
+   pure helper called inside the runtime hook path. Not enforced at
+   the runtime layer today.
+3. **`registerLeaderboardReset` missing** → club weekly reset is lazy on
+   the first `club_get`/`club_search` after Monday. A
+   `clubs_week_reset` global marker prevents double-send across
+   multi-club fan-out.
+4. **`registerBeforeSendChannelMessage` missing** → `validateChatSend`
+   is called synchronously from the `chat_send` RPC. Blocked-word +
+   rate + silence checks fire before the chat_history write.
+
+### Phase 7 status
+
+| Chunk | Status | Commit | Description |
+|---|---|---|---|
+| Chunk 1 | ✅ | `165758b` | friend codes + recent rivals (5 RPCs) |
+| Chunk 2 | ✅ | `b9190a0` | invites + blocks (6 RPCs + 2 hook stubs) |
+| Chunk 3 | ✅ | `3b5b0a0` | clubs CRUD + catalog (3 RPCs) |
+| Chunk 4 | ✅ | `b47270f` | club_update + members + roles (6 RPCs) |
+| Chunk 5 | ✅ | `f5e3809` | club week leaderboard + weekly reward (0 RPCs + 2 subscribers) |
+| Chunk 6 | ✅ | `acbe67b` | chat (2 RPCs + before_send + blocked_words + silenced) |
+| Chunk 7 | ✅ | `4b19b5e` | moderation (4 RPCs + auto-silence + admin) |
+| Chunk 8 | ✅ | `747e230` | parties + matchmaker partyId (5 RPCs) |
+| Chunk 9 | ✅ (this) | wrap (party_join fix + phase7_flow + docs + unity-api §20 + README) |

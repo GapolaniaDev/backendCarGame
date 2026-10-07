@@ -109,6 +109,7 @@ import {
 } from './moderation/rpcs';
 import {
   party_create,
+  party_join,
   party_invite,
   party_leave,
   party_kick,
@@ -438,6 +439,7 @@ function InitModule(
       initializer.registerRpc('party_leave', party_leave);
       initializer.registerRpc('party_kick', party_kick);
       initializer.registerRpc('party_get', party_get);
+      initializer.registerRpc('party_join', party_join);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);

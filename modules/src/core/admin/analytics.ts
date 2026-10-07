@@ -41,7 +41,8 @@ export type AnalyticsEventName =
   | 'party_created'
   | 'party_invite_sent'
   | 'party_left'
-  | 'party_kicked';
+  | 'party_kicked'
+  | 'party_joined';
 
 export interface AnalyticsWebhook {
   url: string;

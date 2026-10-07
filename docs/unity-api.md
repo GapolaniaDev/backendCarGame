@@ -1693,3 +1693,161 @@ header HUD refresh after race (race pass XP):
 
 See `docs/missions.md`, `docs/pass.md`, `docs/economy.md`,
 `docs/garage.md`.
+## 20. Phase 7 RPCs — Social, Parties, Moderation
+
+Phase 7 ships 26 RPCs + 1 fix across 8 chunks (friend codes,
+invites, blocks, clubs CRUD + membership, chat, moderation, parties,
+party_join fix). Server: storage-based + flat invitations + storage
+parties (Nakama 3.27 JS lacks `registerParty*` API).
+
+All Phase 7 RPCs follow the standard `Resp<T> = Ok<T> | Err` envelope
+(see §3). The table below lists the surface.
+
+| RPC | Auth | Gated | Returns |
+|---|---|---|---|
+| `friend_code_get` | owner | YES | `{code, userId, createdAt}` |
+| `friend_add_by_code` | owner | YES | `{friendId, friendCode, since, mutual}` |
+| `friend_list_get` | owner | YES | `{items, count}` |
+| `friend_remove` | owner | YES | `{removed: true}` |
+| `recent_rivals_get` | owner | YES | `{rivals, count}` |
+| `invite_send` | owner | YES | `{inviteId, delivered, expiresAt}` |
+| `invite_list` | owner | YES | `{items, count}` |
+| `invite_respond` | owner | YES | `{status, inviteId, partyId?}` |
+| `block_add` | owner | YES | `{created: boolean}` |
+| `block_remove` | owner | YES | `{removed: boolean}` |
+| `block_list` | owner | YES | `{items, count}` |
+| `club_create` | owner + level ≥ 8 | YES | `{clubId, costCoins, balanceAfter}` |
+| `club_get` | owner | YES | `{club}` |
+| `club_search` | owner | YES | `{items, count}` |
+| `club_update` | leader | YES | `{updated: true}` |
+| `club_members_list` | owner | YES | `{members, nextCursor}` |
+| `club_kick` | leader | YES | `{kicked: true}` |
+| `club_promote` | leader | YES | `{promoted: true, role: 'admin'}` |
+| `club_demote` | leader | YES | `{demoted: true, role: 'member'}` |
+| `club_leave` | member | YES | `{left: true}` |
+| `chat_send` | owner | YES | `{messageId, sentAt}` |
+| `chat_list` | owner | NO (read) | `{items, count}` |
+| `report_player` | owner | YES | `{reportId, silenced, untilUtc?, distinctCount, triggeredSilence}` |
+| `admin_view_reports` | adminKey | YES (bypass) | `{reports, count}` |
+| `admin_silence` | adminKey | YES (bypass) | `{silenced: true, untilUtc}` |
+| `admin_unsilence` | adminKey | YES (bypass) | `{silenced: false, untilUtc: 0}` |
+| `party_create` | owner | YES | `{partyId, leaderUserId, maxSize, state, createdAt, members[]}` |
+| `party_invite` | leader | YES | `{inviteId, expiresAt, partyId, targetUserId}` |
+| `party_join` | owner | YES | `{party, partyId, joinedAt}` |
+| `party_leave` | member | YES | `{left: true, disbanded}` |
+| `party_kick` | leader | YES | `{kicked: true, partyId, targetUserId}` |
+| `party_get` | member | NO (read) | `{party: {partyId, leaderUserId, maxSize, state, createdAt, members[]}}` |
+
+### 20.1 Friend codes (Chunk 1)
+
+8-character codes over a 31-char alphabet (`0-9 A-Z minus I, O, U`
+case-folded). Salted by `FRIEND_CODE_SALT='cv-friend-code-v1'`.
+Generated deterministically via SHA-256(userId || salt) → first 8
+chars of the alphabet index. Friend codes are immutable once issued.
+
+Mutual friendships: both sides write a row to `friend_edges`. Caller
+side: `owner=caller, key=friendId`. Friend side: `owner=friendId,
+key=caller`. Either side may `friend_remove`.
+
+### 20.2 Invites (Chunk 2 + Chunk 9 fix)
+
+Two kinds: `group` (club/party), `private_room` (race). TTL = 24h
+default, clamped to [now, now + 7d] when caller supplies `expiresAt`.
+Self-invite → BAD_REQUEST. Either-side block → FORBIDDEN. Online push
+STUBBED: `nk.socketSend` is not in 3.27 JS runtime — `delivered:
+'offline'` always. Clients poll `invite_list`.
+
+**Chunk 9 fix**: `invite_respond(accept=true)` on a `group` invite
+with `payload.partyId` calls `parties_repo.joinParty(callerId,
+partyId)`. The response includes `partyId` when the join succeeds.
+Errors do NOT undo the invite acceptance.
+
+### 20.3 Clubs (Chunks 3-5)
+
+`club_create` spends 5000 coins + requires level ≥ 8 + is a
+Nakama group (NOT a storage collection). Membership rows live in
+`clubs_members` storage (system-owned, public read) — this is the
+authoritative roster because 3.27 JS lacks `groupUsersRemove`. Weekly
+leaderboard + reward via `clubs_week_points` (lazy reset, no
+`registerLeaderboardReset`).
+
+### 20.4 Chat (Chunk 6)
+
+`chat_send`: 200 char cap, multi-lang blocked words (es/en/pt)
+leet-normalized, 1 msg/sec + 20/min rate. `chat_list` reads from
+`chat_history/{channel}/{targetId}` with 7-day TTL. Channel types:
+`club` (targetId = clubId), `direct` (targetId = recipientUserId).
+3 reports in 24h → 1h chat-only silence (auto-triggered by the report
+flow).
+
+`registerBeforeSendChannelMessage` missing in 3.27 JS — the
+`validateChatSend` synchronous helper is called from `chat_send` RPC
+itself. Same semantic, different surface.
+
+### 20.5 Moderation (Chunk 7)
+
+`report_player`: per-reporter 5/hour rate. Reasons: `cheating`,
+`toxic_chat`, `username`, `other`. 3 distinct reporters in 24h → 1h
+silence (auto-triggered; `silenced: true`, `untilUtc: <now+1h>`).
+Reports anonymous to targets; only `admin_view_reports` exposes
+`reporterUserId`.
+
+Admin RPCs (`admin_view_reports`, `admin_silence`, `admin_unsilence`)
+require `adminKey` (shared-secret from `liveops_config.adminRpcKey`,
+Phase 5 D7). Bypass maintenance. `admin_unsilence` writes `untilUtc=0`
+(lazy clear, preserves audit history).
+
+### 20.6 Parties (Chunks 8-9)
+
+Storage-based (NOT Nakama party API — 3.27 JS lacks `registerParty*`).
+`parties/{partyId}/<SYSTEM_USER>` + `active_party/{userId}/{userId}`
+inverse index. maxSize ∈ {2, 4, 6}, default 4. PARTY_MAX_SIZE = 6.
+
+`party_create`: caller becomes leader + only member. `party_invite`:
+leader-only, delegates to `invites_repo.writeInviteCreate(kind='group')`
+with payload `{partyId, partyMaxSize}`. `party_leave`: non-leader
+always OK; leader alone → disband; leader with members → FORBIDDEN.
+`party_kick`: leader-only. `party_get`: members-only (NOT
+maintenance-gated, since it's a read).
+
+**Matchmaker integration**: `mm_ticket_params` accepts an optional
+`partyId`. When set, validates caller is leader + party is `open` +
+members ≥ 1, then stamps `partyId` + `partySize` into the ticket
+metadata. The leader's rating becomes the matchmaker band ceiling.
+
+**Matchmaker matched-hook grouping**: `validatePartyGrouping` rejects
+a candidate where matched entries carry different `partyId` values
+("party split") or where the matched count differs from `partySize`
+("party partial").
+
+### 20.7 Phase 7 client integration checklist
+
+```
+auth → friend_code_get (cache the code locally)
+auth → recent_rivals_get (read once)
+
+party flow:
+  party_create → {partyId}
+  party_invite → {inviteId}
+  peer: invite_list → invite_respond(accept=true) → joins party
+  party_get (on every party-tab mount)
+  party_leave when the user backs out
+
+matchmaker with party:
+  mm_ticket_params({..., partyId}) → ticket with stamped partyId+partySize
+  matchmakerAdd(ticket)
+  matchmakerMatched hook verifies party grouping
+
+club flow:
+  club_create (level 8 + 5000 coins, gated)
+  club_search / club_get (browse)
+  invite_send(kind='group', payload: {clubId}) → peer joins
+  club_members_list (paginated via cursor)
+
+moderation:
+  report_player (when user reports a peer)
+  admin_* gated by adminRpcKey (NOT for end-users)
+```
+
+See `docs/social.md`, `docs/parties.md`, `docs/chat-flow.md`-style
+narrative (when added).

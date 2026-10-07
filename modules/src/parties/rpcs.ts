@@ -47,6 +47,7 @@ import {
   MAX_CAS_RETRIES,
   deleteActiveParty,
   deleteParty,
+  joinParty,
   readActiveParty,
   readParty,
   writeActivePartyCreate,
@@ -336,6 +337,86 @@ export function party_invite_impl(
   return toJson(ok(out));
 }
 export const party_invite: RpcHandler = party_invite_impl;
+
+// ─── party_join ─────────────────────────────────────────────────────────────
+
+export interface PartyJoinRpcInput {
+  callerUserId: string;
+  partyId: string;
+}
+
+export interface PartyJoinRpcOutput {
+  party: PartyCard;
+  partyId: string;
+  joinedAt: number;
+}
+
+export function party_join_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRpcRate(nk, logger, 'party_join', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const raw = parsed.raw;
+  const partyId = raw['partyId'];
+  if (typeof partyId !== 'string' || partyId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'partyId is required'));
+  }
+
+  // Caller must not already be in a party.
+  const existing = readActiveParty(nk, caller.id);
+  if (existing !== null) {
+    return toJson(err('FORBIDDEN', 'caller is already in a party'));
+  }
+
+  let result;
+  try {
+    result = joinParty(nk, logger, caller.id, partyId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === 'party is closed') {
+      return toJson(err('CONFLICT', msg));
+    }
+    if (msg === 'party is full') {
+      return toJson(err('CONFLICT', msg));
+    }
+    if (msg === 'already a member') {
+      return toJson(err('CONFLICT', msg));
+    }
+    logger.error('party_join: joinParty failed: %s', msg);
+    return toJson(err('INTERNAL', msg));
+  }
+  if (result === null) {
+    return toJson(err('NOT_FOUND', 'party not found'));
+  }
+
+  const me = result.record.members.find((m) => m.userId === caller.id);
+  const joinedAt = me?.joinedAt ?? Date.now();
+
+  emit(nk, logger, 'party_joined', {
+    partyId,
+    userId: caller.id,
+  }, { userId: caller.id });
+
+  const out: PartyJoinRpcOutput = {
+    party: asPartyCard(result.record),
+    partyId,
+    joinedAt,
+  };
+  return toJson(ok(out));
+}
+export const party_join: RpcHandler = party_join_impl;
 
 // ─── party_leave ────────────────────────────────────────────────────────────
 

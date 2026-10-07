@@ -114,6 +114,9 @@ export interface InviteListOutput {
 export interface InviteRespondOutput {
   status: 'accepted' | 'declined';
   inviteId: string;
+  /** Phase 7 Chunk 9: set when the invite was for a party and the
+   *  caller successfully joined the roster. */
+  partyId?: string;
 }
 
 export interface BlockAddOutput {

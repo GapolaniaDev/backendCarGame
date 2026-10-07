@@ -45,6 +45,7 @@ import {
   type InviteRespondOutput,
   type InviteSendOutput,
 } from './types';
+import { joinParty } from '../parties/parties_repo';
 
 const INVITE_RATE_LIMITS = {
   invite_send: { maxPerWindow: INVITE_RATE_LIMIT_PER_MIN, windowSec: 60 },
@@ -351,6 +352,39 @@ export function invite_respond(
     fromUserId: rec.fromUserId,
   }, { userId: caller.id });
 
+  // Phase 7 Chunk 9 — on `accept`, when the invite was for a party,
+  // add the caller to the party roster. Errors here do NOT undo the
+  // invite acceptance (the invite is already terminal); we surface
+  // them as a soft side-effect in the response.
+  let joinedPartyId: string | null = null;
+  if (accept && rec.kind === 'group') {
+    const pid = rec.payload?.['partyId'];
+    if (typeof pid === 'string' && pid.length > 0) {
+      try {
+        // Caller must not already be in another party.
+        const result = joinParty(nk, logger, caller.id, pid);
+        if (result !== null) {
+          joinedPartyId = pid;
+        } else {
+          logger.warn(
+            'invite_respond: partyId %s in invite payload not found',
+            pid,
+          );
+        }
+      } catch (e) {
+        logger.warn(
+          'invite_respond: joinParty failed user=%s party=%s err=%s',
+          caller.id,
+          pid,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+  }
+
   const out: InviteRespondOutput = { status: nextStatus, inviteId };
+  if (joinedPartyId !== null) {
+    (out as { partyId?: string }).partyId = joinedPartyId;
+  }
   return toJson(ok(out));
 }
