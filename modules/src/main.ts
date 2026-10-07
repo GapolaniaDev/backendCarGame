@@ -76,6 +76,14 @@ import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
 import { missions_get, mission_claim, mission_reroll } from './missions/rpcs';
 import { subscribeMissionsProgress } from './missions/subscriber';
 import {
+  friend_code_get,
+  friend_add_by_code,
+  friend_list_get,
+  friend_remove,
+  recent_rivals_get,
+} from './social/rpcs';
+import { subscribeRecentRivals } from './social/recent_rivals';
+import {
   achievements_get,
   achievement_claim,
 } from './missions/achievements_rpcs';
@@ -267,6 +275,10 @@ function InitModule(
   // Phase 6 Chunk 4: missions + achievements progress for every
   // closed race (all modes). Bots filtered; lazy storage skipped.
   subscribeMissionsProgress({ logger, nk, bus });
+  // Phase 7 Chunk 1: recent rivals (LRU, rolling 30d) for every closed
+  // race. Runs AFTER missions so a storage hiccup never delays the
+  // missions path.
+  subscribeRecentRivals({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
@@ -332,6 +344,12 @@ function InitModule(
       initializer.registerRpc('admin_remove_player', admin_remove_player);
       initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
       initializer.registerRpc('relay_token', relay_token);
+      // Phase 7 Chunk 1: friend codes + recent rivals.
+      initializer.registerRpc('friend_code_get', friend_code_get);
+      initializer.registerRpc('friend_add_by_code', friend_add_by_code);
+      initializer.registerRpc('friend_list_get', friend_list_get);
+      initializer.registerRpc('friend_remove', friend_remove);
+      initializer.registerRpc('recent_rivals_get', recent_rivals_get);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
