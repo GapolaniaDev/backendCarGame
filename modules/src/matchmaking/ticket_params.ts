@@ -48,6 +48,18 @@ export interface TicketOptions {
    * subsystem (Chunk 8) overrides this when its flag is on.
    */
   segmentBy?: TicketSegment;
+  /**
+   * Phase 7 Chunk 8: when the caller is a party leader, the resolved
+   * party size (always >= 1, <= 6). Stamp this into the ticket's
+   * metadata so the matched-hook can correlate the party.
+   */
+  partySize?: number;
+  /**
+   * Phase 7 Chunk 8: party id, stamped into metadata. The matchmaker
+   * keeps entries with the same `partyId` together; the matched-hook
+   * verifies every member of each party is present.
+   */
+  partyId?: string;
 }
 
 export interface BuiltTicket {
@@ -143,6 +155,14 @@ export function buildTicket(
     region: options.region,
     segmentBy: query['segmentBy'] as string,
   };
+  // Phase 7 Chunk 8: stamp party metadata so the matched-hook can
+  // verify the full party lands in one session.
+  if (options.partyId !== undefined) {
+    metadata['partyId'] = options.partyId;
+  }
+  if (options.partySize !== undefined) {
+    metadata['partySize'] = String(options.partySize);
+  }
 
   return {
     query,

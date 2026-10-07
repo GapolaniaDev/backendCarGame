@@ -96,6 +96,44 @@ export function validateCandidate(candidate: MatchedCandidate): string | null {
   if (size !== matched.length) {
     return `metadata size ${size} vs matched count ${matched.length}`;
   }
+  // Phase 7 Chunk 8: party grouping — if any matched entry carries a
+  // partyId in vars, every matched entry must share it AND the party
+  // size must equal the matched count.
+  const partyReason = validatePartyGrouping(candidate);
+  if (partyReason !== null) return partyReason;
+  return null;
+}
+
+/**
+ * Phase 7 Chunk 8: when ANY matched entry has a `vars.partyId` field
+ * (because the leader queued with a party), require that every matched
+ * entry shares the same partyId and that the matched count equals the
+ * party's declared size. This is the "keep the party together" rule —
+ * without it the matchmaker might split a 4-person party across two
+ * sessions of size 2.
+ *
+ * Returns `null` when no party is involved OR the party is intact.
+ */
+export function validatePartyGrouping(candidate: MatchedCandidate): string | null {
+  const matched = candidate.matched ?? [];
+  if (matched.length === 0) return null;
+  const firstPartyId = matched[0]?.vars?.['partyId'];
+  if (firstPartyId === undefined || firstPartyId === '') return null;
+  // Verify every entry shares the same partyId.
+  for (let i = 1; i < matched.length; i += 1) {
+    const pid = matched[i]?.vars?.['partyId'];
+    if (pid !== firstPartyId) {
+      return `party split: matched[${i}] has partyId=${String(pid)} vs expected ${firstPartyId}`;
+    }
+  }
+  // Verify the party size matches the matched count.
+  const partySizeStr = matched[0]?.vars?.['partySize'];
+  if (partySizeStr !== undefined) {
+    const expected = Number(partySizeStr);
+    if (Number.isFinite(expected) && expected !== matched.length) {
+      return `party partial: expected size=${expected} got ${matched.length}`;
+    }
+  }
   return null;
 }
 

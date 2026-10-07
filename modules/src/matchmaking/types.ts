@@ -23,6 +23,13 @@ export interface MmTicketParamsInput {
    * auth middleware confirm the caller's identity. Defaults to ''.
    */
   callerUserId?: string;
+  /**
+   * Phase 7 Chunk 8: when set, the caller queues as a party leader.
+   * Server stamps `partySize` and a `partyId` tag into the matchmaker
+   * ticket so the matched-hook can keep the party together. Only the
+   * leader may set this; the value must equal their current party.
+   */
+  partyId?: string;
 }
 
 export interface MmTicketParamsOutput {

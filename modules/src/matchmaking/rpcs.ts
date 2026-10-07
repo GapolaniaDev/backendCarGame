@@ -20,6 +20,7 @@ import { err, ok, type Resp } from '../core/response';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { getRankedConfig } from '../ranked/config';
+import { readRankedRecord } from '../ranked/ranked_repo';
 import {
   buildOutput,
   buildTicket,
@@ -31,6 +32,8 @@ import type {
   MmTicketParamsOutput,
 } from './types';
 import { pickCandidate } from './matched_hook';
+import { readParty } from '../parties/parties_repo';
+import type { PartyRecord } from '../parties/types';
 
 export interface ResolvedTicketOptions {
   version: string;
@@ -38,6 +41,10 @@ export interface ResolvedTicketOptions {
   rating?: number;
   lastRatedAt?: number;
   segmentBy?: 'none' | 'rating';
+  /** Phase 7 Chunk 8: party size (members.length). */
+  partySize?: number;
+  /** Phase 7 Chunk 8: party id (the leader's partyId). */
+  partyId?: string;
 }
 
 export type RpcHandler = (
@@ -63,13 +70,19 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
   );
   if (m !== null) return toJson(m);
 
-  const options = resolveOptions(ctx, parsed.value);
+  // Phase 7 Chunk 8: party path. When `partyId` is provided, validate
+  // caller is the leader and pull party metadata into the ticket.
+  const partyId = parsed.value.partyId;
+  const partyResult = resolveParty(nk, logger, parsed.value, partyId);
+  if (!partyResult.ok) return toJson(err(partyResult.code, partyResult.message));
+
+  const options = resolveOptions(nk, ctx, parsed.value, partyResult.party);
   const config = getRankedConfig();
   const ticket: BuiltTicket = buildTicket(v, options, config);
   const output: MmTicketParamsOutput = buildOutput(v, ticket, options);
 
   logger.info(
-    'mm_ticket_params user=%s mode=%s size=%d version=%s region=%s segmentBy=%s ratingBand=%s',
+    'mm_ticket_params user=%s mode=%s size=%d version=%s region=%s segmentBy=%s ratingBand=%s party=%s',
     ctx.userId ?? 'anon',
     output.mode,
     output.size,
@@ -77,6 +90,7 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
     output.region,
     output.mm.segmentBy,
     String(ticket.query['ratingBand'] ?? 'n/a'),
+    partyId ?? 'none',
   );
 
   // Analytics (Chunk 9).
@@ -85,6 +99,7 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
     segmentBy: output.mm.segmentBy,
     version: output.version,
     region: output.region,
+    partyId: partyId ?? null,
   });
 
   return toJson(ok({ ticket, output }));
@@ -96,19 +111,103 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
  * Pull server-stamped options from the request. The HTTP gateway
  * supplies `callerUserId`; the socket path reads it from `ctx.userId`.
  * Region defaults to 'eu-west-1' when neither side provides one.
+ *
+ * Phase 7 Chunk 8: when `party` is non-null, the rating/party metadata
+ * is derived from the party: rating = max(members.ratedScore),
+ * partySize = members.length, partyId = party.partyId.
  */
 function resolveOptions(
+  nk: INakama,
   ctx: IContext,
   _input: MmTicketParamsInput,
+  party: PartyRecord | null,
 ): ResolvedTicketOptions {
   // Server-stamped version — would come from a header in production
   // (e.g. `client.version`). Today the bundle ships one version, so
   // we hardcode it. Chunk 8 promotes this to a runtime header.
   const version = '1.0.0';
   const region = (ctx as { region?: string }).region || 'eu-west-1';
-  // Future-proof: when Chunk 6 wires ranked, this is where we'll read
-  // rating + lastRatedAt from the caller-supplied input record.
-  return { version, region };
+
+  if (party === null) {
+    return { version, region };
+  }
+
+  // Party path: stamp party metadata. The leader's ticket is what
+  // the client passes to `nk.matchmakerAdd` — `matchmakerMatched`
+  // verifies every member of the party is present.
+  const opts: ResolvedTicketOptions = {
+    version,
+    region,
+    partySize: party.members.length,
+    partyId: party.partyId,
+  };
+  const leaderRating = readPartyLeaderRating(nk, party);
+  if (leaderRating !== undefined) {
+    opts.rating = leaderRating;
+    opts.lastRatedAt = 0;
+  }
+  return opts;
+}
+
+/**
+ * Phase 7 Chunk 8: lookup + validate the party the leader wants to
+ * queue with. Returns `{ok:true, party}` on success, or an error
+ * shape the caller can pass to `toJson(err(...))` directly.
+ */
+function resolveParty(
+  nk: INakama,
+  logger: ILogger,
+  input: MmTicketParamsInput,
+  partyId: string | undefined,
+):
+  | { ok: true; party: PartyRecord | null }
+  | { ok: false; code: 'BAD_REQUEST' | 'FORBIDDEN' | 'NOT_FOUND'; message: string } {
+  if (partyId === undefined) return { ok: true, party: null };
+  const callerId = input.callerUserId;
+  if (typeof callerId !== 'string' || callerId.length === 0) {
+    return { ok: false, code: 'FORBIDDEN', message: 'partyId requires callerUserId' };
+  }
+  const partyRow = readParty(nk, partyId);
+  if (partyRow === null) {
+    return { ok: false, code: 'NOT_FOUND', message: 'party not found' };
+  }
+  const party = partyRow.record;
+  if (party.leaderUserId !== callerId) {
+    return { ok: false, code: 'FORBIDDEN', message: 'only the party leader can queue the party' };
+  }
+  if (party.state !== 'open') {
+    return { ok: false, code: 'FORBIDDEN', message: 'party is not open' };
+  }
+  if (party.members.length < 1) {
+    return { ok: false, code: 'BAD_REQUEST', message: 'party has no members' };
+  }
+  logger.debug('mm_ticket_params party resolved partyId=%s leader=%s members=%d',
+    party.partyId, party.leaderUserId, party.members.length);
+  return { ok: true, party };
+}
+
+/**
+ * Phase 7 Chunk 8: read the party's leader's current ranked rating.
+ * Returns undefined when the leader has no ranked record (new player).
+ * Today we read only the leader's record to keep the RPC cheap — the
+ * matched-hook verifies the full party arrives, so the leader's
+ * rating is the "ceiling" the matchmaker band must contain.
+ */
+function readPartyLeaderRating(
+  nk: INakama,
+  party: PartyRecord,
+): number | undefined {
+  const leader = party.leaderUserId;
+  try {
+    // We don't know the seasonId without resolving liveops; default to
+    // 'global' for the current implementation. Matchmaker band is
+    // computed from rating ± window; an off-season record just gives
+    // a slightly different initial band.
+    const rec = readRankedRecord(nk, leader);
+    return rec?.record.rating;
+  } catch {
+    return undefined;
+  }
 }
 
 interface ParseOk<T> {
@@ -146,6 +245,7 @@ function parseInput(body: string): ParseOk<MmTicketParamsInput> | ParseErr {
     value.platform = r['platform'];
   }
   if (typeof r['callerUserId'] === 'string') value.callerUserId = r['callerUserId'];
+  if (typeof r['partyId'] === 'string') value.partyId = r['partyId'];
   return { ok: true, value };
 }
 

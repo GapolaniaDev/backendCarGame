@@ -37,7 +37,11 @@ export type AnalyticsEventName =
   | 'account_link_conflict'
   | 'account_link_conflict_resolved'
   | 'account_deleted'
-  | 'report_filed';
+  | 'report_filed'
+  | 'party_created'
+  | 'party_invite_sent'
+  | 'party_left'
+  | 'party_kicked';
 
 export interface AnalyticsWebhook {
   url: string;

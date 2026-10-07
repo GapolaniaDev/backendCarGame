@@ -108,6 +108,13 @@ import {
   admin_unsilence,
 } from './moderation/rpcs';
 import {
+  party_create,
+  party_invite,
+  party_leave,
+  party_kick,
+  party_get,
+} from './parties/rpcs';
+import {
   achievements_get,
   achievement_claim,
 } from './missions/achievements_rpcs';
@@ -425,6 +432,12 @@ function InitModule(
       initializer.registerRpc('admin_view_reports', admin_view_reports);
       initializer.registerRpc('admin_silence', admin_silence);
       initializer.registerRpc('admin_unsilence', admin_unsilence);
+      // Phase 7 Chunk 8: parties (5 RPCs).
+      initializer.registerRpc('party_create', party_create);
+      initializer.registerRpc('party_invite', party_invite);
+      initializer.registerRpc('party_leave', party_leave);
+      initializer.registerRpc('party_kick', party_kick);
+      initializer.registerRpc('party_get', party_get);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
