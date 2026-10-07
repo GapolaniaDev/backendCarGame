@@ -53,6 +53,52 @@ function makeUserDaily(env: LoadedBundle, userId: string, dateUtc = '2026-10-07'
   )!.value as DailyMissions;
 }
 
+/**
+ * Seed a deterministic daily assignment for `userId` — bypass the
+ * catalog-derived sha256 pick. The subscriber doesn't care HOW the row
+ * was created; it only needs a real row in storage. Tests use this to
+ * pin specific missionIds (e.g. `daily_race_5`) so assertions can
+ * target known ticks.
+ */
+function seedDailyWith(
+  env: LoadedBundle,
+  userId: string,
+  missionIds: string[],
+  dateUtc: string,
+): DailyMissions {
+  const missions = missionIds.map((missionId) => ({
+    instanceId: `daily:${missionId}@${dateUtc}`,
+    missionId,
+    progress: 0,
+    completed: false,
+    claimed: false,
+  }));
+  const rec: DailyMissions = {
+    schemaVersion: 1,
+    userId,
+    dateUtc,
+    assignedAt: Date.now(),
+    rerollsLeftToday: 1,
+    missions,
+  };
+  env.fakeNakama.store.set(
+    `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(userId, dateUtc)}/${userId}`,
+    {
+      collection: MISSIONS_DAILY_COLLECTION,
+      key: dailyMissionsKey(userId, dateUtc),
+      userId,
+      value: rec,
+      version: 'v00000001',
+      permissionRead: 1,
+      permissionWrite: 1,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    },
+  );
+  return rec;
+}
+
 function makeUserWeekly(env: LoadedBundle, userId: string): WeeklyMissions {
   const handler = env.resolver('missions_get');
   if (!handler) throw new Error('no rpc: missions_get');
@@ -196,9 +242,10 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('same user wins another quick → progress = 2', () => {
     const ts = Date.now();
-    const daily = makeUserDaily(env, USER_A);
-    const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')
-      ?? daily.missions[0]!;
+    const dateUtc = '2026-10-07';
+    // Pin a known tickable mission: `daily_race_5` (race_count, no filter).
+    const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_first_win'], dateUtc);
+    const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')!;
     const start = raceCount.progress;
 
     fireRace(env, bus, {
@@ -215,21 +262,19 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     });
 
     const after = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, daily.dateUtc)}/${USER_A}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dateUtc)}/${USER_A}`,
     )!.value as DailyMissions;
-    const afterRaceCount = after.missions.find((m) => m.missionId === raceCount.missionId)!;
+    const afterRaceCount = after.missions.find((m) => m.missionId === 'daily_race_5')!;
     expect(afterRaceCount.progress).toBe(start + 2);
   });
 
   it('user loses quick race → wins_quick stays 0, race_count still increments', () => {
     const ts = Date.now();
-    const daily = makeUserDaily(env, USER_A);
-    // Pick the actually-assigned missions. Daily assignment is deterministic
-    // per (userId, dateUtc) but we don't know which 3 the catalog pick gave
-    // us. Use kind-based selection that works for any pick.
-    const winsQuick = daily.missions.find((m) => m.kind === 'wins_quick');
-    const raceCount = daily.missions.find((m) => m.kind === 'race_count')
-      ?? daily.missions[0]!;
+    const dateUtc = '2026-10-07';
+    // Pin: one race_count (no filter) + one wins_quick.
+    const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_quick_win_3', 'daily_win_3'], dateUtc);
+    const winsQuick = daily.missions.find((m) => m.missionId === 'daily_quick_win_3')!;
+    const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')!;
 
     fireRace(env, bus, {
       sessionId: 'sess-lose',
@@ -239,14 +284,12 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     });
 
     const after = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, daily.dateUtc)}/${USER_A}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dateUtc)}/${USER_A}`,
     )!.value as DailyMissions;
-    // wins_quick (if assigned) only fires on rank=1 → stays 0.
-    if (winsQuick !== undefined) {
-      const wk = after.missions.find((m) => m.missionId === winsQuick.missionId)!;
-      expect(wk.progress).toBe(0);
-    }
-    // race_count (any mode filter) still ticks on a non-abandoned finish.
+    // wins_quick only fires on rank=1 → rank=3 leaves it at 0.
+    const wk = after.missions.find((m) => m.missionId === winsQuick.missionId)!;
+    expect(wk.progress).toBe(0);
+    // race_count still ticks on a non-abandoned finish.
     const rc = after.missions.find((m) => m.missionId === raceCount.missionId)!;
     expect(rc.progress).toBeGreaterThanOrEqual(raceCount.progress + 1);
   });
@@ -303,10 +346,10 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('bots in race: only humans get progress', () => {
     const ts = Date.now();
+    const dateUtc = '2026-10-07';
     // Pre-create missions for USER_A only (the bot has no storage).
-    const daily = makeUserDaily(env, USER_A);
-    const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')
-      ?? daily.missions[0]!;
+    const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_quick_win_3'], dateUtc);
+    const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')!;
 
     fireRace(env, bus, {
       sessionId: 'sess-bots',
@@ -319,7 +362,7 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     });
 
     const after = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, daily.dateUtc)}/${USER_A}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dateUtc)}/${USER_A}`,
     )!.value as DailyMissions;
     const rc = after.missions.find((m) => m.missionId === raceCount.missionId)!;
     expect(rc.progress).toBe(raceCount.progress + 1); // USER_A only — bots don't tick
@@ -327,26 +370,13 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('multi-human race: each human\'s missions update independently', () => {
     const ts = Date.now();
-    const dailyA = makeUserDaily(env, USER_A);
-    const dailyB = makeUserDaily(env, USER_B);
-    // Storage records don't carry kind/filters — look them up via the
-    // catalog. Pick a mission that ticks for both rank=1 and rank=2
-    // finishers (skip wins_quick/wins_ranked, requireFirstWinOfDay, and
-    // class filters not matching C).
-    const catalogById = new Map<string, MissionDefinition>();
-    for (const d of getMissionsDailyCatalog()) catalogById.set(d.id, d);
-
-    const tickable = (m: { missionId: string }) => {
-      const def = catalogById.get(m.missionId);
-      if (!def) return false;
-      const f: MissionFilter = def.filters;
-      return def.kind !== 'wins_quick' && def.kind !== 'wins_ranked'
-        && f.requireFirstWinOfDay !== true
-        && f.classId !== 'A' && f.classId !== 'S'
-        && f.classId !== 'D' && f.classId !== 'B';
-    };
-    const aRace = dailyA.missions.find(tickable) ?? dailyA.missions[0]!;
-    const bRace = dailyB.missions.find(tickable) ?? dailyB.missions[0]!;
+    const dateUtc = '2026-10-07';
+    // Pin: race_count with no filter for both users — ticks for both rank=1
+    // and rank=2 finishers in quick mode class=C size=2.
+    const dailyA = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_quick_win_3'], dateUtc);
+    const dailyB = seedDailyWith(env, USER_B, ['daily_race_5', 'daily_win_3', 'daily_quick_win_3'], dateUtc);
+    const aRace = dailyA.missions.find((m) => m.missionId === 'daily_race_5')!;
+    const bRace = dailyB.missions.find((m) => m.missionId === 'daily_race_5')!;
 
     fireRace(env, bus, {
       sessionId: 'sess-multi',
@@ -359,10 +389,10 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     });
 
     const afterA = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dailyA.dateUtc)}/${USER_A}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dateUtc)}/${USER_A}`,
     )!.value as DailyMissions;
     const afterB = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_B, dailyB.dateUtc)}/${USER_B}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_B, dateUtc)}/${USER_B}`,
     )!.value as DailyMissions;
     const aAfter = afterA.missions.find((m) => m.missionId === aRace.missionId)!;
     const bAfter = afterB.missions.find((m) => m.missionId === bRace.missionId)!;
