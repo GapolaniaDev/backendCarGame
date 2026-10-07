@@ -76,6 +76,29 @@ export interface ClubCreatedRecord {
   createdAt: number;
 }
 
+/**
+ * Club role hierarchy (Chunk 4). Stored on every member row at
+ * `clubs_members/{clubId}/{userId}.role`. The Nakama group table has
+ * no role primitive, so this layer is authoritative.
+ */
+export type Role = 'leader' | 'admin' | 'member';
+
+/**
+ * Per-member row. Server-owned Read=1 / Write=1. The leader row is
+ * updated atomically with the metadata row's `leaderId` field when a
+ * transfer happens (see `roles.applyTransfer`).
+ */
+export interface MemberRecord {
+  schemaVersion: 1;
+  clubId: string;
+  userId: string;
+  role: Role;
+  /** UTC epoch-ms when this member joined. */
+  joinedAt: number;
+  /** Per-week contribution (resets via Chunk 5 weekly cron). */
+  weeklyContribution: number;
+}
+
 /** Emblem catalog row. */
 export interface EmblemDef {
   id: string;
@@ -124,6 +147,57 @@ export interface ClubCreateOutput {
   name: string;
   costPaid: number;
   newBalance: number;
+}
+
+// ─── Chunk 4 output shapes ──────────────────────────────────────────────────
+
+/** `club_update` returns just the id + the moment the write committed. */
+export interface ClubUpdateOutput {
+  clubId: string;
+  updatedAt: number;
+}
+
+/** One row of `club_members_list` output. */
+export interface ClubMemberViewV2 {
+  userId: string;
+  username: string;
+  /** Avatar URL from the user account; null when unset. */
+  avatarUrl: string | null;
+  /** Authoritative role from storage (NOT from the Nakama group state). */
+  role: Role;
+  /** Best-effort level — read from `profiles/{userId}` if cached. */
+  level: number | null;
+  weeklyContribution: number;
+  joinedAt: number;
+}
+
+export interface ClubMembersListOutput {
+  members: ClubMemberViewV2[];
+  nextCursor: string;
+}
+
+export interface ClubKickOutput {
+  removed: boolean;
+  clubId: string;
+  targetUserId: string;
+}
+
+export interface ClubPromoteOutput {
+  clubId: string;
+  userId: string;
+  role: Role;
+}
+
+export interface ClubDemoteOutput {
+  clubId: string;
+  userId: string;
+  role: Role;
+}
+
+export interface ClubLeaveOutput {
+  left: boolean;
+  clubId: string;
+  userId: string;
 }
 
 export function asClubMetadataWrite(rec: ClubMetadata): IStorageObject {

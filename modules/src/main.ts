@@ -87,6 +87,14 @@ import { subscribeRecentRivals } from './social/recent_rivals';
 import { invite_send, invite_list, invite_respond } from './social/invites';
 import { block_add, block_remove, block_list } from './social/blocks';
 import { club_create, club_get, club_search } from './clubs/rpcs';
+import {
+  club_update,
+  club_members_list,
+  club_kick,
+  club_promote,
+  club_demote,
+  club_leave,
+} from './clubs/rpcs';
 import { loadEmblemasCatalog } from './clubs/catalog';
 import {
   achievements_get,
@@ -373,6 +381,13 @@ function InitModule(
       initializer.registerRpc('club_create', club_create);
       initializer.registerRpc('club_get', club_get);
       initializer.registerRpc('club_search', club_search);
+      // Phase 7 Chunk 4: membership + roles + updates.
+      initializer.registerRpc('club_update', club_update);
+      initializer.registerRpc('club_members_list', club_members_list);
+      initializer.registerRpc('club_kick', club_kick);
+      initializer.registerRpc('club_promote', club_promote);
+      initializer.registerRpc('club_demote', club_demote);
+      initializer.registerRpc('club_leave', club_leave);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);

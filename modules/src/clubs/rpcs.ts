@@ -15,7 +15,7 @@
 // moderation to Chunk 5/6). Name uniqueness is checked via
 // `nk.groupsList(name)` which scans all groups server-side.
 
-import type { IContext, ILogger, INakama, IGroup } from '../nkruntime';
+import type { IContext, ILogger, INakama, IGroup, IStorageObject } from '../nkruntime';
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
 import { parseInput } from '../core/parse_input';
@@ -32,7 +32,27 @@ import {
   readClubMetadata,
   writeClubCreated,
   writeClubMetadataCreate,
+  writeClubMetadataUpdate,
 } from './clubs_repo';
+import {
+  CLUBS_MEMBERS_COLLECTION,
+  MAX_CAS_RETRIES,
+  deleteMember,
+  multiUpdateMembers,
+  readClubMembers,
+  readMember,
+  resolveUsername,
+  writeMemberCreate,
+  writeMemberUpdate,
+} from './members_repo';
+import {
+  applyTransfer,
+  canDemoteTo,
+  canKickMember,
+  canLeave,
+  canPromoteTo,
+  canUpdateClub,
+} from './roles';
 import {
   getEmblema,
   getEmblemas,
@@ -47,16 +67,32 @@ import {
   CLUB_NAME_MAX_LEN,
   CLUB_NAME_MIN_LEN,
   type ClubCreateOutput,
+  type ClubDemoteOutput,
   type ClubGetOutput,
+  type ClubKickOutput,
+  type ClubLeaveOutput,
+  type ClubMembersListOutput,
+  type ClubMemberViewV2,
   type ClubMetadata,
+  type ClubPromoteOutput,
   type ClubSearchOutput,
+  type ClubUpdateOutput,
   type ClubView,
+  type MemberRecord,
+  type Role,
 } from './types';
 
 const CLUB_RATE_LIMITS = {
   club_create: { maxPerWindow: 5, windowSec: 60 },
   club_get: { maxPerWindow: 60, windowSec: 60 },
   club_search: { maxPerWindow: 30, windowSec: 60 },
+  // Chunk 4
+  club_update: { maxPerWindow: 30, windowSec: 60 },
+  club_members_list: { maxPerWindow: 60, windowSec: 60 },
+  club_kick: { maxPerWindow: 10, windowSec: 60 },
+  club_promote: { maxPerWindow: 10, windowSec: 60 },
+  club_demote: { maxPerWindow: 10, windowSec: 60 },
+  club_leave: { maxPerWindow: 10, windowSec: 60 },
 } as const;
 
 // Placeholder blocked-words list — real moderation lands Chunk 5/6.
@@ -507,3 +543,504 @@ export { checkClubJoinGate };
 
 // Touch emblems array to keep imports warm.
 void getEmblemas;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 7 Chunk 4 — Membership + roles + updates (6 RPCs).
+//
+// All 6 RPCs share the same caller-resolution + maintenance gate +
+// per-RPC rate limit pattern as Chunk 3. Permission checks use the
+// pure `roles.ts` helpers + the `readMember` storage helper.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ─── Reused helpers (private to this file) ──────────────────────────────────
+
+function memberRecordFromRead(
+  meta: { record: ClubMetadata; version: string },
+  members: { userId: string; role: Role; joinedAt: number; weeklyContribution: number }[],
+): MemberRecord | null {
+  // Find the leader row among the read members; the leader identity
+  // lives in `meta.record.leaderId`. If the leader row is missing
+  // (e.g. a stale metadata row after Chunk 4 migration), we return
+  // null so callers can synthesise from metadata.
+  const m = members.find((x) => x.userId === meta.record.leaderId);
+  if (m === undefined) return null;
+  return {
+    schemaVersion: 1,
+    clubId: meta.record.clubId,
+    userId: m.userId,
+    role: m.role,
+    joinedAt: m.joinedAt,
+    weeklyContribution: m.weeklyContribution,
+  };
+}
+
+function readActorRole(
+  nk: INakama,
+  clubId: string,
+  userId: string,
+): Role | null {
+  const m = readMember(nk, clubId, userId);
+  return m !== null ? m.record.role : null;
+}
+void readActorRole;
+
+function readTargetRole(
+  nk: INakama,
+  clubId: string,
+  userId: string,
+): { role: Role; version: string } | null {
+  const m = readMember(nk, clubId, userId);
+  return m !== null ? { role: m.record.role, version: m.version } : null;
+}
+
+// ─── club_update ────────────────────────────────────────────────────────────
+
+export function club_update(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_update', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+
+  // Validate fields.
+  const fields: { motto?: string; emblemId?: string; minDivision?: string } = {};
+  if (parsed.data.motto !== undefined) {
+    const r = validateClubMotto(parsed.data.motto);
+    if (!r.ok) return toJson(err(r.code as 'BAD_REQUEST', r.message));
+    fields.motto = r.value;
+  }
+  if (parsed.data.emblemId !== undefined) {
+    if (typeof parsed.data.emblemId !== 'string' || parsed.data.emblemId.length === 0) {
+      return toJson(err('BAD_REQUEST', 'emblemId must be a non-empty string'));
+    }
+    if (getEmblema(parsed.data.emblemId) === null) {
+      return toJson(err('BAD_REQUEST', 'unknown emblemId'));
+    }
+    fields.emblemId = parsed.data.emblemId;
+  }
+  if (parsed.data.minDivision !== undefined) {
+    if (typeof parsed.data.minDivision !== 'string' || parsed.data.minDivision.length === 0) {
+      return toJson(err('BAD_REQUEST', 'minDivision must be a non-empty string'));
+    }
+    fields.minDivision = parsed.data.minDivision;
+  }
+  if (Object.keys(fields).length === 0) {
+    return toJson(err('BAD_REQUEST', 'at least one field to update is required'));
+  }
+
+  const meta = readClubMetadata(nk, clubId);
+  if (meta === null) return toJson(err('NOT_FOUND', 'no club with that id'));
+
+  const actorRole = readActorRole(nk, clubId, caller.id);
+  const decision = canUpdateClub(actorRole, fields);
+  if (!decision.allowed) {
+    return toJson(err('FORBIDDEN', `not allowed to update ${String(decision.deniedField)}`));
+  }
+
+  const next: ClubMetadata = {
+    ...meta.record,
+    motto: fields.motto ?? meta.record.motto,
+    emblemId: fields.emblemId ?? meta.record.emblemId,
+    minDivision: fields.minDivision ?? meta.record.minDivision,
+  };
+  writeClubMetadataUpdate(nk, next, meta.version);
+
+  emit(nk, logger, 'club_updated', {
+    clubId, fields: Object.keys(fields),
+  }, { userId: caller.id });
+
+  const out: ClubUpdateOutput = { clubId, updatedAt: Date.now() };
+  return toJson(ok(out));
+}
+
+// ─── club_members_list ──────────────────────────────────────────────────────
+
+export function club_members_list(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_members_list', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+
+  if (readClubMetadata(nk, clubId) === null) {
+    return toJson(err('NOT_FOUND', 'no club with that id'));
+  }
+
+  const limitRaw = parsed.data.limit;
+  const limitN = typeof limitRaw === 'number'
+    ? Math.min(100, Math.max(1, Math.floor(limitRaw)))
+    : 50;
+  const cursor = typeof parsed.data.cursor === 'string' ? parsed.data.cursor : '';
+
+  const all = readClubMembers(nk, clubId);
+  // Stable order: leader first, then admins, then members by joinedAt asc.
+  const order: Record<Role, number> = { leader: 0, admin: 1, member: 2 };
+  all.sort((a, b) => {
+    const roleDiff = order[a.record.role] - order[b.record.role];
+    if (roleDiff !== 0) return roleDiff;
+    return a.record.joinedAt - b.record.joinedAt;
+  });
+
+  // Cursor = joinedAt of the last item we've returned.
+  let startIdx = 0;
+  if (cursor.length > 0) {
+    const cursorAt = Number(cursor);
+    if (Number.isFinite(cursorAt)) {
+      startIdx = all.findIndex((m) => m.record.joinedAt > cursorAt);
+      if (startIdx === -1) startIdx = all.length;
+    }
+  }
+  const page = all.slice(startIdx, startIdx + limitN);
+  const nextCursor = (startIdx + page.length < all.length)
+    ? String(page[page.length - 1]!.record.joinedAt)
+    : '';
+
+  const nameCache = new Map<string, string>();
+  const members: ClubMemberViewV2[] = page.map((m) => {
+    let level: number | null = null;
+    let avatarUrl: string | null = null;
+    try {
+      const profile = readProfile(nk, m.record.userId);
+      if (profile !== null) {
+        level = profile.progression?.level ?? null;
+        avatarUrl = profile.avatarUrl ?? null;
+      }
+    } catch { /* best-effort */ }
+    return {
+      userId: m.record.userId,
+      username: resolveUsername(nk, m.record.userId, nameCache),
+      avatarUrl,
+      role: m.record.role,
+      level,
+      weeklyContribution: m.record.weeklyContribution,
+      joinedAt: m.record.joinedAt,
+    };
+  });
+
+  const out: ClubMembersListOutput = { members, nextCursor };
+  return toJson(ok(out));
+}
+
+// ─── club_kick ──────────────────────────────────────────────────────────────
+
+export function club_kick(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_kick', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  const targetUserId = parsed.data.targetUserId;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+  if (typeof targetUserId !== 'string' || targetUserId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'targetUserId is required'));
+  }
+
+  if (readClubMetadata(nk, clubId) === null) {
+    return toJson(err('NOT_FOUND', 'no club with that id'));
+  }
+
+  const actor = readMember(nk, clubId, caller.id);
+  const target = readMember(nk, clubId, targetUserId);
+  const verdict = canKickMember(
+    actor !== null ? { role: actor.record.role } : null,
+    target !== null ? { role: target.record.role } : null,
+  );
+  if (!verdict.allowed) {
+    if (verdict.reason === 'self_kick') return toJson(err('CONFLICT', 'use club_leave to exit'));
+    if (verdict.reason === 'cannot_kick_leader') return toJson(err('CONFLICT', 'must transfer leadership first'));
+    if (verdict.reason === 'admin_cannot_kick_admin') return toJson(err('FORBIDDEN', 'only the leader can kick admins'));
+    if (verdict.reason === 'target_not_member') return toJson(err('NOT_FOUND', 'target is not a member'));
+    return toJson(err('FORBIDDEN', 'no permission to kick'));
+  }
+
+  deleteMember(nk, clubId, targetUserId, target!.version);
+
+  emit(nk, logger, 'club_kicked', {
+    clubId, targetUserId, by: caller.id,
+  }, { userId: caller.id });
+
+  const out: ClubKickOutput = { removed: true, clubId, targetUserId };
+  return toJson(ok(out));
+}
+
+// ─── club_promote (atomic leader swap when `to === 'leader'`) ──────────────
+
+export function club_promote(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_promote', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  const targetUserId = parsed.data.targetUserId;
+  const to = parsed.data.to;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+  if (typeof targetUserId !== 'string' || targetUserId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'targetUserId is required'));
+  }
+  if (to !== 'admin' && to !== 'leader') {
+    return toJson(err('BAD_REQUEST', 'to must be admin or leader'));
+  }
+
+  const meta = readClubMetadata(nk, clubId);
+  if (meta === null) return toJson(err('NOT_FOUND', 'no club with that id'));
+
+  const actor = readMember(nk, clubId, caller.id);
+  const target = readMember(nk, clubId, targetUserId);
+  const verdict = canPromoteTo(
+    actor !== null ? { role: actor.record.role } : null,
+    target !== null ? { role: target.record.role } : null,
+    to,
+  );
+  if (!verdict.allowed) {
+    if (verdict.reason === 'not_leader') return toJson(err('FORBIDDEN', 'only the leader can promote'));
+    if (verdict.reason === 'target_not_member') return toJson(err('NOT_FOUND', 'target is not a member'));
+    if (verdict.reason === 'already_role') return toJson(err('BAD_REQUEST', 'target already has that role'));
+    return toJson(err('FORBIDDEN', 'cannot promote'));
+  }
+
+  // Promotion path. CAS retry loop in case someone else wrote in between.
+  if (to === 'admin') {
+    let lastVersion = target!.version;
+    let fresh: { record: MemberRecord; version: string } | null = target;
+    for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
+      const nextTarget: MemberRecord = { ...fresh!.record, role: 'admin' };
+      try {
+        lastVersion = writeMemberUpdate(nk, nextTarget, lastVersion);
+        emit(nk, logger, 'club_promoted', {
+          clubId, targetUserId, to: 'admin', by: caller.id,
+        }, { userId: caller.id });
+        const out: ClubPromoteOutput = { clubId, userId: targetUserId, role: 'admin' };
+        return toJson(ok(out));
+      } catch (e) {
+        const reRead = readMember(nk, clubId, targetUserId);
+        if (reRead === null) return toJson(err('NOT_FOUND', 'target row vanished'));
+        if (reRead.record.role === 'admin') {
+          const out: ClubPromoteOutput = { clubId, userId: targetUserId, role: 'admin' };
+          return toJson(ok(out));
+        }
+        fresh = reRead;
+        lastVersion = reRead.version;
+        if (attempt === MAX_CAS_RETRIES - 1) {
+          logger.warn('club_promote CAS retries exhausted: %s', e instanceof Error ? e.message : String(e));
+          return toJson(err('INTERNAL', 'CAS retries exhausted'));
+        }
+      }
+    }
+    return toJson(err('INTERNAL', 'unreachable'));
+  }
+
+  // to === 'leader' — atomic transfer.
+  const steps = applyTransfer(caller.id, targetUserId, target!.record.role);
+  const writes: IStorageObject[] = steps.map((s) => {
+    if (s.userId === caller.id) {
+      return {
+        collection: CLUBS_MEMBERS_COLLECTION,
+        key: clubId,
+        userId: caller.id,
+        value: { ...actor!.record, role: s.to } as unknown as Record<string, unknown>,
+        permissionRead: 1,
+        permissionWrite: 1,
+        version: actor!.version,
+      };
+    }
+    return {
+      collection: CLUBS_MEMBERS_COLLECTION,
+      key: clubId,
+      userId: targetUserId,
+      value: { ...target!.record, role: s.to } as unknown as Record<string, unknown>,
+      permissionRead: 1,
+      permissionWrite: 1,
+      version: target!.version,
+    };
+  });
+  // Also bump metadata.leaderId in the same batch.
+  writes.push({
+    collection: 'clubs_metadata',
+    key: clubId,
+    userId: meta.record.leaderId,
+    value: { ...meta.record, leaderId: targetUserId } as unknown as Record<string, unknown>,
+    permissionRead: 2,
+    permissionWrite: 1,
+    version: meta.version,
+  });
+
+  multiUpdateMembers(nk, writes);
+
+  emit(nk, logger, 'club_promoted', {
+    clubId, targetUserId, to: 'leader', by: caller.id,
+  }, { userId: caller.id });
+
+  const out: ClubPromoteOutput = { clubId, userId: targetUserId, role: 'leader' };
+  return toJson(ok(out));
+}
+
+// ─── club_demote ────────────────────────────────────────────────────────────
+
+export function club_demote(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_demote', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  const targetUserId = parsed.data.targetUserId;
+  const to = parsed.data.to;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+  if (typeof targetUserId !== 'string' || targetUserId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'targetUserId is required'));
+  }
+  if (to !== 'admin' && to !== 'member') {
+    return toJson(err('BAD_REQUEST', 'to must be admin or member'));
+  }
+
+  if (readClubMetadata(nk, clubId) === null) {
+    return toJson(err('NOT_FOUND', 'no club with that id'));
+  }
+
+  const actor = readMember(nk, clubId, caller.id);
+  const target = readMember(nk, clubId, targetUserId);
+  const verdict = canDemoteTo(
+    actor !== null ? { role: actor.record.role } : null,
+    target !== null ? { role: target.record.role } : null,
+    to,
+  );
+  if (!verdict.allowed) {
+    if (verdict.reason === 'not_leader') return toJson(err('FORBIDDEN', 'only the leader can demote'));
+    if (verdict.reason === 'target_not_member') return toJson(err('NOT_FOUND', 'target is not a member'));
+    if (verdict.reason === 'cannot_demote_leader') return toJson(err('CONFLICT', 'must transfer leadership first'));
+    if (verdict.reason === 'cannot_demote_to_leader') return toJson(err('BAD_REQUEST', 'use promote to reach leader'));
+    if (verdict.reason === 'already_role') return toJson(err('BAD_REQUEST', 'target already has that role'));
+    return toJson(err('FORBIDDEN', 'cannot demote'));
+  }
+
+  const next: MemberRecord = { ...target!.record, role: to };
+  writeMemberUpdate(nk, next, target!.version);
+
+  emit(nk, logger, 'club_demoted', {
+    clubId, targetUserId, to, by: caller.id,
+  }, { userId: caller.id });
+
+  const out: ClubDemoteOutput = { clubId, userId: targetUserId, role: to };
+  return toJson(ok(out));
+}
+
+// ─── club_leave ─────────────────────────────────────────────────────────────
+
+export function club_leave(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_leave', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+
+  if (readClubMetadata(nk, clubId) === null) {
+    return toJson(err('NOT_FOUND', 'no club with that id'));
+  }
+
+  const actor = readMember(nk, clubId, caller.id);
+  const verdict = canLeave(
+    actor !== null ? { role: actor.record.role } : null,
+  );
+  if (!verdict.allowed) {
+    if (verdict.reason === 'leader_cannot_leave') return toJson(err('FORBIDDEN', 'leader must transfer leadership first'));
+    return toJson(err('NOT_FOUND', 'not a member'));
+  }
+
+  deleteMember(nk, clubId, caller.id, actor!.version);
+
+  emit(nk, logger, 'club_left', {
+    clubId, userId: caller.id,
+  }, { userId: caller.id });
+
+  const out: ClubLeaveOutput = { left: true, clubId, userId: caller.id };
+  return toJson(ok(out));
+}
+
+// Touch memberRecordFromRead so esbuild keeps it.
+void memberRecordFromRead;
