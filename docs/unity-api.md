@@ -1302,3 +1302,394 @@ Each call writes an `admin_action` analytics row.
 | Admin RPCs (`admin_*`, `relay_token` with `skipForAdmin`) | Always callable |
 
 See `docs/liveops.md` §2 for the full matrix and rationale.
+
+---
+
+## 19. Phase 6 RPCs — Missions, Achievements, Battle Pass
+
+Phase 6 ships the daily/weekly missions module, the achievements
+module, and the battle pass with XP economy. Nine new RPCs in total
+(8 player-facing + 1 admin), three new storage collections
+(`missions_daily`, `missions_weekly`, `achievements` + `pass` +
+`pass_xp_ledger`), and a deterministic assignment via a salted SHA-256
+hash. Every RPC in this section accepts the optional `clientVersion`
+(semver string) and `platform` (`'ios'|'android'|'windows'|'macos'|'linux'`)
+fields, plus the per-RPC rate limit enforced by `assertNotInMaintenance`
++ `liveopsGate`. See `docs/missions.md` and `docs/pass.md` for the
+deep-dive on the modules and decision matrix.
+
+**Maintenance gate summary** (which Phase 6 RPCs are gated vs which are exempt):
+
+| RPC | Gated by | Notes |
+|---|---|---|
+| `missions_get`, `mission_claim`, `mission_reroll` | `assertNotInMaintenance` | full |
+| `achievements_get`, `achievement_claim` | `assertNotInMaintenance` | full |
+| `pass_get`, `pass_claim`, `pass_buy_premium` | `assertNotInMaintenance` | full |
+| `admin_grant_premium` | none (admin surface) | Always callable (admin) |
+
+### 19.1 `missions_get`
+
+Returns the player's daily + weekly mission assignments plus progress
+and reward metadata. Lazy-creates the assignment rows on first access;
+the assignment is **deterministic** per `(userId, dateUtc)` via
+`ASSIGNMENT_SALT='cv-missions-assignment-v1'` SHA-256. The same
+`userId` always gets the same 3 daily missions on the same UTC day.
+
+```json
+// request
+{ "callerUserId": "<uuid>", "clientVersion": "1.2.0", "platform": "ios" }
+
+// response.data
+{
+  "daily": {
+    "dateUtc": "2026-10-07",
+    "assignedAt": 1760610240,
+    "rerollsLeftToday": 1,
+    "missions": [
+      {
+        "instanceId": "daily:daily_race_5@2026-10-07",
+        "missionId": "daily_race_5",
+        "title": "Cinco carreras del día",
+        "description": "Termina 5 carreras hoy",
+        "kind": "race_count",
+        "filters": {},
+        "target": 5,
+        "reward": { "coins": 100, "xp": 50 },
+        "progress": 0,
+        "completed": false,
+        "claimed": false,
+        "locked": false   // unlockLevel > playerLevel
+      }
+    ]
+  },
+  "weekly": { /* same structure, weekUtc in place of dateUtc */ },
+  "rerollsLeftToday": 1,
+  "nowUtc": "2026-10-07T12:00:00Z"
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `SERVICE_UNAVAILABLE` | maintenance or catalog not loaded |
+| `RATE_LIMITED` | 60 calls / 60s per caller |
+
+### 19.2 `mission_claim`
+
+Claim the reward for a completed mission. Idempotent via CAS — a
+second claim returns `CONFLICT`. Routes `reward.coins/gems` to the
+wallet (idempotent ledger key `mission:${kind}:${missionId}:${userId}`),
+`reward.xp` to the battle pass via `addPassXp`, and `reward.cosmeticId`
+to the garage bag.
+
+```json
+// request
+{
+  "callerUserId": "<uuid>",
+  "missionId":    "daily_race_5",
+  "kind":         "daily",
+  "clientVersion": "1.2.0",
+  "platform":      "ios"
+}
+
+// response.data
+{
+  "missionId":   "daily_race_5",
+  "reward":      { "coins": 100, "xp": 50 },
+  "kind":        "daily",
+  "xpGranted":   50,           // routed to Battle Pass
+  "passLevel":   2,
+  "levelUps":    [2]
+}
+```
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | missing `missionId`; `kind` not `daily` or `weekly` |
+| `NOT_FOUND` | `missionId` not in catalog or not in user's current row |
+| `INVALID_RESULT` | progress < target (not yet completed) |
+| `CONFLICT` | already claimed |
+| `RATE_LIMITED` | 30 / 60s per caller |
+
+### 19.3 `mission_reroll`
+
+Re-roll a single daily mission. First call per UTC day is **free**
+(decrements `rerollsLeftToday`); subsequent calls cost 50 gems
+(`PAID_REROLL_COST_GEMS = 50`). Returns the new mission definition.
+
+```json
+// request (free reroll)
+{ "callerUserId":"<uuid>", "missionId":"daily_race_5", "clientVersion":"1.2.0", "platform":"ios" }
+
+// request (gems reroll)
+{ "callerUserId":"<uuid>", "missionId":"daily_race_5", "useGems":true, "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data (free)
+{
+  "newMission":        { "id": "daily_top_3_5", "title": "...", ... },
+  "costGems":           0,
+  "rerollsLeftToday":   0
+}
+
+// response.data (paid)
+{ "newMission": {...}, "costGems": 50, "rerollsLeftToday": 0 }
+```
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | missing `missionId` |
+| `NOT_FOUND` | `missionId` not in catalog |
+| `INSUFFICIENT_FUNDS` | `useGems: true` and wallet < 50 gems |
+| `RATE_LIMITED` | 10 / 60s per caller |
+
+### 19.4 `achievements_get`
+
+Returns all 22 achievements with progress + locked flag (locked)
+to `progression.level`. Lazy-creates the achievements storage row on
+first access (D13).
+
+```json
+// request
+{ "callerUserId":"<uuid>", "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data
+{
+  "achievements": [
+    {
+      "achievementId": "achv_wins_quick_10",
+      "title":         "Diez victorias rápidas",
+      "description":   "Gana 10 carreras en modo quick",
+      "kind":          "wins_quick",
+      "target":        10,
+      "reward":        { "coins": 500, "xp": 200 },
+      "progress":      4,
+      "completed":     false,
+      "claimed":       false,
+      "locked":        false
+    }
+  ],
+  "nowUtc": "2026-10-07T12:00:00Z"
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `SERVICE_UNAVAILABLE` | maintenance or catalog not loaded |
+| `RATE_LIMITED` | 60 / 60s per caller |
+
+### 19.5 `achievement_claim`
+
+Claim the reward for a completed achievement. Idempotent via CAS.
+Routes `reward.coins/gems` to the wallet, `reward.xp` to the battle
+pass, `reward.cosmeticId` to the garage bag (best-effort — missing in
+catalog → log + skip, never throws).
+
+```json
+// request
+{ "callerUserId":"<uuid>", "achievementId":"achv_wins_quick_10", "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data
+{
+  "achievementId": "achv_wins_quick_10",
+  "reward":        { "coins": 500, "xp": 200 },
+  "granted":       { "coins":500, "gems":0, "cosmetics":[], "cars":[], "skippedCosmetics":[], "skippedCars":[] },
+  "xpGranted":     200,
+  "passLevel":     3,
+  "levelUps":      [3]
+}
+```
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | missing `achievementId` |
+| `NOT_FOUND` | unknown achievement or not in user's row |
+| `INVALID_RESULT` | progress < target |
+| `CONFLICT` | already claimed |
+| `RATE_LIMITED` | 30 / 60s per caller |
+
+### 19.6 `pass_get`
+
+Lazy-creates the player's PassRecord, performs the D11 lazy season
+close when applicable, and returns the level state. The pass has 40
+levels today (`pass_s1.json`); each level has a free + premium reward.
+
+```json
+// request
+{ "callerUserId":"<uuid>", "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data
+{
+  "userId":             "<uuid>",
+  "seasonId":           "s1",
+  "seasonClosed":       false,
+  "endUtc":             "2027-12-31T00:00:00Z",
+  "xp":                 0,
+  "currentLevel":       1,
+  "nextLevel":          2,
+  "xpRequired":         100,
+  "xpRemaining":        100,
+  "premiumPurchased":   false,
+  "levels": [
+    {
+      "level":         1,
+      "xpRequired":    0,
+      "freeReward":    { "coins": 100 },
+      "premiumReward": { "coins": 200 },
+      "freeClaimed":   false,
+      "premiumClaimed": false
+    }
+    // ... 39 more
+  ],
+  "premiumPriceGems": 800
+}
+```
+
+| Error | When |
+|---|---|
+| `UNAUTHENTICATED` | no caller identity |
+| `SERVICE_UNAVAILABLE` | maintenance or catalog not loaded |
+| `RATE_LIMITED` | 60 / 60s per caller |
+
+### 19.7 `pass_claim`
+
+Claim the reward for a single level's free or premium track.
+Idempotent — second claim returns `CONFLICT`. Cosmetic / car rewards
+are best-effort (`reward_granter.ts::grantPassReward` never throws;
+missing in catalog → log + skip).
+
+```json
+// request (free)
+{ "callerUserId":"<uuid>", "level":1, "track":"free", "clientVersion":"1.2.0", "platform":"ios" }
+
+// request (premium, premium must be purchased)
+{ "callerUserId":"<uuid>", "level":1, "track":"premium", "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data
+{
+  "level":        1,
+  "track":        "free",
+  "reward":       { "coins": 100 },
+  "granted":      { "coins":100, "gems":0, "cosmetics":[], "cars":[], "skippedCosmetics":[], "skippedCars":[] },
+  "newXp":        0,
+  "currentLevel": 1,
+  "nextLevel":    2
+}
+```
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | `level` not a positive integer; `track` not `free` or `premium`; level out of catalogue range |
+| `INVALID_RESULT` | player XP < level threshold |
+| `FORBIDDEN` | `track === 'premium'` and `premiumPurchased: false` |
+| `CONFLICT` | already claimed; season closed; CAS retries exhausted |
+| `RATE_LIMITED` | 30 / 60s per caller |
+
+### 19.8 `pass_buy_premium`
+
+Spend `premiumPriceGems` from the wallet and unlock the premium track.
+Idempotent — second call returns the current state without re-charging.
+
+```json
+// request
+{ "callerUserId":"<uuid>", "clientVersion":"1.2.0", "platform":"ios" }
+
+// response.data
+{
+  "userId":           "<uuid>",
+  "seasonId":         "s1",
+  "premiumPurchased": true,
+  "priceGems":        800,
+  "newGemsBalance":   9200
+}
+```
+
+| Error | When |
+|---|---|
+| `INSUFFICIENT_FUNDS` | wallet gems < 800 |
+| `CONFLICT` | season closed; CAS retries exhausted |
+| `RATE_LIMITED` | 10 / 60s per caller |
+
+### 19.9 `admin_grant_premium`
+
+Admin override that flips `premiumPurchased` WITHOUT charging gems.
+Shared-secret gated (NOT maintenance-gated). Idempotent.
+
+```json
+// request
+{ "userId":"<target-uuid>", "adminKey":"<LiveopsConfig.adminRpcKey>" }
+
+// response.data
+{ "userId":"<target-uuid>", "seasonId":"s1", "premiumPurchased":true, "viaAdmin":true }
+```
+
+| Error | When |
+|---|---|
+| `FORBIDDEN` | `adminKey` missing or mismatched |
+| `BAD_REQUEST` | `userId` missing |
+| `SERVICE_UNAVAILABLE` | `LiveopsConfig.adminRpcKey` not configured |
+| `CONFLICT` | CAS retries exhausted |
+
+### 19.10 XP sources (summary)
+
+The Battle Pass XP is granted through `addPassXp(nk, logger, userId, delta, dedupeKey?)`. Sources:
+
+| Source | Multiplier (race) | Dedupe key | When |
+|---|---|---|---|
+| `race_quick` | × 1.0 (= 20 XP) | `sessionId` | Every finished race on `RaceCompleted` event |
+| `race_ranked` | × 1.25 (= 25 XP) | `sessionId` | same |
+| `race_private` | × 0.25 (= 5 XP) | `sessionId` | same |
+| `race_time_trial` | × 0.5 (= 10 XP) | `sessionId` | same |
+| `mission_claim` | n/a | (none) | `reward.xp` from mission catalog on claim |
+| `achievement_claim` | n/a | (none) | `reward.xp` from achievement catalog on claim |
+
+Race XP is **deduplicated** via the `pass_xp_ledger` collection keyed
+by `(userId, source, sessionId)`. Mission/achievement XP grants are
+naturally deduplicated by the claim CAS (second claim returns
+`CONFLICT` before `addPassXp` is reached).
+
+`addPassXp` returns `{record, levelUps: number[], applied: boolean}`.
+`applied: false` is non-fatal — the subscriber never throws.
+
+### 19.11 Season close + lazy storage
+
+- **Lazy close** — `pass_get` checks the catalog's `endUtc` on every
+  access. When `now > endUtc` AND the global `season_close/{seasonId}`
+  marker is absent, it writes the marker (server-owned,
+  `SYSTEM_USER_ID`) and flips the per-player `seasonClosed` flag.
+  After close, every `pass_claim` returns `CONFLICT: 'pass season is
+  closed'`. The pass has **no** end-of-season reward dump (only
+  ranked does — see [`docs/ranked.md`](./ranked.md) D7).
+- **Lazy storage** — `PassRecord` and `AchievementsRecord` are
+  both lazy (no per-user row until the first read RPC). A player who
+  never opens the pass or achievements has no storage footprint.
+
+### 19.12 Cosmetic / car idempotency
+
+`reward_granter.ts` (missions + achievements) and
+`reward_granter.ts` (pass) grant cosmetic IDs to `garage.cosmetics
+Bag` and car IDs to `garage.cars` via CAS. Idempotent because both
+helpers check "already in bag / already in garage" before writing. A
+claim RPC that lands a cosmetic already in the bag returns a `200`
+envelope with `skippedCosmetics: [cosmeticId]` — never an error.
+
+### 19.13 Phase 6 client integration checklist
+
+```
+auth → missions_get (read once)                          // badges show absent, locked, completed, claimed
+auth → achievements_get (read)                           // 22 cards
+auth → pass_get (read)                                   // lazy-creates PassRecord; renders 40 levels
+
+pass_get on every pass-tab mount (pass_get can be stale when season closes)
+missions_get on every missions-tab mount (assignment may carry the day)
+
+header HUD refresh after race (race pass XP):
+  race finished → pass_get (XP + level)
+  mission_claim → mission_claim response, then pass_get
+  achievement_claim → achievement_claim response, then pass_get
+  pass_claim → pass_claim response, then garage_get + wallet_get
+  pass_buy_premium → pass_buy_premium response, then wallet_get
+```
+
+See `docs/missions.md`, `docs/pass.md`, `docs/economy.md`,
+`docs/garage.md`.

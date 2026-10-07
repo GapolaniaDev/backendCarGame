@@ -2,7 +2,7 @@
 
 Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
 
-**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**, **LiveOps config (no-cache) + maintenance gate + min client version + per-user inbox + account linking + account delete cascade + admin RPCs (shared-secret auth) + analytics events + region relay (nodeRole + HMAC relay_token)**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4, [`docs/liveops.md`](./docs/liveops.md) / [`docs/account-linking.md`](./docs/account-linking.md) / [`docs/admin.md`](./docs/admin.md) for Phase 5.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ · Phase 6 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**, **LiveOps config (no-cache) + maintenance gate + min client version + per-user inbox + account linking + account delete cascade + admin RPCs (shared-secret auth) + analytics events + region relay (nodeRole + HMAC relay_token)**, **missions (daily + weekly) + achievements + battle pass + XP economy (race XP via multiplier + mission/achievement XP via catalog) + lazy season close + per-grant XP ledger dedupe**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4, [`docs/liveops.md`](./docs/liveops.md) / [`docs/account-linking.md`](./docs/account-linking.md) / [`docs/admin.md`](./docs/admin.md) for Phase 5, [`docs/missions.md`](./docs/missions.md) / [`docs/pass.md`](./docs/pass.md) for Phase 6.
 
 ## Quick start (Docker)
 
@@ -124,7 +124,9 @@ Ver `docker-compose.yml` para detalles del routing por IP estática (`172.28.0.1
 │       ├── admin/               # Phase 5: admin RPCs (wallet_adjust, send_inbox, sanitize_session, remove_player, cleanup_race_sessions)
 │       ├── region/              # Phase 5: nodeRole + relay_token HMAC sign/verify + beforeAuthenticateDevice relay gate
 │       ├── core/admin/          # Phase 5: emit() helper for analytics_events + emitAdminAction wrapper
-│       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store, seasons, ranked_config, liveops_config)
+│       ├── missions/            # Phase 6: counter engine + subscriber + assignments + 3 RPCs + achievements
+│       ├── pass/                # Phase 6: battle pass catalog + PassRecord + 4 RPCs + season close + XP engine + reward granter
+│       └── catalogs/            # versioned JSON catalogs (tracks, modes, cars, upgrades, cosmetics, rewards, levels, store, seasons, ranked_config, liveops_config, missions_daily, missions_weekly, achievements, pass_s1)
 ├── tests/                       # Vitest unit + e2e tests
 ├── docs/                        # Operation docs (see docs/race-protocol-ops.md)
 ├── specs/                       # Phase plan + checklist PDFs (Spanish)
@@ -586,3 +588,119 @@ See [`docs/liveops.md`](./docs/liveops.md),
 [`docs/account-linking.md`](./docs/account-linking.md),
 [`docs/admin.md`](./docs/admin.md), and `docs/unity-api.md` §18 for
 the full per-RPC contract, validation, and curl examples.
+
+## Phase 6 — Missions + Achievements + Battle Pass
+
+Phase 6 ships the daily/weekly mission system, achievements with
+attack vector progress, and a 40-level battle pass with race-driven
+progression. The XP from races (with per-mode multipliers) plus the XP
+declared on each mission / achievement reward flows into the pass
+through `addPassXp` with `pass_xp_ledger`-backed dedupe on race
+sessionIds. Three new catalogs load at boot
+(`missions_daily`, `missions_weekly`, `achievements`, `pass_s1`).
+
+| Module | File | What it owns |
+|---|---|---|
+| `missions/counter.ts` | 7 counter kinds + filter predicates | Pure: `matchesEvent(event, def, userId) → boolean` |
+| `missions/assignment.ts` | SHA-256 deterministic assignment | `ASSIGNMENT_SALT='cv-missions-assignment-v1'` |
+| `missions/missions_repo.ts` | `ensureDailyMissions/ensureWeeklyMissions/claimDaily/claimWeekly/rerollDailyMission` | CAS-pattern (3 retries) |
+| `missions/achievements_repo.ts` | `ensureAchievements/claimAchievement` | D13 lazy-create on first read |
+| `missions/counter_repo.ts` | storage key helpers + first-win-of-day CAS | `first_win_today/{userId}` |
+| `missions/progress_writer.ts` | CAS-write of daily/weekly/achievements rows | max 3 retries; never throws |
+| `missions/reward_granter.ts` | wallet.grant + garage CAS | never throws; `skippedCosmetics` array |
+| `missions/rpcs.ts` | `missions_get / mission_claim / mission_reroll` | rate-limited; maintenance-gated |
+| `missions/achievements_rpcs.ts` | `achievements_get / achievement_claim` | rate-limited; maintenance-gated |
+| `missions/subscriber.ts` | `subscribeMissionsProgress` + `handleRaceCompletedForMissions` | RaceCompleted → counter + lazy XP + CAS writes |
+| `pass/catalog.ts` | `loadPassCatalog/getPassCatalog/findLevel/xpToLevel/xpToNextLevel` | Frozen at boot |
+| `pass/pass_repo.ts` | `ensurePassRecord/readPassRecord/writePassUpdate/addPassXp/isXpLedgerApplied` | D9 ledger; D13 lazy-create |
+| `pass/xp_engine.ts` | `raceXPFor/missionXPFor/achievementXPFor/passXPSourceForRace` | D7 + D8 single source |
+| `pass/season.ts` | `maybeCloseSeason/settleClosedSeasonRewards` | D11 lazy close |
+| `pass/reward_granter.ts` | `grantPassReward` | wallet + garage CAS; never throws |
+| `pass/rpcs.ts` | `pass_get / pass_claim / pass_buy_premium / admin_grant_premium` | rate-limited; maintenance-gated except admin |
+
+### Phase 6 decisions locked
+
+| ID | Decision | Where |
+|---|---|---|
+| D1 | 3 daily + 3 weekly missions assigned per (user, day/week) | `missions/assignment.ts` |
+| D2 | `wins_ranked` requires `event.mode === 'ranked'` AND `position === 1` | `missions/counter.ts::matchesEvent` |
+| D3 | Bots filtered FIRST in `matchesEvent`; non-human never matches | `missions/counter.ts::findHumanResult` |
+| D4 | 1 free reroll/day; 50 gems after (`PAID_REROLL_COST_GEMS`) | `missions/missions_repo.ts::rerollDailyMission` |
+| D5 | `unlockLevel` defaults to 3 (locked for level-1 player); UI hint only | `catalogs/missions_daily.json`, `missions_weekly.json` |
+| D6 | Counter returns `0` for unknown kind (never throws — defensive) | `missions/counter.ts::matchesEvent` |
+| D7 | Race XP = `Math.floor(20 × multiplier)` (quick=20, ranked=25, private=5, time_trial=10) | `pass/xp_engine.ts::raceXPFor` |
+| D8 | Mission/achievement XP = `reward.xp` from catalog (positive-integer only) | `pass/xp_engine.ts::missionXPFor/achievementXPFor` |
+| D9 | `pass_xp_ledger/{userId}/{source}/{sessionId}` first-call-wins dedupe | `pass/pass_repo.ts::addPassXp` |
+| D10 | CAS retries = 3 for claim / buy / add (matches Phase 6 standard) | `pass/rpcs.ts`, `missions/missions_repo.ts` |
+| D11 | Lazy season close on first `pass_get` post-`endUtc`; marker in `season_close/{seasonId}` | `pass/season.ts::maybeCloseSeason` |
+| D12 | Best-effort reward grant (cosmetic/car catalog-missing → log + skip; never throws) | `pass/reward_granter.ts::grantPassReward`, `missions/reward_granter.ts` |
+| D13 | `PassRecord` + `AchievementsRecord` lazy-created on first read RPC | `pass/pass_repo.ts`, `missions/achievements_repo.ts` |
+
+### Phase 6 RPC quick reference
+
+| RPC | Output shape | D-pattern |
+|---|---|---|
+| `missions_get` | `{ daily, weekly, rerollsLeftToday, nowUtc }` | D1, D5 — assignment + locked UI hint |
+| `mission_claim` | `{ missionId, reward, kind, xpGranted, passLevel, levelUps }` | D8 — wallet + pass XP |
+| `mission_reroll` | `{ newMission, costGems, rerollsLeftToday }` | D4 — free first, paid after |
+| `achievements_get` | `{ achievements[], nowUtc }` | D13 — lazy-create |
+| `achievement_claim` | `{ achievementId, reward, granted, xpGranted, passLevel, levelUps }` | D8, D12 — wallet + pass XP |
+| `pass_get` | `{ xp, currentLevel, nextLevel, levels[], premiumPurchased, ... }` | D11, D13 — lazy close + lazy create |
+| `pass_claim` | `{ level, track, reward, granted, newXp, currentLevel, nextLevel }` | D10, D7 — CAS ≥ 3 |
+| `pass_buy_premium` | `{ userId, seasonId, premiumPurchased, priceGems, newGemsBalance }` | D3 (compensating-refund precedent) — wallet + CAS |
+| `admin_grant_premium` | `{ userId, seasonId, premiumPurchased, viaAdmin }` | shared-secret auth; bypass maintenance |
+
+See [`docs/missions.md`](./docs/missions.md),
+[`docs/pass.md`](./docs/pass.md), and `docs/unity-api.md` §19 for
+the full per-RPC contract, validation, and curl examples.
+
+### Phase 6 tests
+
+Phase 6 adds 51 e2e + many unit tests on top of the 873 from
+Phase 5 (~1226 total at the close of Phase 6 Chunk 7).
+
+| Suite | Cases | Coverage |
+|---|---|---|
+| `tests/e2e/phase6_flow.test.ts` | 13 | full lifecycle (liveops → missions → race XP → claim → pass → premium buy → maintenance gate → wire-up) |
+| `tests/e2e/missions_get.test.ts` | 6 | assignment determinism, locked missions, rate limit |
+| `tests/e2e/mission_progress.test.ts` | 10 | subscriber → progress, completed flag, CAS |
+| `tests/e2e/mission_reroll.test.ts` | 5 | free path, paid path, insufficient funds, guard |
+| `tests/e2e/mission_xp_grant.test.ts` | 3 | claim routes reward.xp → pass XP, no-XP=0, CONFLICT |
+| `tests/e2e/achievements_get.test.ts` | 6 | lazy-create, locked, completed, claimed |
+| `tests/e2e/achievement_claim.test.ts` | 4 | reward granter, NOT_FOUND on missing |
+| `tests/e2e/achievement_xp_grant.test.ts` | 4 | claim routes reward.xp → pass XP, multi-stack |
+| `tests/e2e/achievement_progress.test.ts` | 6 | subscriber → progress |
+| `tests/e2e/race_xp_grant.test.ts` | 6 | per-mode XP multipliers, abandoned=0 |
+| `tests/e2e/race_xp_idempotency.test.ts` | 3 | sessionId dedupe, cross-user independent |
+| `tests/e2e/pass_get.test.ts` | 7 | lazy-create, premium xp/levels, season close |
+| `tests/e2e/pass_claim.test.ts` | 6 | free + premium, FORBIDDEN, CONFLICT |
+| `tests/e2e/pass_buy_premium.test.ts` | 5 | INSUFFICIENT_FUNDS, idempotent, CAS |
+| `tests/e2e/admin_grant_premium.test.ts` | 7 | shared-secret, FORBIDDEN, idempotent, maintenance bypass |
+| `tests/unit/xp_engine.test.ts` | 17 | race + mission/achievement XP math |
+| `tests/unit/pass_xp_idempotency.test.ts` | 8 | ledger replay / IS same / IS different |
+| `tests/unit/pass_repo.test.ts` | 15 | ensurePassRecord, addPassXp return shape |
+| `tests/unit/pass_season.test.ts` | 9 | lazy close, marker idempotency, per-user settle |
+| `tests/unit/pass_reward_granter.test.ts` | 7 | wallet grant, cosmetic CAS, never throws |
+| `tests/unit/mission_catalog.test.ts` | 4 | catalog validation, filters |
+| `tests/unit/assignment.test.ts` | 6 | SHA-256 determinism, salt changes |
+| `tests/unit/counter.test.ts` | 12 | 7 kinds × filter predicates |
+| `tests/unit/counter_repo.test.ts` | 8 | first_win_today CAS, dedupe |
+| `tests/unit/achievements_repo.test.ts` | 6 | lazy-create, claim |
+| `tests/unit/progress_writer.test.ts` | 5 | CAS retry, exhaustion |
+| `tests/unit/pass_catalog.test.ts` | 5 | validation, freeze, findLevel |
+| `tests/unit/event_bridge.test.ts` | 4 | firstWinOfDayFor stamp |
+
+---
+
+## Phase 6 status
+
+| Chunk | Status | Description |
+|---|---|---|
+| Chunk 1 | ✅ `688dd80` | catalogs + types + boot (4 JSON + 2 type files + loaders + time.ts) |
+| Chunk 2 | ✅ `8b75220` | counter engine (pure, 7 kinds × filter predicates) |
+| Chunk 3 | ✅ `9a527b2` | `missions_get / mission_claim / mission_reroll` (3 RPCs) |
+| Chunk 4 | ✅ `79623e4` | `RaceCompleted` → missions + achievements subscriber |
+| Chunk 5 | ✅ `0911aac` | `achievements_get / achievement_claim` (2 RPCs) |
+| Chunk 6 | ✅ `14510c8` | pass core (4 RPCs + lazy season close + reward granter) |
+| Chunk 7 | ✅ `5a0a9f4` | XP engine (race + mission/achievement → pass XP) |
+| Chunk 8 | ✅ (this) | wrap (e2e + docs + unity-api §19 + README) |
