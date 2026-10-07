@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "severityThresholds": {
+    "low": 1,
+    "medium": 2,
+    "high": 4
+  },
+  "cooldownDays": 7
+}

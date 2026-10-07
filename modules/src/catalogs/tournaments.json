@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "tt_weekend_2026w40",
+      "kind": "time_trial",
+      "trackId": "stadium_today",
+      "startsAtUtc": "2026-10-09T00:00:00Z",
+      "endsAtUtc": "2026-10-12T23:59:59Z",
+      "entryFee": 100,
+      "maxAttempts": 20,
+      "minLevel": 10,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 2000, "gems": 50 } },
+        { "rankFrom": 2, "rankTo": 5, "rewards": { "coins": 1000, "gems": 20 } },
+        { "rankFrom": 6, "rankTo": 20, "rewards": { "coins": 500 } },
+        { "rankFrom": 21, "rankTo": 50, "rewards": { "coins": 200 } }
+      ]
+    },
+    {
+      "id": "tt_speedrun_2026w41",
+      "kind": "time_trial",
+      "trackId": "reef_run",
+      "startsAtUtc": "2026-10-16T00:00:00Z",
+      "endsAtUtc": "2026-10-19T23:59:59Z",
+      "entryFee": 150,
+      "maxAttempts": 15,
+      "minLevel": 12,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 3000, "gems": 75 } },
+        { "rankFrom": 2, "rankTo": 3, "rewards": { "coins": 1500, "gems": 30 } },
+        { "rankFrom": 4, "rankTo": 10, "rewards": { "coins": 750 } },
+        { "rankFrom": 11, "rankTo": 30, "rewards": { "coins": 300 } }
+      ]
+    },
+    {
+      "id": "cup_bronze_2026q4",
+      "kind": "cup",
+      "trackId": "canyon_drift",
+      "startsAtUtc": "2026-11-01T00:00:00Z",
+      "endsAtUtc": "2026-11-30T23:59:59Z",
+      "entryFee": 250,
+      "maxAttempts": 30,
+      "minLevel": 15,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 10000, "gems": 200, "cosmeticId": "decal_champion" } },
+        { "rankFrom": 2, "rankTo": 3, "rewards": { "coins": 5000, "gems": 100 } },
+        { "rankFrom": 4, "rankTo": 10, "rewards": { "coins": 2500, "gems": 50 } },
+        { "rankFrom": 11, "rankTo": 50, "rewards": { "coins": 1000 } }
+      ]
+    },
+    {
+      "id": "club_cup_season1",
+      "kind": "club_cup",
+      "trackId": "mountain_pass",
+      "startsAtUtc": "2026-10-05T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "entryFee": 0,
+      "maxAttempts": 50,
+      "minLevel": 8,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 25000, "gems": 500 } },
+        { "rankFrom": 2, "rankTo": 3, "rewards": { "coins": 15000, "gems": 250 } },
+        { "rankFrom": 4, "rankTo": 5, "rewards": { "coins": 10000, "gems": 150 } },
+        { "rankFrom": 6, "rankTo": 10, "rewards": { "coins": 5000, "gems": 75 } }
+      ]
+    },
+    {
+      "id": "tt_ladder_2026w42",
+      "kind": "time_trial",
+      "trackId": "factory_loop",
+      "startsAtUtc": "2026-10-23T00:00:00Z",
+      "endsAtUtc": "2026-10-26T23:59:59Z",
+      "entryFee": 200,
+      "maxAttempts": 25,
+      "minLevel": 14,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 4000, "gems": 100 } },
+        { "rankFrom": 2, "rankTo": 5, "rewards": { "coins": 2000, "gems": 40 } },
+        { "rankFrom": 6, "rankTo": 25, "rewards": { "coins": 750 } },
+        { "rankFrom": 26, "rankTo": 60, "rewards": { "coins": 250 } }
+      ]
+    },
+    {
+      "id": "cup_open_2026w43",
+      "kind": "cup",
+      "trackId": "harbor_sprint",
+      "startsAtUtc": "2026-10-30T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "entryFee": 300,
+      "maxAttempts": 20,
+      "minLevel": 18,
+      "prizes": [
+        { "rankFrom": 1, "rankTo": 1, "rewards": { "coins": 7500, "gems": 150 } },
+        { "rankFrom": 2, "rankTo": 5, "rewards": { "coins": 3500, "gems": 75 } },
+        { "rankFrom": 6, "rankTo": 15, "rewards": { "coins": 1500, "gems": 25 } },
+        { "rankFrom": 16, "rankTo": 40, "rewards": { "coins": 500 } }
+      ]
+    }
+  ]
+}

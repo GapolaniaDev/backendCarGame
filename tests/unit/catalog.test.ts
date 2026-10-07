@@ -47,6 +47,7 @@ const VALID_TRACKS: TracksCatalog = {
       modes: { quick: 3, ranked: 5, private: 3, time_trial: 1 },
       checkpoints: 8,
       minTimeMsByClass: { D: 48000, C: 44000, B: 40000, A: 36000, S: 32000 },
+      minSectionTimeMs: 2200,
     },
   ],
 };

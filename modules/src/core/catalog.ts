@@ -42,6 +42,10 @@ export interface TrackEntry {
     A: number;
     S: number;
   };
+  /** Phase 8 Chunk 1: minimum time for ANY individual sector/checkpoint
+   *  on this track. Used by anti-cheat detection (Chunk 2) to flag
+   *  `partial_impossible` marks when a sector time drops below this. */
+  minSectionTimeMs: number;
 }
 
 export interface TracksCatalog {
@@ -276,6 +280,14 @@ export function validateTracks(c: unknown): asserts c is TracksCatalog {
       if (typeof v !== 'number' || !Number.isInteger(v) || v < 1000) {
         fail(`tracks[${idx}].minTimeMsByClass.${cls} must be ≥ 1000ms, got ${String(v)}`);
       }
+    }
+    // Phase 8 Chunk 1: minSectionTimeMs must be a positive integer
+    // (1500-3000ms range per spec). Bounded below by the slowest
+    // realistic checkpoint time and above by anything > the longest
+    // expected section. 100ms is a defensible upper sanity ceiling.
+    const ms = t['minSectionTimeMs'];
+    if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 100 || ms > 30_000) {
+      fail(`tracks[${idx}].minSectionTimeMs must be an integer in [100, 30000], got ${String(ms)}`);
     }
   });
 }

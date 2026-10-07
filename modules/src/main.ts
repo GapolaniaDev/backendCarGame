@@ -99,7 +99,17 @@ import {
 } from './clubs/rpcs';
 import { loadEmblemasCatalog } from './clubs/catalog';
 import blockedWordsJson from './catalogs/blocked_words.json';
+import tournamentsJson from './catalogs/tournaments.json';
+import eventsJson from './catalogs/events.json';
+import markThresholdsJson from './catalogs/mark_thresholds.json';
 import { loadBlockedWordsCatalog } from './chat/blocked_words';
+import { loadEventsCatalog } from './core/active_events';
+import {
+  validateTournamentsFile,
+} from './tournaments/types';
+import {
+  validateMarkThresholdsFile,
+} from './anti_cheat/types';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
   report_player,
@@ -283,6 +293,33 @@ function InitModule(
   loadBlockedWordsCatalog(
     logger,
     blockedWordsJson as unknown as import('./chat/blocked_words').RawBlockedWordsFile,
+    nk,
+  );
+
+  // Phase 8 Chunk 1: tournaments + events + anti-cheat mark thresholds.
+  // Chained after the Phase 7 catalogs so a malformed Phase 8 catalog
+  // surfaces with the same CATALOG_INVALID diagnostic.
+  const tCat = validateTournamentsFile(tournamentsJson);
+  if (!tCat.ok) {
+    throw new Error(`tournaments catalog invalid: ${tCat.reason}`);
+  }
+  logger.info('tournaments catalog loaded: version=%d templates=%d',
+    tCat.value.version, tCat.value.templates.length);
+
+  const mtCat = validateMarkThresholdsFile(markThresholdsJson);
+  if (!mtCat.ok) {
+    throw new Error(`mark_thresholds catalog invalid: ${mtCat.reason}`);
+  }
+  logger.info('mark_thresholds catalog loaded: version=%d low=%d medium=%d high=%d cooldownDays=%d',
+    mtCat.value.version,
+    mtCat.value.severityThresholds.low,
+    mtCat.value.severityThresholds.medium,
+    mtCat.value.severityThresholds.high,
+    mtCat.value.cooldownDays);
+
+  loadEventsCatalog(
+    logger,
+    eventsJson as unknown as import('./events/types').RawEventsFile,
     nk,
   );
 

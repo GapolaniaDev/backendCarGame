@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "id": "evt_xp2_oct_weekend",
+      "kind": "xp_double",
+      "startsAtUtc": "2026-10-09T00:00:00Z",
+      "endsAtUtc": "2026-10-12T23:59:59Z",
+      "payload": { "multiplier": 2 }
+    },
+    {
+      "id": "evt_featured_stadium_oct",
+      "kind": "featured_track",
+      "startsAtUtc": "2026-10-05T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "payload": { "trackId": "stadium_today" }
+    },
+    {
+      "id": "evt_offer_gem_pack_50off",
+      "kind": "special_offer",
+      "startsAtUtc": "2026-10-08T00:00:00Z",
+      "endsAtUtc": "2026-10-15T23:59:59Z",
+      "payload": { "sku": "gem_pack_500_50off", "discountPct": 50 }
+    },
+    {
+      "id": "evt_xp3_halloween",
+      "kind": "xp_double",
+      "startsAtUtc": "2026-10-30T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "payload": { "multiplier": 3 }
+    },
+    {
+      "id": "evt_featured_mountain",
+      "kind": "featured_track",
+      "startsAtUtc": "2026-10-12T00:00:00Z",
+      "endsAtUtc": "2026-10-19T23:59:59Z",
+      "payload": { "trackId": "mountain_pass" }
+    },
+    {
+      "id": "evt_offer_coins_2x",
+      "kind": "special_offer",
+      "startsAtUtc": "2026-10-16T00:00:00Z",
+      "endsAtUtc": "2026-10-23T23:59:59Z",
+      "payload": { "sku": "coin_pack_1000_2x", "discountPct": 50 }
+    },
+    {
+      "id": "evt_xp2_late_oct",
+      "kind": "xp_double",
+      "startsAtUtc": "2026-10-23T00:00:00Z",
+      "endsAtUtc": "2026-10-30T23:59:59Z",
+      "payload": { "multiplier": 2 }
+    },
+    {
+      "id": "evt_featured_reef",
+      "kind": "featured_track",
+      "startsAtUtc": "2026-10-19T00:00:00Z",
+      "endsAtUtc": "2026-10-26T23:59:59Z",
+      "payload": { "trackId": "reef_run" }
+    },
+    {
+      "id": "evt_offer_premium_pass_30off",
+      "kind": "special_offer",
+      "startsAtUtc": "2026-10-26T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "payload": { "sku": "premium_pass_30off", "discountPct": 30 }
+    },
+    {
+      "id": "evt_featured_canyon",
+      "kind": "featured_track",
+      "startsAtUtc": "2026-10-26T00:00:00Z",
+      "endsAtUtc": "2026-11-02T23:59:59Z",
+      "payload": { "trackId": "canyon_drift" }
+    },
+    {
+      "id": "evt_offer_car_pack_special",
+      "kind": "special_offer",
+      "startsAtUtc": "2026-10-08T00:00:00Z",
+      "endsAtUtc": "2026-10-22T23:59:59Z",
+      "payload": { "sku": "starter_pack_oct", "discountPct": 25 }
+    },
+    {
+      "id": "evt_xp2_first_season",
+      "kind": "xp_double",
+      "startsAtUtc": "2026-09-25T00:00:00Z",
+      "endsAtUtc": "2026-10-02T23:59:59Z",
+      "payload": { "multiplier": 2 }
+    }
+  ]
+}
