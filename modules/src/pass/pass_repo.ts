@@ -13,14 +13,32 @@
 // without pulling RPC code.
 
 import type { IStorageObject, ILogger, INakama } from '../nkruntime';
-import { validatePassRecord, getPassCatalog } from './catalog';
+import { validatePassRecord, getPassCatalog, xpToLevel } from './catalog';
 import { SERVER_OWNED_READ, SERVER_OWNED_WRITE } from './season';
-import type { PassRecord } from './types';
+import type { PassCatalog, PassRecord } from './types';
 
 export const PASS_COLLECTION = 'pass';
 
+/**
+ * Per-user ledger of which `source:key` XP grants have already been applied.
+ * Phase 6 Chunk 7. Race XP double-grants are guarded by checking this
+ * row before incrementing. Mission / achievement XP grants don't need
+ * it (the claim itself is CAS-protected), but the helper supports
+ * either path via the optional `dedupeKey` arg.
+ */
+export const PASS_XP_LEDGER_COLLECTION = 'pass_xp_ledger';
+
 export function passRecordKey(userId: string): string {
   return userId;
+}
+
+/**
+ * Ledger row key. `source` is the `PassXPSource` (e.g. `race_quick`,
+ * `mission_claim`); `dedupeId` is an opaque per-grant id (race
+ * sessionId, mission id, achievement id). One row per (user, source, id).
+ */
+export function passXpLedgerKey(userId: string, source: string, dedupeId: string): string {
+  return `${userId}/${source}/${dedupeId}`;
 }
 
 /**
@@ -138,54 +156,166 @@ export function ensurePassRecord(
 }
 
 /**
+ * Result envelope returned by `addPassXp`. `applied = false` means the
+ * XP grant was skipped because `dedupeKey` had already been granted
+ * (idempotency hit). `applied = true` means the XP delta was applied
+ * and the record + level state reflect the post-write shape.
+ */
+export interface AddPassXpResult {
+  record: PassRecord;
+  /** Levels crossed by this grant (may be empty). Always strictly ascending. */
+  levelUps: number[];
+  /** New level after the grant. */
+  newLevel: number;
+  /** `true` when XP was added; `false` when the dedupe key already existed. */
+  applied: boolean;
+}
+
+/**
  * Add `delta` XP to a player's PassRecord. Caller is the subscriber
- * (Chunk 7); this helper exists today so future code does not have to
- * redo the CAS loop. `delta` MUST be a non-negative integer.
+ * (race XP) or the claim RPC (mission / achievement XP). `delta` MUST
+ * be a non-negative integer; anything else → `null`.
  *
- * Retries up to 3 times on CAS collision; returns the new record (or
- * the original on exhausted retries so the caller can decide what to
- * do — typically log + drop).
+ * Idempotency: when `dedupeKey` is provided, the function writes a
+ * row in `pass_xp_ledger` keyed by `(user, source, dedupeKey)`. The
+ * first call wins; subsequent calls with the same key are no-ops
+ * returning `{ record, applied: false, ... }`. Race XP always passes
+ * `sessionId` here; mission / achievement XP pass their respective
+ * claim id (also fine, but not strictly required since the claim
+ * itself is CAS-protected).
+ *
+ * Retries up to 3 times on CAS collision; on exhaustion returns a
+ * record-shaped envelope with `applied: false` (caller can log + drop).
  */
 export const ADD_XP_MAX_CAS_RETRIES = 3;
+
+/** Returns `true` when a ledger row for (user, source, dedupeKey) already exists. */
+export function isXpLedgerApplied(
+  nk: INakama,
+  userId: string,
+  source: string,
+  dedupeKey: string,
+): boolean {
+  const key = passXpLedgerKey(userId, source, dedupeKey);
+  const objs = nk.storageRead([
+    { collection: PASS_XP_LEDGER_COLLECTION, key, userId },
+  ]);
+  return objs[0] !== undefined && objs[0] !== null;
+}
+
+/**
+ * Write the ledger row (server-owned) marking `userId`/`source`/`dedupeKey`
+ * as applied. Returns `true` on success, `false` on storage error.
+ */
+function writeXpLedger(
+  nk: INakama,
+  userId: string,
+  source: string,
+  dedupeKey: string,
+  amount: number,
+): boolean {
+  const obj: IStorageObject = {
+    collection: PASS_XP_LEDGER_COLLECTION,
+    key: passXpLedgerKey(userId, source, dedupeKey),
+    userId,
+    value: {
+      schemaVersion: 1,
+      userId,
+      source,
+      dedupeKey,
+      amount,
+      ts: Date.now(),
+    } as unknown as Record<string, unknown>,
+    permissionRead: SERVER_OWNED_READ,
+    permissionWrite: SERVER_OWNED_WRITE,
+  };
+  try {
+    nk.storageWrite([obj]);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 export function addPassXp(
   nk: INakama,
   logger: ILogger,
   userId: string,
   delta: number,
-): PassRecord | null {
+  dedupeKey?: { source: string; id: string },
+): AddPassXpResult | null {
   if (!Number.isInteger(delta) || delta < 0) {
     logger.warn('addPassXp: invalid delta=%s for user=%s', String(delta), userId);
     return null;
   }
-  if (delta === 0) {
-    // No-op: return the current record (lazy-create if missing) without
-    // a storage write.
-    const existing = readPassRecord(nk, userId, getPassCatalog().seasonId);
-    if (existing !== null) return existing.record;
-    return ensurePassRecord(nk, logger, userId).record;
+
+  // Best-effort: the pass catalog lives in a different VM/module than
+  // the source-imported subscriber (when tests call the handler
+  // directly). When the catalog isn't loaded in *this* module, fail
+  // silently — the subscriber must never throw.
+  let catalog: Readonly<PassCatalog>;
+  try {
+    catalog = getPassCatalog();
+  } catch (e) {
+    logger.warn(
+      'addPassXp: pass catalog not loaded (user=%s) — skipping XP grant: %s',
+      userId, e instanceof Error ? e.message : String(e),
+    );
+    return null;
   }
-  const catalog = getPassCatalog();
+
+  // 1. Idempotency check.
+  if (dedupeKey !== undefined && isXpLedgerApplied(nk, userId, dedupeKey.source, dedupeKey.id)) {
+    const existing = readPassRecord(nk, userId, catalog.seasonId);
+    const record = existing?.record ?? ensurePassRecord(nk, logger, userId).record;
+    return {
+      record,
+      levelUps: [],
+      newLevel: xpToLevel(catalog, record.xp),
+      applied: false,
+    };
+  }
+
+  // 2. delta === 0 fast-path: no-op, return current shape.
+  if (delta === 0) {
+    const existing = readPassRecord(nk, userId, catalog.seasonId);
+    const record = existing?.record ?? ensurePassRecord(nk, logger, userId).record;
+    return {
+      record,
+      levelUps: [],
+      newLevel: xpToLevel(catalog, record.xp),
+      applied: dedupeKey === undefined ? true : false,
+    };
+  }
+
+  // 3. CAS-retry loop.
   for (let attempt = 0; attempt < ADD_XP_MAX_CAS_RETRIES; attempt += 1) {
     const existing = readPassRecord(nk, userId, catalog.seasonId);
     if (existing === null) {
-      // Lazy-create first so the next attempt can mutate it.
-      const fresh = ensurePassRecord(nk, logger, userId);
-      // Loop again — `fresh.record.xp` will be added next iteration.
-      void fresh;
+      ensurePassRecord(nk, logger, userId);
       continue;
     }
-    const next: PassRecord = {
-      ...existing.record,
-      xp: existing.record.xp + delta,
-    };
+
+    const beforeXp = existing.record.xp;
+    const beforeLevel = xpToLevel(catalog, beforeXp);
+    const nextXp = beforeXp + delta;
+    const next: PassRecord = { ...existing.record, xp: nextXp };
     try {
       writePassUpdate(nk, next, existing.version);
+      // 4. After the XP write succeeded, mark the ledger row.
+      if (dedupeKey !== undefined) {
+        writeXpLedger(nk, userId, dedupeKey.source, dedupeKey.id, delta);
+      }
+      const newLevel = xpToLevel(catalog, nextXp);
+      const levelUps: number[] = [];
+      for (let lvl = beforeLevel + 1; lvl <= newLevel; lvl += 1) {
+        levelUps.push(lvl);
+      }
       logger.info(
-        'pass xp added user=%s delta=%d newXp=%d attempt=%d',
-        userId, delta, next.xp, attempt + 1,
+        'pass xp added user=%s delta=%d newXp=%d newLevel=%d levelUps=%d applied=true attempt=%d',
+        userId, delta, nextXp, newLevel, levelUps.length, attempt + 1,
       );
-      return next;
+      return { record: next, levelUps, newLevel, applied: true };
     } catch (e) {
       logger.warn(
         'addPassXp CAS conflict user=%s attempt=%d: %s',
@@ -195,5 +325,14 @@ export function addPassXp(
     }
   }
   logger.warn('addPassXp retries exhausted user=%s delta=%d', userId, delta);
-  return null;
+
+  // 5. CAS exhaustion — return current state with applied: false.
+  const existing = readPassRecord(nk, userId, catalog.seasonId);
+  const record = existing?.record ?? ensurePassRecord(nk, logger, userId).record;
+  return {
+    record,
+    levelUps: [],
+    newLevel: xpToLevel(catalog, record.xp),
+    applied: false,
+  };
 }

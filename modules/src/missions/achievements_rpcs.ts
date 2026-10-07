@@ -23,6 +23,8 @@ import {
   ensureAchievements,
 } from './achievements_repo';
 import { grantAchievementReward } from './reward_granter';
+import { addPassXp } from '../pass/pass_repo';
+import { achievementXPFor } from '../pass/xp_engine';
 import type {
   AchievementDefinition,
   MissionReward,
@@ -263,6 +265,28 @@ export const achievement_claim: RpcHandler = (ctx, logger, nk, body) => {
     achievementId,
   );
 
+  // Phase 6 Chunk 7 — route the catalog XP into the battle pass.
+  const xpAmount = achievementXPFor(claimResp.data.reward);
+  let passXpGranted = 0;
+  let passNewLevel = 0;
+  let passLevelUps: number[] = [];
+  if (xpAmount > 0) {
+    const xpResult = addPassXp(nk, logger, userId, xpAmount);
+    if (xpResult !== null) {
+      passXpGranted = xpAmount;
+      passNewLevel = xpResult.newLevel;
+      passLevelUps = xpResult.levelUps;
+      emit(nk, logger, 'pass_xp_gained', {
+        userId,
+        source: 'achievement_claim',
+        amount: xpAmount,
+        achievementId,
+        newLevel: xpResult.newLevel,
+        levelUps: xpResult.levelUps,
+      });
+    }
+  }
+
   emit(nk, logger, 'achievement_claimed', {
     userId,
     achievementId,
@@ -274,5 +298,8 @@ export const achievement_claim: RpcHandler = (ctx, logger, nk, body) => {
     achievementId,
     reward: claimResp.data.reward,
     granted: grantResult,
+    xpGranted: passXpGranted,
+    passLevel: passNewLevel,
+    levelUps: passLevelUps,
   }));
 };

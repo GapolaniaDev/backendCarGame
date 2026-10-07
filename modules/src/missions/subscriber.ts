@@ -70,6 +70,12 @@ import {
 import { utcDate, utcWeek } from '../core/time';
 import { emit } from '../core/admin/analytics';
 import type { DailyMissions, WeeklyMissions, AchievementsRecord } from './types';
+import { addPassXp } from '../pass/pass_repo';
+import {
+  passXPSourceForRace,
+  raceXPFor,
+  type PassXPSource,
+} from '../pass/xp_engine';
 
 export interface MissionsSubscriberDeps {
   logger: ILogger;
@@ -165,6 +171,29 @@ export function handleRaceCompletedForMissions(
   for (const r of humans) {
     const userId = r.userId;
     if (!r.finishedRace) continue;
+
+    // 5f. Phase 6 Chunk 7 — grant pass XP for the race FIRST so even
+    //     users who have no mission/achievement storage yet (brand-new
+    //     players, never-opened-missions-tab players) still get pass XP
+    //     for the race. Idempotent on (userId, mode, sessionId).
+    const xpAmount = raceXPFor(missionEvent.mode);
+    if (xpAmount > 0) {
+      const source: PassXPSource = passXPSourceForRace(missionEvent.mode);
+      const xpResult = addPassXp(
+        nk, logger, userId, xpAmount,
+        { source, id: missionEvent.sessionId },
+      );
+      if (xpResult !== null && xpResult.applied) {
+        emit(nk, logger, 'pass_xp_gained', {
+          userId,
+          source,
+          amount: xpAmount,
+          sessionId: missionEvent.sessionId,
+          newLevel: xpResult.newLevel,
+          levelUps: xpResult.levelUps,
+        });
+      }
+    }
 
     const dailyRow = readDailyMissions(nk, userId, dateUtc);
     const weeklyRow = readWeeklyMissions(nk, userId, weekUtc);

@@ -183,7 +183,7 @@ describe('pass_repo (Phase 6 Chunk 6) — ensurePassRecord', () => {
   });
 });
 
-describe('pass_repo (Phase 6 Chunk 6) — addPassXp', () => {
+describe('pass_repo (Phase 6 Chunk 6 + Chunk 7) — addPassXp', () => {
   beforeEach(() => {
     _resetPassCatalogForTests();
     loadPassCatalog(silentLogger, PASS_RAW);
@@ -195,7 +195,9 @@ describe('pass_repo (Phase 6 Chunk 6) — addPassXp', () => {
     const next = addPassXp(fake.nakama, silentLogger, 'u1', 50);
     expect(next).not.toBeNull();
     if (!next) return;
-    expect(next.xp).toBe(50);
+    expect(next.applied).toBe(true);
+    expect(next.record.xp).toBe(50);
+    expect(next.newLevel).toBe(1);
   });
 
   it('lazy-creates the row when none exists, then adds XP', () => {
@@ -203,12 +205,13 @@ describe('pass_repo (Phase 6 Chunk 6) — addPassXp', () => {
     const next = addPassXp(fake.nakama, silentLogger, 'u1', 25);
     expect(next).not.toBeNull();
     if (!next) return;
-    expect(next.xp).toBe(25);
+    expect(next.applied).toBe(true);
+    expect(next.record.xp).toBe(25);
     const stored = fake.store.get(`${PASS_COLLECTION}/u1/u1`)!;
     expect(stored).toBeDefined();
   });
 
-  it('accumulates across multiple calls', () => {
+  it('accumulates across multiple calls (without dedupeKey)', () => {
     const fake = new FakeNakama();
     addPassXp(fake.nakama, silentLogger, 'u1', 30);
     addPassXp(fake.nakama, silentLogger, 'u1', 70);
@@ -224,14 +227,15 @@ describe('pass_repo (Phase 6 Chunk 6) — addPassXp', () => {
     expect((stored.value as PassRecord).xp).toBe(0);
   });
 
-  it('zero delta is a no-op (returns the existing record, no write)', () => {
+  it('zero delta is a no-op (returns existing shape, no write)', () => {
     const fake = new FakeNakama();
     ensurePassRecord(fake.nakama, silentLogger, 'u1');
     const before = fake.store.get(`${PASS_COLLECTION}/u1/u1`)!;
     const r = addPassXp(fake.nakama, silentLogger, 'u1', 0);
     expect(r).not.toBeNull();
     if (!r) return;
-    expect(r.xp).toBe(0);
+    expect(r.record.xp).toBe(0);
+    expect(r.applied).toBe(true);
     const after = fake.store.get(`${PASS_COLLECTION}/u1/u1`)!;
     expect(after.version).toBe(before.version);
   });

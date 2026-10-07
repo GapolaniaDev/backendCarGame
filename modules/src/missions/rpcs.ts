@@ -17,6 +17,8 @@ import { emit } from '../core/admin/analytics';
 import { grant, spend } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import { utcDate, utcWeek } from '../core/time';
+import { addPassXp } from '../pass/pass_repo';
+import { missionXPFor } from '../pass/xp_engine';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import {
   getMissionsDailyCatalog,
@@ -321,6 +323,29 @@ export const mission_claim: RpcHandler = (ctx, logger, nk, body) => {
     if (!grantResp.ok) return toJson(grantResp);
   }
 
+  // Phase 6 Chunk 7 — route the catalog XP into the battle pass.
+  const xpAmount = missionXPFor(reward);
+  let passXpGranted = 0;
+  let passNewLevel = 0;
+  let passLevelUps: number[] = [];
+  if (xpAmount > 0) {
+    const xpResult = addPassXp(nk, logger, userId, xpAmount);
+    if (xpResult !== null) {
+      passXpGranted = xpAmount;
+      passNewLevel = xpResult.newLevel;
+      passLevelUps = xpResult.levelUps;
+      emit(nk, logger, 'pass_xp_gained', {
+        userId,
+        source: 'mission_claim',
+        amount: xpAmount,
+        missionId,
+        kind,
+        newLevel: xpResult.newLevel,
+        levelUps: xpResult.levelUps,
+      });
+    }
+  }
+
   emit(nk, logger, 'mission_claimed', {
     userId,
     missionId,
@@ -328,7 +353,14 @@ export const mission_claim: RpcHandler = (ctx, logger, nk, body) => {
     reward,
   });
 
-  return toJson(ok({ missionId, reward, kind }));
+  return toJson(ok({
+    missionId,
+    reward,
+    kind,
+    xpGranted: passXpGranted,
+    passLevel: passNewLevel,
+    levelUps: passLevelUps,
+  }));
 };
 
 // ─── mission_reroll ─────────────────────────────────────────────────────────
