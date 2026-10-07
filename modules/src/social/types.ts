@@ -30,6 +30,127 @@ export const FRIENDS_CODE_COLLECTION = 'friends_code';
 export const FRIENDS_EDGE_COLLECTION = 'friends_edge';
 export const RECENT_RIVALS_COLLECTION = 'recent_rivals';
 
+// ─── Phase 7 Chunk 2: invites + blocks ─────────────────────────────────────
+
+export const INVITES_COLLECTION = 'invites';
+export const BLOCKS_COLLECTION = 'blocks';
+
+export const INVITE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+export const INVITE_RATE_LIMIT_PER_MIN = 10;
+export const BLOCK_LIST_PAGE_SIZE = 50;
+
+export type InviteKind = 'group' | 'private_room';
+export type InviteStatus = 'pending' | 'accepted' | 'declined' | 'expired';
+export type InviteDelivery = 'online' | 'offline';
+
+/**
+ * One invite row. Stored at `invites/{targetUserId}/{inviteId}` with
+ * `userId === targetUserId` (the target is the row owner; the sender
+ * is captured in `fromUserId`).
+ */
+export interface InviteRecord {
+  schemaVersion: 1;
+  inviteId: string;
+  /** Who sent the invite. */
+  fromUserId: string;
+  /** Who the invite is FOR (= row owner). */
+  targetUserId: string;
+  kind: InviteKind;
+  /** Opaque payload: e.g. `{clubId, invitedRole}` or `{sessionId, trackId}`. */
+  payload: Record<string, unknown>;
+  /** Epoch-ms when the invite was created. */
+  createdAt: number;
+  /** Epoch-ms when the invite expires (24h by default). */
+  expiresAt: number;
+  /** Response status. `pending` until accepted/declined; `expired` is lazy. */
+  status: InviteStatus;
+  /** Epoch-ms when the target responded (only set on accepted/declined). */
+  respondedAt?: number;
+}
+
+/** Invite shape returned to the target by `invite_list`. */
+export interface InviteCard {
+  inviteId: string;
+  fromUserId: string;
+  kind: InviteKind;
+  payload: Record<string, unknown>;
+  createdAt: number;
+  expiresAt: number;
+  status: InviteStatus;
+  /** True when `Date.now() >= expiresAt` AND status === 'pending'. */
+  isExpired: boolean;
+}
+
+/**
+ * Block row. Stored at `blocks/{ownerId}/{targetUserId}` with
+ * `userId === ownerId`. Idempotent on add (insert-if-absent).
+ */
+export interface BlockRecord {
+  schemaVersion: 1;
+  ownerId: string;
+  targetUserId: string;
+  /** Epoch-ms when the block was added (or first inserted). */
+  createdAt: number;
+}
+
+/** Block shape returned by `block_list`. */
+export interface BlockCard {
+  targetUserId: string;
+  createdAt: number;
+}
+
+/** RPC output envelopes. */
+export interface InviteSendOutput {
+  inviteId: string;
+  delivered: InviteDelivery;
+  expiresAt: number;
+}
+
+export interface InviteListOutput {
+  items: InviteCard[];
+  count: number;
+}
+
+export interface InviteRespondOutput {
+  status: 'accepted' | 'declined';
+  inviteId: string;
+}
+
+export interface BlockAddOutput {
+  created: boolean; // true = newly inserted, false = already existed
+}
+
+export interface BlockRemoveOutput {
+  removed: boolean; // true = existed + deleted, false = absent (still ok)
+}
+
+export interface BlockListOutput {
+  blocks: BlockCard[];
+  count: number;
+}
+
+export function asInviteWrite(rec: InviteRecord): IStorageObject {
+  return {
+    collection: INVITES_COLLECTION,
+    key: rec.inviteId,
+    userId: rec.targetUserId,
+    value: rec as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 1,
+  };
+}
+
+export function asBlockWrite(rec: BlockRecord): IStorageObject {
+  return {
+    collection: BLOCKS_COLLECTION,
+    key: rec.targetUserId,
+    userId: rec.ownerId,
+    value: rec as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 1,
+  };
+}
+
 /**
  * Per-user permanent friend code. Keyed only by friends — code lives in
  * `friends_code/{userId}`. Code is **stable** (no rotation); when a

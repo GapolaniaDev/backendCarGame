@@ -83,6 +83,8 @@ import {
   recent_rivals_get,
 } from './social/rpcs';
 import { subscribeRecentRivals } from './social/recent_rivals';
+import { invite_send, invite_list, invite_respond } from './social/invites';
+import { block_add, block_remove, block_list } from './social/blocks';
 import {
   achievements_get,
   achievement_claim,
@@ -350,6 +352,13 @@ function InitModule(
       initializer.registerRpc('friend_list_get', friend_list_get);
       initializer.registerRpc('friend_remove', friend_remove);
       initializer.registerRpc('recent_rivals_get', recent_rivals_get);
+      // Phase 7 Chunk 2: invites + blocks.
+      initializer.registerRpc('invite_send', invite_send);
+      initializer.registerRpc('invite_list', invite_list);
+      initializer.registerRpc('invite_respond', invite_respond);
+      initializer.registerRpc('block_add', block_add);
+      initializer.registerRpc('block_remove', block_remove);
+      initializer.registerRpc('block_list', block_list);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
