@@ -1,0 +1,22 @@
+[
+  { "id": "emblem_default",   "name": "Default",         "imageUrl": "emblemas/default.png" },
+  { "id": "emblem_racing",    "name": "Racing",          "imageUrl": "emblemas/racing.png" },
+  { "id": "emblem_drift",     "name": "Drift",           "imageUrl": "emblemas/drift.png" },
+  { "id": "emblem_champion",  "name": "Champion",        "imageUrl": "emblemas/champion.png" },
+  { "id": "emblem_legend",    "name": "Legend",          "imageUrl": "emblemas/legend.png" },
+  { "id": "emblem_dragon",    "name": "Dragon",          "imageUrl": "emblemas/dragon.png" },
+  { "id": "emblem_phoenix",   "name": "Phoenix",         "imageUrl": "emblemas/phoenix.png" },
+  { "id": "emblem_tiger",     "name": "Tiger",           "imageUrl": "emblemas/tiger.png" },
+  { "id": "emblem_wolf",      "name": "Wolf",            "imageUrl": "emblemas/wolf.png" },
+  { "id": "emblem_eagle",     "name": "Eagle",           "imageUrl": "emblemas/eagle.png" },
+  { "id": "emblem_serpent",   "name": "Serpent",         "imageUrl": "emblemas/serpent.png" },
+  { "id": "emblem_knight",    "name": "Knight",          "imageUrl": "emblemas/knight.png" },
+  { "id": "emblem_storm",     "name": "Storm",           "imageUrl": "emblemas/storm.png" },
+  { "id": "emblem_lava",      "name": "Lava",            "imageUrl": "emblemas/lava.png" },
+  { "id": "emblem_ice",       "name": "Ice",             "imageUrl": "emblemas/ice.png" },
+  { "id": "emblem_thunder",   "name": "Thunder",         "imageUrl": "emblemas/thunder.png" },
+  { "id": "emblem_shadow",    "name": "Shadow",          "imageUrl": "emblemas/shadow.png" },
+  { "id": "emblem_gold",      "name": "Gold",            "imageUrl": "emblemas/gold.png" },
+  { "id": "emblem_silver",    "name": "Silver",          "imageUrl": "emblemas/silver.png" },
+  { "id": "emblem_neon",      "name": "Neon",            "imageUrl": "emblemas/neon.png" }
+]

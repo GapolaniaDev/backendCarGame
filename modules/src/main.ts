@@ -56,6 +56,7 @@ import missionsDailyJson from './catalogs/missions_daily.json';
 import missionsWeeklyJson from './catalogs/missions_weekly.json';
 import achievementsJson from './catalogs/achievements.json';
 import passS1Json from './catalogs/pass_s1.json';
+import emblemasJson from './catalogs/emblemas.json';
 import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
@@ -85,6 +86,8 @@ import {
 import { subscribeRecentRivals } from './social/recent_rivals';
 import { invite_send, invite_list, invite_respond } from './social/invites';
 import { block_add, block_remove, block_list } from './social/blocks';
+import { club_create, club_get, club_search } from './clubs/rpcs';
+import { loadEmblemasCatalog } from './clubs/catalog';
 import {
   achievements_get,
   achievement_claim,
@@ -236,6 +239,13 @@ function InitModule(
     nk,
   );
 
+  // Phase 7 Chunk 3: emblemas catalog for clubs. ~20 entries; validated
+  // at load so `club_create` rejects unknown emblemIds up front.
+  loadEmblemasCatalog(
+    logger,
+    emblemasJson as unknown as import('./clubs/types').EmblemDef[],
+  );
+
   // Phase 5 Chunk 1: ensure the liveops config object is present in
   // storage. Wrapped in try/catch so a transient storage failure
   // (Postgres restart, etc.) never crashes boot — `loadLiveopsConfig`
@@ -359,6 +369,10 @@ function InitModule(
       initializer.registerRpc('block_add', block_add);
       initializer.registerRpc('block_remove', block_remove);
       initializer.registerRpc('block_list', block_list);
+      // Phase 7 Chunk 3: clubs CRUD + catalog.
+      initializer.registerRpc('club_create', club_create);
+      initializer.registerRpc('club_get', club_get);
+      initializer.registerRpc('club_search', club_search);
     }
     // ── Auth hook — registered on every node; no-op on home ──
     initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);

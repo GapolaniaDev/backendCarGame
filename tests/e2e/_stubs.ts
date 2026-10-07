@@ -503,6 +503,120 @@ class FakeNakamaCore {
     return { records: slice, ownerRecords: [], nextCursor: '', prevCursor: '' };
   }
 
+  // ── Groups (for clubs) ──
+  /** groupId → IGroup. Populated via `groupCreate`. */
+  readonly groups = new Map<string, IGroup>();
+  /** groupId → set of member userIds. Populated via `groupCreate` (creator auto-joined) and `groupUsersAdd`. */
+  readonly groupMembers = new Map<string, Set<string>>();
+
+  groupCreate(
+    name: string,
+    description: string,
+    lang: string,
+    metadata: Record<string, unknown>,
+    maxCount: number,
+    open: boolean,
+  ): { group: IGroup; creator: IUser } {
+    const groupId = `grp-${(this.groups.size + 1).toString().padStart(8, '0')}`;
+    // The stub keeps `creatorUserId` from the metadata payload —
+    // production Nakama derives it from the auth context. Chunk 3's
+    // RPC injects `createdBy: caller.id` into metadata for parity.
+    const creatorUserId =
+      typeof metadata['createdBy'] === 'string'
+        ? (metadata['createdBy'] as string)
+        : SYSTEM_USER_ID;
+    const group: IGroup = {
+      groupId,
+      creatorUserId,
+      name,
+      description,
+      metadata,
+      maxCount,
+      open,
+    };
+    this.groups.set(groupId, group);
+    const members = new Set<string>([creatorUserId]);
+    this.groupMembers.set(groupId, members);
+    const creator: IUser = {
+      userId: creatorUserId,
+      username: `user-${creatorUserId.slice(0, 8)}`,
+      createTime: new Date().toISOString(),
+      updateTime: new Date().toISOString(),
+      disableTime: null,
+      metadata: {},
+    };
+    return { group, creator };
+  }
+
+  groupUsersList(groupId: string, limit?: number, _cursor?: string): unknown {
+    const members = this.groupMembers.get(groupId);
+    if (!members) return [];
+    const users: Array<{ user: IUser; state: number }> = [];
+    let i = 0;
+    for (const userId of members) {
+      if (limit !== undefined && i >= limit) break;
+      users.push({
+        user: {
+          userId,
+          username: `user-${userId.slice(0, 8)}`,
+          createTime: new Date().toISOString(),
+          updateTime: new Date().toISOString(),
+          disableTime: null,
+          metadata: {},
+        },
+        state: 0, // SUPERADMIN
+      });
+      i++;
+    }
+    return users;
+  }
+
+  groupsList(limit?: number, _cursor?: string, name?: string): unknown {
+    let list = Array.from(this.groups.values());
+    if (typeof name === 'string' && name.length > 0) {
+      const needle = name.toLowerCase();
+      list = list.filter((g) => g.name.toLowerCase().includes(needle));
+    }
+    if (limit !== undefined && limit > 0) list = list.slice(0, limit);
+    return list;
+  }
+
+  groupDelete(groupId: string): void {
+    if (!this.groups.has(groupId)) {
+      throw new Error(`groupDelete: unknown group "${groupId}"`);
+    }
+    this.groups.delete(groupId);
+    this.groupMembers.delete(groupId);
+  }
+
+  groupUpdate(
+    groupId: string,
+    name: string,
+    description: string,
+    _lang: string,
+    metadata: Record<string, unknown>,
+    open: boolean,
+  ): void {
+    const g = this.groups.get(groupId);
+    if (!g) throw new Error(`groupUpdate: unknown group "${groupId}"`);
+    g.name = name;
+    g.description = description;
+    g.metadata = metadata;
+    g.open = open;
+  }
+
+  groupUsersAdd(groupId: string, userIds: string[]): void {
+    const bucket = this.groupMembers.get(groupId);
+    if (!bucket) throw new Error(`groupUsersAdd: unknown group "${groupId}"`);
+    for (const id of userIds) bucket.add(id);
+  }
+
+  groupUserJoin(groupId: string, userId: string): void {
+    const bucket = this.groupMembers.get(groupId);
+    if (!bucket) throw new Error(`groupUserJoin: unknown group "${groupId}"`);
+    bucket.add(userId);
+  }
+
   accountGetId(userId: string): unknown {
     if (userId === SYSTEM_USER_ID) return null;
     const now = new Date().toISOString();
@@ -608,6 +722,10 @@ export class FakeNakama {
   readonly leaderboardRecords: Map<string, Map<string, ILeaderboardRecord>>;
   /** Leaderboard ids that have been deleted via `leaderboardDelete`. */
   readonly deletedLeaderboards: Set<string>;
+  /** Group id → IGroup. Populated via `groupCreate`. */
+  readonly groups: Map<string, IGroup>;
+  /** Group id → set of member userIds. */
+  readonly groupMembers: Map<string, Set<string>>;
   /** Installed before-hook for `leaderboardRecordWrite`. Tests can replace. */
   beforeLeaderboardRecordWrite:
     | ((
@@ -642,6 +760,8 @@ export class FakeNakama {
     this.leaderboards = core.leaderboards;
     this.leaderboardRecords = core.leaderboardRecords;
     this.deletedLeaderboards = core.deletedLeaderboards;
+    this.groups = core.groups;
+    this.groupMembers = core.groupMembers;
     this.beforeLeaderboardRecordWrite = core.beforeLeaderboardRecordWrite;
     this.httpRequests = core.httpRequests;
     this.httpResponse = core.httpResponse;
