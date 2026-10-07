@@ -34,6 +34,7 @@ import {
   writeClubMetadataCreate,
   writeClubMetadataUpdate,
 } from './clubs_repo';
+import { ensureWeekBoundary } from './club_week_reset';
 import {
   CLUBS_MEMBERS_COLLECTION,
   MAX_CAS_RETRIES,
@@ -424,6 +425,12 @@ export function club_get(
     return toJson(err('BAD_REQUEST', 'clubId is required'));
   }
 
+  // Phase 7 Chunk 5: lazy weekly reset. The first call after a
+  // Monday-boundary owns the weekly reward; every other call is a
+  // cheap same-week no-op. We re-read meta after the reset so the
+  // returned view reflects `weeklyPoints=0` when the week just rolled.
+  ensureWeekBoundary(nk, logger, clubId);
+
   const meta = readClubMetadata(nk, clubId);
   if (meta === null) {
     return toJson(err('NOT_FOUND', 'no club with that id'));
@@ -524,6 +531,10 @@ export function club_search(
 
   const views: ClubView[] = [];
   for (const g of groups) {
+    // Phase 7 Chunk 5: trigger the lazy weekly reset for each club
+    // returned. The first call after a boundary owns the weekly
+    // reward; every other club is a cheap same-week no-op.
+    ensureWeekBoundary(nk, logger, g.groupId);
     const meta = readClubMetadata(nk, g.groupId);
     if (meta === null) continue;
     if (regionFilter.length > 0 && meta.record.region !== regionFilter) continue;

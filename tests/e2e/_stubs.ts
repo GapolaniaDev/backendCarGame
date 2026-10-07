@@ -494,11 +494,12 @@ class FakeNakamaCore {
     _ownerIds: string[],
     limit?: number,
     _cursor?: string,
-    _sortOrder?: 'asc' | 'desc',
+    sortOrder?: 'asc' | 'desc',
   ): { records: ILeaderboardRecord[]; ownerRecords: ILeaderboardRecord[]; nextCursor: string; prevCursor: string } {
     const bucket = this.leaderboardRecords.get(id);
     const records = bucket ? Array.from(bucket.values()) : [];
-    records.sort((a, b) => a.score - b.score);
+    const desc = sortOrder === 'desc';
+    records.sort((a, b) => desc ? b.score - a.score : a.score - b.score);
     const slice = limit !== undefined ? records.slice(0, limit) : records;
     return { records: slice, ownerRecords: [], nextCursor: '', prevCursor: '' };
   }

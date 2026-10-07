@@ -30,7 +30,10 @@ import leaderboardsJson from '../../modules/src/catalogs/leaderboards.json';
 const TRACKS = 6;
 const CLASSES = 5;
 const PATTERNS = 3; // tt_all, tt_week, lap_all
-const EXPECTED_TABLES = 1 /* wins_week */ + TRACKS * CLASSES * PATTERNS; // = 91
+/** Catalog tables (wins_week + track×class×pattern). Excludes club_week. */
+const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + TRACKS * CLASSES * PATTERNS; // = 91
+/** Catalog tables + the standalone club_week table (Phase 7 Chunk 5). */
+const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* club_week */; // = 92
 
 describe('leaderboards boot (Chunk 11)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
@@ -39,16 +42,18 @@ describe('leaderboards boot (Chunk 11)', () => {
     env = loadBundleForTest();
   });
 
-  it('creates every authoritative table from the expanded catalog (91)', () => {
+  it('creates every authoritative table from the expanded catalog (91) + club_week', () => {
     // InitModule populated env.fakeNakama.leaderboards (the bundle's nk
     // is the same FakeNakama instance). Confirm the count + a few
     // representative ids.
     const created = env.fakeNakama.leaderboards;
-    expect(created.size).toBe(EXPECTED_TABLES);
+    expect(created.size).toBe(EXPECTED_TOTAL_TABLES);
     expect(created.has('wins_week')).toBe(true);
     expect(created.has('tt_neon_blvd_B_all')).toBe(true);
     expect(created.has('tt_neon_blvd_B_week')).toBe(true);
     expect(created.has('lap_factory_loop_S_all')).toBe(true);
+    // Phase 7 Chunk 5: the standalone club_week leaderboard.
+    expect(created.has('club_week')).toBe(true);
     // Every created table must be authoritative.
     for (const lb of created.values()) {
       expect(lb.authoritative).toBe(true);
@@ -56,18 +61,20 @@ describe('leaderboards boot (Chunk 11)', () => {
   });
 
   it('is a no-op when re-ensured (INSERT-IF-NOT-EXISTS)', () => {
-    // Re-load + re-ensure against the same fakeNakama: every table is
-    // already there, so the summary should report `existing: 91`.
+    // Re-load + re-ensure against the same fakeNakama: every catalog
+    // table is already there, so the catalog-summary reports
+    // `existing: 91` and `created: 0`. The club_week table is wired
+    // via a separate helper, so the total table count is 92.
     loadLeaderboardsCatalog(
       env.fakeLogger,
       leaderboardsJson as unknown as Parameters<typeof loadLeaderboardsCatalog>[1],
       env.nak,
     );
     const summary = ensureLeaderboards(env.fakeLogger, env.nak);
-    expect(summary.total).toBe(EXPECTED_TABLES);
+    expect(summary.total).toBe(EXPECTED_CATALOG_TABLES);
     expect(summary.created).toBe(0);
-    expect(summary.existing).toBe(EXPECTED_TABLES);
-    expect(env.fakeNakama.leaderboards.size).toBe(EXPECTED_TABLES);
+    expect(summary.existing).toBe(EXPECTED_CATALOG_TABLES);
+    expect(env.fakeNakama.leaderboards.size).toBe(EXPECTED_TOTAL_TABLES);
   });
 
   it('drop-races the deprecated race_score table when it pre-exists', () => {

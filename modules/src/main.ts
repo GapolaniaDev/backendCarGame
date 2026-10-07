@@ -31,6 +31,8 @@ import type { RaceCompletedEvent } from './race/types';
 import { loadLeaderboardsCatalog } from './leaderboards/catalog';
 import { ensureLeaderboards } from './leaderboards/ensure';
 import { registerLeaderboardWriteGuard } from './leaderboards/hooks';
+import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
+import { subscribeClubWeek } from './clubs/club_week_subscriber';
 import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
 import { loadProfilesCatalog } from './profiles/catalog';
@@ -148,6 +150,10 @@ function InitModule(
   // that rejects any write missing the server token.
   loadLeaderboardsCatalog(logger, leaderboardsJson as unknown as import('./leaderboards/catalog').RawTablesFile, nk);
   ensureLeaderboards(logger, nk);
+  // Phase 7 Chunk 5: ensure the `club_week` authoritative table
+  // exists with the Monday 00:00 UTC reset schedule. Idempotent —
+  // re-creating an existing table is a no-op.
+  ensureClubWeekLeaderboard(logger, nk);
   registerLeaderboardWriteGuard(initializer);
 
   // Phase 4: register the matchmaker matched-hook. The hook validates
@@ -299,6 +305,11 @@ function InitModule(
   // race. Runs AFTER missions so a storage hiccup never delays the
   // missions path.
   subscribeRecentRivals({ logger, nk, bus });
+  // Phase 7 Chunk 5: club week points — confidence-gated, increments
+  // the `club_week` leaderboard and per-member weeklyContribution
+  // for every human finisher. Runs last so a storage hiccup never
+  // delays any earlier subscriber.
+  subscribeClubWeek({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
