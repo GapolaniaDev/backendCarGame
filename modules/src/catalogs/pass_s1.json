@@ -2,7 +2,7 @@
   "version": 1,
   "seasonId": "s1",
   "startUtc": "2026-01-05T00:00:00Z",
-  "endUtc": "2026-02-16T00:00:00Z",
+  "endUtc": "2027-12-31T00:00:00Z",
   "maxLevel": 40,
   "levels": [
     { "level": 1,  "xpRequired": 0,     "freeReward": { "coins": 200 },          "premiumReward": { "coins": 500 } },

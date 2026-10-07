@@ -87,6 +87,12 @@ import {
   admin_remove_player,
   admin_cleanup_race_sessions,
 } from './admin/rpcs';
+import {
+  pass_get,
+  pass_claim,
+  pass_buy_premium,
+  admin_grant_premium,
+} from './pass/rpcs';
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
@@ -316,6 +322,10 @@ function InitModule(
       initializer.registerRpc('account_link', account_link);
       initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
       initializer.registerRpc('account_delete', account_delete);
+      initializer.registerRpc('pass_get', pass_get);
+      initializer.registerRpc('pass_claim', pass_claim);
+      initializer.registerRpc('pass_buy_premium', pass_buy_premium);
+      initializer.registerRpc('admin_grant_premium', admin_grant_premium);
       initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
       initializer.registerRpc('admin_send_inbox', admin_send_inbox);
       initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
