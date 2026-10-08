@@ -46,6 +46,24 @@ window.
 | `admin_sanitize_session` | Force-close a single race session, mark bots DNF | yes |
 | `admin_remove_player` | Remove a player from a single race session | yes |
 | `admin_cleanup_race_sessions` | Delete closed race sessions older than N hours | yes |
+| `admin_tournament_list` (chunk 7) | List ALL tournament instances (any state) | yes |
+| `admin_tournament_get` (chunk 7) | Get full tournament detail + leaderboard + prizes | yes |
+| `admin_tournament_release_prizes` (chunk 7) | Re-distribute prizes (idempotent) | yes |
+| `admin_tournament_void_refund` (chunk 7) | Refund all entry fees (cancel + pay back) | yes |
+| `admin_tournament_cancel` (chunk 7) | Cancel without refund | yes |
+| `admin_tournament_extend` (chunk 7) | Extend the tournament window | yes |
+| `admin_marks_list` (chunk 4) | Filter anti-cheat marks (user/kind/severity/status) | yes |
+| `admin_partials_view` (chunk 4) | Read partials for a user or race | yes |
+| `admin_marks_confirm` (chunk 4) | Flip `confirmed: true` on a mark | yes |
+| `admin_marks_dismiss` (chunk 4) | Flip `dismissed: true` (requires `reason`) | yes |
+| `admin_marks_sanction` (chunk 4) | Apply / clear a temporary sanction | yes |
+| `admin_anti_cheat_stats_get` (chunk 4) | Date-range stats (`startDate`/`endDate`, max 366d) | yes |
+| `admin_overview_get` (chunk 9) | Dashboard overview (totals + uptime) | yes |
+| `admin_tournaments_stats_get` (chunk 9) | Per-day tournament stats (zero-filled) | yes |
+| `admin_events_stats_get` (chunk 9) | Per-day event activations + coinsGranted | yes |
+| `admin_players_search` (chunk 9) | Case-insensitive player search (1..200 results) | yes |
+| `admin_wallet_grant` (chunk 9) | Grant coins/gems with whitelisted reasons | yes |
+| `admin_anti_cheat_dashboard_get` (chunk 9) | Live anti-cheat snapshot (60s cache) | yes |
 
 Each call also writes an `admin_action` row to `analytics_events`
 (via `emitAdminAction` in `core/admin/analytics.ts`).
@@ -272,7 +290,107 @@ outbound contract.
 
 ---
 
-## 10. Files
+## 10. Phase 8 — tournament admin RPCs (chunk 7)
+
+Six RPCs for live-ops control over the tournament lifecycle. See
+`docs/tournaments.md` for the full lifecycle. All six follow the
+`assertAdminKey` + bypass-maintenance + `emitAdminAction` pattern.
+
+```http
+POST /v2/rpc/admin_tournament_release_prizes
+{
+  "adminKey":     "<admin>",
+  "tournamentId": "<tid>",
+  "force":        false   // optional; required to re-distribute on a closed tournament
+}
+```
+
+Returns `{distributed, skipped, errors}`. Idempotency keys match the
+scanner's (`tournament_prize:{tid}:{uid}:{rank}`), so re-runs are
+no-ops on the wallet grant.
+
+```http
+POST /v2/rpc/admin_tournament_void_refund
+{
+  "adminKey":     "<admin>",
+  "tournamentId": "<tid>",
+  "reason":       "match abandoned"
+}
+```
+
+Refunds every entry via `wallet.grant(reason='admin', sourceId='tournament_void:{tid}:{uid}')`.
+Sends `tournament_voided` inbox message per user. Idempotency key
+`tournament_void_refund:{tid}:{uid}` prevents double-refund.
+
+Errors:
+- `state === 'closed' && voided` → `CONFLICT` (idempotent re-run via key).
+- `reason` empty → `BAD_REQUEST` (D49 — use `BAD_REQUEST`, **not** `INVALID_ARGUMENT`).
+- `tournamentId` not found → `NOT_FOUND`.
+
+`admin_tournament_cancel` is the same shape but performs no refund.
+`admin_tournament_extend` CAS-updates `endsAtUtc`; reject when
+`newEndsAt < nowUtc` or the tournament is already closed.
+
+---
+
+## 11. Phase 8 — anti-cheat admin RPCs (chunk 4)
+
+Six RPCs for the review + action pipeline. See `docs/anti-cheat.md`
+for the detection rules. Highlights:
+
+- `admin_marks_list({userId?, kind?, severity?, status?, limit?, cursor?})` —
+  paginated operator view of all marks (NOT scoped to one user).
+- `admin_marks_confirm({userId, markId})` — flips `confirmed: true` and
+  invalidates the dashboard cache. Idempotent.
+- `admin_marks_dismiss({userId, markId, reason})` — requires a non-empty
+  `reason` (free text, audit-friendly). Idempotent.
+- `admin_marks_sanction({userId, durationHours, markIds?})` —
+  `durationHours: 0` clears the existing sanction (D35).
+- `admin_anti_cheat_stats_get({startDate, endDate})` — date-range, max
+  366 days, zero-filled per day.
+
+All six write `admin_action` analytics with `{userId, markId, reason}`.
+
+---
+
+## 12. Phase 8 — admin dashboard RPCs (chunk 9)
+
+Six RPCs powering the operator dashboard. All use a 60s in-memory TTL
+cache; manual mutations invalidate the relevant prefixes.
+
+| RPC | Cache prefix | Invalidated by |
+|---|---|---|
+| `admin_overview_get` | `overview:` | `admin_marks_confirm/dismiss/sanction`, `admin_wallet_grant`, `admin_tournament_void_refund` |
+| `admin_tournaments_stats_get` | `tournament_stats:` | `admin_tournament_release_prizes`, `admin_tournament_void_refund` |
+| `admin_events_stats_get` | `events_stats:` | (none — events are read-only) |
+| `admin_players_search` | `players_search:` | (none — search re-walks profiles) |
+| `admin_wallet_grant` | (writes only) | invalidates `overview:` |
+| `admin_anti_cheat_dashboard_get` | `anti_cheat_dashboard:` | `admin_marks_confirm/dismiss/sanction` |
+
+`admin_wallet_grant` accepts only these `reason` values (D57):
+
+| Reason | Use case |
+|---|---|
+| `admin_grant` | Manual top-up (customer support, promo) |
+| `admin_compensation` | Lost-progress compensation |
+| `admin_tournament_refund` | Tournament refund outside the void_refund RPC |
+| `admin_event_compensation` | Event-failure compensation |
+| `admin_other` | Catch-all (audit will catch typos) |
+
+`coins` and `gems` are both capped at `WALLET_GRANT_MAX_PER_CALL` (100,000) per
+call (D58). The cap prevents accidental fat-finger grants; multiple
+calls are allowed when needed.
+
+`admin_players_search` is in-memory (no index, cap 1000 reads per call;
+D59). Sort: `createdAt` desc, then `userId` asc as tiebreaker. Limit
+1..200 (default 20).
+
+`admin_overview_get` returns `serverUptimeMs` = `Date.now() - oldest
+analytics timestamp` (or `Date.now()` if no analytics rows exist yet).
+
+---
+
+## 13. Files
 
 | Concern | File |
 |---|---|

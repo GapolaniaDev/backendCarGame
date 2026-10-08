@@ -29,6 +29,12 @@ import achievementsRaw from '../../modules/src/catalogs/achievements.json';
 import { handleRaceCompletedForMissions } from '../../modules/src/missions/subscriber';
 import type { DailyMissions, WeeklyMissions, MissionDefinition, MissionFilter } from '../../modules/src/missions/types';
 import type { RaceCompletedEvent } from '../../modules/src/race/types';
+import { utcDate } from '../../modules/src/core/time';
+
+/** Format an epoch ms as the 'YYYY-MM-DD' UTC date string the subscriber reads. */
+function utcDateStr(ms: number): string {
+  return utcDate(ms);
+}
 
 const USER_A = 'mission-progress-A';
 const USER_B = 'mission-progress-B';
@@ -208,20 +214,13 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     }
   });
 
-  it('new user wins quick race → wins_quick mission progress = 1', () => {
+  it('new user wins quick race → race_count mission progress = 1', () => {
+    // Pin a known tickable mission so the test is deterministic
+    // regardless of the catalog's deterministic assignment for this user.
     const ts = Date.now();
-    const daily = makeUserDaily(env, USER_A);
-    const winsQuick = daily.missions.find((m) => {
-      // 'wins_quick' missions in the daily catalog include daily_first_win,
-      // daily_first_win_3 etc. — match by completed stays false filter.
-      return true; // we'll pick the first daily mission as a proxy below
-    })!;
-    // Pick a wins_quick mission (the catalog has many — find by id pattern).
-    const winsQuickMission = daily.missions.find(
-      (m) => m.missionId.startsWith('daily_quick_win') || m.missionId === 'daily_first_win',
-    );
-    // If none, fall back to daily_race_5 — race_count increments regardless of rank.
-    const targetId = winsQuickMission?.missionId ?? winsQuick.missionId;
+    const dateUtc = utcDateStr(ts);
+    const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_first_win'], dateUtc);
+    const targetId = 'daily_race_5';
     const targetInst = daily.missions.find((m) => m.missionId === targetId)!;
 
     fireRace(env, bus, {
@@ -232,17 +231,16 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
     });
 
     const after = env.fakeNakama.store.get(
-      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, daily.dateUtc)}/${USER_A}`,
+      `${MISSIONS_DAILY_COLLECTION}/${dailyMissionsKey(USER_A, dateUtc)}/${USER_A}`,
     )!.value as DailyMissions;
     const targetAfter = after.missions.find((m) => m.missionId === targetId)!;
-    // race_count (target=daily_race_5) increments by 1; wins_quick only
-    // increments if rank=1. Either way, the chosen mission should bump.
-    expect(targetAfter.progress).toBeGreaterThanOrEqual(targetInst.progress + 1);
+    // race_count ticks on every finished race (no filter).
+    expect(targetAfter.progress).toBe(targetInst.progress + 1);
   });
 
   it('same user wins another quick → progress = 2', () => {
     const ts = Date.now();
-    const dateUtc = '2026-10-07';
+    const dateUtc = utcDateStr(ts);
     // Pin a known tickable mission: `daily_race_5` (race_count, no filter).
     const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_first_win'], dateUtc);
     const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')!;
@@ -270,7 +268,7 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('user loses quick race → wins_quick stays 0, race_count still increments', () => {
     const ts = Date.now();
-    const dateUtc = '2026-10-07';
+    const dateUtc = utcDateStr(ts);
     // Pin: one race_count (no filter) + one wins_quick.
     const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_quick_win_3', 'daily_win_3'], dateUtc);
     const winsQuick = daily.missions.find((m) => m.missionId === 'daily_quick_win_3')!;
@@ -346,7 +344,7 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('bots in race: only humans get progress', () => {
     const ts = Date.now();
-    const dateUtc = '2026-10-07';
+    const dateUtc = utcDateStr(ts);
     // Pre-create missions for USER_A only (the bot has no storage).
     const daily = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_quick_win_3'], dateUtc);
     const raceCount = daily.missions.find((m) => m.missionId === 'daily_race_5')!;
@@ -370,7 +368,7 @@ describe('mission_progress subscriber (Phase 6 Chunk 4)', () => {
 
   it('multi-human race: each human\'s missions update independently', () => {
     const ts = Date.now();
-    const dateUtc = '2026-10-07';
+    const dateUtc = utcDateStr(ts);
     // Pin: race_count with no filter for both users — ticks for both rank=1
     // and rank=2 finishers in quick mode class=C size=2.
     const dailyA = seedDailyWith(env, USER_A, ['daily_race_5', 'daily_win_3', 'daily_quick_win_3'], dateUtc);

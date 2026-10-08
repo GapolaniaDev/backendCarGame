@@ -1851,3 +1851,133 @@ moderation:
 
 See `docs/social.md`, `docs/parties.md`, `docs/chat-flow.md`-style
 narrative (when added).
+
+---
+
+## 21. Phase 8 RPCs — Tournaments, Events, Anti-cheat, Admin Dashboard
+
+Phase 8 ships four cross-cutting concerns: live tournaments, time-bounded
+events, server-side anti-cheat, and an operator dashboard. The end-user
+sees §21.1 (tournaments) and §21.2 (events); §21.3 (anti-cheat) and
+§21.4 (admin dashboard) are operator-only.
+
+### 21.1 Tournaments
+
+```http
+POST /v2/rpc/tournament_list
+{ "callerUserId": "<uuid>", "status": "open" | "closing" | "all" }
+→ { "tournaments": [{id, trackId, entryFee, minLevel, maxAttempts, state,
+                     startsAtUtc, endsAtUtc, prizeTable}], "nextCursor" }
+
+POST /v2/rpc/tournament_get
+{ "callerUserId": "<uuid>", "tournamentId": "<tid>" }
+→ { "tournament": {...} }
+
+POST /v2/rpc/tournament_join
+{ "callerUserId": "<uuid>", "tournamentId": "<tid>" }
+→ { "joined": true, "entryFee": 100, "paidEntryFee": 100 }
+```
+
+`race_submit_result` accepts an OPTIONAL `tournamentId` field. When
+present, the race subscriber updates the per-user `bestTimeMs` and
+writes to the leaderboard. Multiple attempts allowed up to `maxAttempts`;
+the leaderboard shows the minimum.
+
+Tournament states: `open` (joining + racing), `closing` (last hour, no
+new joins, racing still allowed), `closed` (prizes distributed or
+voided). The 60s scanner in the server handles the transitions.
+
+### 21.2 Events
+
+```http
+POST /v2/rpc/event_list
+{ "callerUserId": "<uuid>" }
+→ { "events": [{id, kind, startsAtUtc, endsAtUtc, isActive, payload}],
+    "now": <epoch-ms> }
+```
+
+Three event kinds: `xp_double`, `featured_track`, `special_offer`. See
+`docs/events.md` for the per-kind semantics.
+
+The `store_get` RPC (chunk 8) decorates matching SKUs with `basePrice`,
+`finalPrice`, and `activeSpecialOfferId?` when the user has an active
+special offer in `profile.activeSpecialOffers`. The client should
+display `finalPrice` in the store UI; if `activeSpecialOfferId` is
+present, show a "Limited time" badge with the offer id (for analytics
+attribution on the client side).
+
+### 21.3 Anti-cheat (operator)
+
+NOT exposed to end-users. The server-side subscriber (chunk 4) detects
+impossible partial times, abrupt improvement, and position gaps in
+low-confidence races. The detection rules live in
+`catalogs/anti_cheat_thresholds.json`.
+
+For the client UI: `race_submit_result` returns an `outcome.antiCheat`
+block when a mark was created. The client should show a non-blocking
+"unusual time" toast (not a punishment — operator reviews before any
+sanction).
+
+### 21.4 Admin dashboard (operator)
+
+The 6 admin RPCs from chunk 9 are not for end-users. Operators use:
+
+- `admin_overview_get` — top-of-dashboard counts (player count, active
+  tournaments, active events, server uptime).
+- `admin_tournaments_stats_get({fromDate, toDate})` — per-day opened /
+  closed / participants / prizeCoinsDistributed.
+- `admin_events_stats_get({fromDate, toDate})` — per-day
+  xpDoubleActivated / featuredTrackActivated / specialOfferRedemptions /
+  totalCoinsGranted.
+- `admin_players_search({q, limit?, cursor?})` — case-insensitive
+  userId OR displayName match. Limit 1..200 (default 20). Paginate via
+  `nextCursor`.
+- `admin_wallet_grant({userId, coins?, gems?, reason})` — whitelisted
+  reasons only (`admin_grant` / `admin_compensation` /
+  `admin_tournament_refund` / `admin_event_compensation` / `admin_other`).
+  Both `coins` and `gems` capped at 100,000 per call.
+- `admin_anti_cheat_dashboard_get({fromDate, toDate})` — live snapshot:
+  pending marks, last-7d confirmed / dismissed, sanctioned users, top
+  marked users, recent marks.
+
+All 6 use `body.adminKey` (D7 amended; the HTTP `?http_key` query
+parameter still works for ad-hoc curl tests but the JS check is the
+source of truth). They bypass maintenance (operator can act during a
+maintenance window) and write `admin_action` analytics per call.
+
+### 21.5 Client integration recipe
+
+```csharp
+// End-user (read-only):
+event_list → cache by {id, endsAtUtc} (refresh on home-tab mount)
+tournament_list(status='open') → show "Live now" carousel
+tournament_list(status='closing') → show "Ending soon" carousel
+store_get → if any offer has activeSpecialOfferId, show discount badge
+```
+
+```csharp
+// On race close (result handler):
+var ac = result.antiCheat;
+if (ac != null && ac.marked) {
+  // Soft-acknowledge — do NOT punish the player client-side.
+  ShowToast("Your time was flagged for review");
+}
+```
+
+```csharp
+// On store mount (post-login):
+var offers = await NakamaClient.Rpc("store_get", ...);
+foreach (var s in offers.sections) {
+  foreach (var o in s.offers) {
+    if (o.activeSpecialOfferId != null) {
+      o.DisplayBadge("Limited time");
+      o.DisplayPrice(o.finalPrice);
+    } else {
+      o.DisplayPrice(o.basePrice);
+    }
+  }
+}
+```
+
+See `docs/tournaments.md`, `docs/events.md`, `docs/anti-cheat.md`,
+`docs/admin.md` for the full operator surface.

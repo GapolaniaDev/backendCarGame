@@ -775,3 +775,119 @@ clubs (with weekly leaderboards), chat (with multi-lang blocked words
 | Chunk 7 | ✅ | `4b19b5e` | moderation (4 RPCs + auto-silence + admin) |
 | Chunk 8 | ✅ | `747e230` | parties + matchmaker partyId (5 RPCs) |
 | Chunk 9 | ✅ (this) | wrap (party_join fix + phase7_flow + docs + unity-api §20 + README) |
+
+---
+
+## Phase 8 — Tournaments, Events, Anti-cheat, Admin Dashboard
+
+Phase 8 ships four cross-cutting operator features: live competitive
+tournaments, time-bounded live events, server-side anti-cheat with
+human review, and an admin dashboard for live-ops.
+
+### Module table
+
+| Concern | File | Phase 8 Chunks |
+|---|---|---|
+| Tournament catalog (tournaments.json) | `modules/src/catalogs/tournaments.json` | 1 |
+| Tournament types + state machine | `modules/src/tournaments/types.ts`, `catalog.ts` | 1, 6 |
+| Tournament repo + entries + leaderboard | `modules/src/tournaments/{repo,leaderboard}.ts` | 1, 5, 6 |
+| Tournament RPCs (list / get / join) | `modules/src/tournaments/rpcs.ts` | 5 |
+| Tournament scanner + prize close | `modules/src/tournaments/scanner.ts` | 6 |
+| Tournament admin RPCs (6) | `modules/src/tournaments/admin.ts` | 7 |
+| Event catalog (events.json) | `modules/src/catalogs/events.json` | 1 |
+| Active events runtime | `modules/src/core/active_events.ts` | 1, 8 |
+| Event subscriber + event_list RPC | `modules/src/events/{subscriber,scanner}.ts` | 8 |
+| Special-offer integration with store_get | `modules/src/store/` | 8 |
+| Anti-cheat detection helpers (pure) | `modules/src/anti_cheat/detection.ts` | 2 |
+| Anti-cheat marks aggregate + stats | `modules/src/anti_cheat/{marks,stats}.ts` | 3 |
+| Anti-cheat subscriber | `modules/src/anti_cheat/subscriber.ts` | 4 |
+| Anti-cheat admin RPCs (6) | `modules/src/anti_cheat/rpcs.ts` | 4 |
+| Admin dashboard RPCs (6) | `modules/src/admin/{dashboard,cache,stats}.ts` | 9 |
+| Admin auth + audit + cache | `modules/src/admin/{auth,index,cache}.ts` | 5, 9 |
+
+### Phase 8 RPC quick reference (end-user)
+
+| RPC | Caller | Description |
+|---|---|---|
+| `tournament_list` | any | Open + closing tournaments |
+| `tournament_get` | any | Full detail (template + state) |
+| `tournament_join` | any | Spend entry fee, create entry |
+| `event_list` | any | Active + upcoming events with `isActive` flags |
+
+### Phase 8 RPC quick reference (operator)
+
+| RPC | Description |
+|---|---|
+| `admin_tournament_list` | List ALL instances (any state) |
+| `admin_tournament_get` | Full detail + leaderboard + prizes |
+| `admin_tournament_release_prizes` | Re-distribute prizes (idempotent) |
+| `admin_tournament_void_refund` | Refund all entry fees |
+| `admin_tournament_cancel` | Cancel without refund |
+| `admin_tournament_extend` | Extend `endsAtUtc` |
+| `admin_marks_list` | Filter anti-cheat marks (user/kind/severity/status) |
+| `admin_partials_view` | Read partials for a user or race |
+| `admin_marks_confirm` | Flip `confirmed: true` |
+| `admin_marks_dismiss` | Flip `dismissed: true` (requires `reason`) |
+| `admin_marks_sanction` | Apply / clear a temporary sanction |
+| `admin_anti_cheat_stats_get` | Date-range stats (max 366d) |
+| `admin_overview_get` | Dashboard overview (60s cache) |
+| `admin_tournaments_stats_get` | Per-day tournament stats (zero-filled) |
+| `admin_events_stats_get` | Per-day event activations + coinsGranted |
+| `admin_players_search` | Case-insensitive player search (1..200) |
+| `admin_wallet_grant` | Grant with whitelisted reasons + 100k cap |
+| `admin_anti_cheat_dashboard_get` | Live anti-cheat snapshot (60s cache) |
+
+### Phase 8 decisions locked (D19-D60)
+
+- **D19-D23** (chunk 1): catalogs (6 tournaments + 12 events +
+  mark_thresholds); `tracks.minSectionTimeMs` (1500-3000ms per track).
+- **D24-D27** (chunk 2): anti-cheat detection helpers pure; 4
+  server-only storage rows (marks / stats / sanctions / partials).
+- **D28-D32** (chunk 3): marks aggregate + per-day stats +
+  leaderboard_filter for human review.
+- **D33-D35** (chunk 4): anti-cheat subscriber best-effort never-throws;
+  quorum = `low-conf + position-gap ≥3`; `admin_marks_sanction.durationHours=0`
+  clears the existing sanction.
+- **D36-D40** (chunk 5): `TOURNAMENT_LOOKAHEAD_MS=7d`; state rule
+  `closing=last 1h`; 1-join-per-user CONFLICT; `paidEntryFee` stored
+  for void refund.
+- **D41-D45** (chunk 6): tournament scanner 60s; top-100 leaderboard;
+  first-write-wins `RosterEntry.tournamentId`; bundle-injected
+  `setInterval` for the goja VM sandbox.
+- **D46-D50** (chunk 7): void_refund = `wallet.grant(system→user)`;
+  tournament_join rejects cancelled/voided (D47); use `BAD_REQUEST`
+  not `INVALID_ARGUMENT` (D49); bundle boot materialises 2 catalog
+  tournaments.
+- **D51-D55** (chunk 8): bus event name is `RaceCompleted` (capital R);
+  XP bonus paid as coins via `wallet.grant(reason='event')`; race-tied
+  idempotency `event_xp:{raceId}:{userId}`; scanner 5min tick writes
+  `profile.activeSpecialOffers` (cap 10); `store_get` decorates with
+  `basePrice/finalPrice/activeSpecialOfferId?`.
+- **D56-D60** (chunk 9): 60s in-memory TTL cache per admin RPC;
+  manual mutations invalidate specific prefixes (D56); whitelisted
+  `admin_wallet_grant` reasons (D57); 100k cap per call (D58);
+  player search 1..200 (D59); `admin_anti_cheat_dashboard_get` is the
+  live snapshot (D60).
+
+### Phase 8 status
+
+| Chunk | Status | Commit | Description |
+|---|---|---|---|
+| Chunk 1 | ✅ | `068a091` | catalogs (tournaments + events + thresholds) + types + boot |
+| Chunk 2 | ✅ | `c137aee` | anti-cheat detection helpers (pure) |
+| Chunk 3 | ✅ | `676914a` | marks aggregate + stats + leaderboard_filter |
+| Chunk 4 | ✅ | `ad34211` | anti-cheat subscriber + 6 admin RPCs |
+| Chunk 5 | ✅ | `857c119` | tournaments lazy creation + 3 RPCs (list/get/join) |
+| Chunk 6 | ✅ | `da11482` | tournament subscriber + state machine + prize close |
+| Chunk 7 | ✅ | `e610e58` | 6 admin tournament RPCs |
+| Chunk 8 | ✅ | `8fd58cf` | events subscriber + event_list + scanner + store |
+| Chunk 9 | ✅ | `9278cee` | 6 admin dashboard RPCs (overview/stats/search/grant) |
+| Chunk 10 | ✅ (this) | wrap (5 mission_progress fixes + phase8-flow + docs + unity-api §21 + README) |
+
+### Phase 8 documentation
+
+- [`docs/tournaments.md`](docs/tournaments.md) — lifecycle, catalog, RPCs, gotchas.
+- [`docs/events.md`](docs/events.md) — kinds, subscriber, store discount, scanner.
+- [`docs/anti-cheat.md`](docs/anti-cheat.md) — detection, storage, review RPCs, gotchas.
+- [`docs/admin.md`](docs/admin.md) §10-12 — Phase 8 admin RPCs (chunks 4, 7, 9).
+- [`docs/unity-api.md`](docs/unity-api.md) §21 — client integration recipe.
