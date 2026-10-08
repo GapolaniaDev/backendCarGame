@@ -119,6 +119,7 @@ import {
   validateMarkThresholdsFile,
 } from './anti_cheat/types';
 import { loadIapPacksCatalog } from './iap/catalog';
+import { iap_purchase } from './iap/rpcs';
 import { loadAdRewardsCatalog } from './ads/catalog';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
@@ -496,6 +497,9 @@ function InitModule(
       initializer.registerRpc('account_link', account_link);
       initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
       initializer.registerRpc('account_delete', account_delete);
+      // Phase 9 Chunk 3: IAP purchase (bypasses maintenance — money
+      // already paid via Apple/Google, must still redeem).
+      initializer.registerRpc('iap_purchase', iap_purchase);
       initializer.registerRpc('pass_get', pass_get);
       initializer.registerRpc('pass_claim', pass_claim);
       initializer.registerRpc('pass_buy_premium', pass_buy_premium);

@@ -218,8 +218,8 @@ export interface IapVerificationConfig {
   appleSharedSecret?: string;
   /** Required when provider='google'. base64 of the service account JSON. */
   googleServiceAccount?: string;
-  /** Android package name (e.g. com.cvg.game). */
-  packageName: string;
+  /** Android package name (e.g. com.cvg.game). Required when provider='google'. */
+  packageName?: string;
   environment: 'sandbox' | 'production';
   /** Per-request timeout. Default 10000ms (D61). */
   timeoutMs: number;
