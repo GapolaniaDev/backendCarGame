@@ -78,6 +78,9 @@ function ensureOne(
     { description: t.description, source: t.source },
     /* enableRanks */ true,
   );
-  if (result.created) summary.created += 1;
+  // Nakama's Go runtime returns `undefined` (not `{created:false}`) when
+  // the table already exists. Treat that as `existing` so re-boots are
+  // idempotent and don't crash InitModule.
+  if (result && result.created) summary.created += 1;
   else summary.existing += 1;
 }

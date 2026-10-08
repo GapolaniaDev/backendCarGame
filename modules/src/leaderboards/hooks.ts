@@ -9,6 +9,15 @@
 // write via Nakama's socket transport which doesn't expose the
 // `leaderboardRecordWrite` API — but we belt-and-suspenders the
 // check anyway in case future RPCs forget to stamp it.
+//
+// Note: Nakama 3.27's JS runtime does NOT expose
+// `initializer.registerBeforeLeaderboardRecordWrite` (it was added in a
+// later runtime). The type def in nkruntime.d.ts claims it exists, but
+// in practice the method is undefined and calling it crashes InitModule.
+// This is the 5th documented 3.27 JS runtime gap. We detect the missing
+// method and log a warning instead of crashing — the RPC-side token
+// stamp still prevents direct client writes (clients have no API path
+// to leaderboardRecordWrite anyway).
 
 import type {
   IInitializer,
@@ -42,8 +51,27 @@ export function hasServerToken(metadata: unknown): boolean {
  * boot. The hook reads the existing metadata and aborts the write (by
  * throwing) when the token is missing — this prevents direct client
  * writes from succeeding via any future API surface.
+ *
+ * In Nakama 3.27's JS runtime the method is missing; we detect that
+ * and log a warning instead of crashing. See the file header for the
+ * 5th documented 3.27 JS runtime gap.
  */
-export function registerLeaderboardWriteGuard(initializer: IInitializer): void {
+export function registerLeaderboardWriteGuard(
+  initializer: IInitializer,
+  logger?: ILogger,
+): void {
+  // Direct property access (not bracket notation) is required because
+  // the Go runtime extracts the JS function name at call time.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const init = initializer as any;
+  if (typeof init.registerBeforeLeaderboardRecordWrite !== 'function') {
+    if (logger) {
+      logger.warn(
+        'registerLeaderboardWriteGuard: registerBeforeLeaderboardRecordWrite not available in this runtime (Nakama 3.27 JS gap); skipping hook registration. RPC-side token stamp still prevents direct client writes.',
+      );
+    }
+    return;
+  }
   initializer.registerBeforeLeaderboardRecordWrite((
     _ctx: unknown,
     logger: ILogger,

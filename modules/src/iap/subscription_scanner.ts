@@ -193,6 +193,23 @@ export function startSubscriptionScanner(
   intervalMs: number = 5 * 60_000,
 ): void {
   if (SCAN_HANDLE !== null) return; // idempotent
+  // See tournaments/scanner.ts for the 3.27 setInterval gap note.
+  if (typeof setInterval !== 'function') {
+    logger.warn(
+      'subscription_scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
+    );
+    try {
+      const nowUtc = Date.now();
+      const stats = scanOnce(nk, logger, nowUtc);
+      logger.info(
+        'subscription_scanner initial tick: scanned=%d warned=%d expired=%d grants=%d deleted=%d errors=%d',
+        stats.scanned, stats.warned, stats.expiredNotified, stats.monthlyGrants, stats.deleted, stats.errors,
+      );
+    } catch (e) {
+      logger.warn('subscription_scanner: initial tick failed: %s', e instanceof Error ? e.message : String(e));
+    }
+    return;
+  }
   SCAN_HANDLE = setInterval(() => {
     try {
       const nowUtc = Date.now();

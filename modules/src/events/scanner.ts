@@ -67,6 +67,14 @@ export function startEventScanner(deps: EventScannerDeps): EventScannerHandle {
       e instanceof Error ? e.message : String(e),
     );
   }
+  // See tournaments/scanner.ts for the 3.27 setInterval gap note.
+  if (typeof setInterval !== 'function') {
+    deps.logger.warn(
+      'event scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
+    );
+    SCANNER_STATE = { intervalId: null, running: true };
+    return makeHandle();
+  }
   const intervalId = setInterval(() => {
     try {
       runEventScannerTick(deps);

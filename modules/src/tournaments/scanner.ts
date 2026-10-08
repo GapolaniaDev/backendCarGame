@@ -81,6 +81,18 @@ export function startTournamentScanner(deps: TournamentScannerDeps): TournamentS
       e instanceof Error ? e.message : String(e),
     );
   }
+  // Nakama 3.27's JS runtime does not expose `setInterval` (the
+  // global is `undefined` in the goja VM). We skip the periodic tick
+  // when the global is missing — the initial tick above still
+  // catches up on downtime, and downstream RPCs can call
+  // `runScannerTick` directly for on-demand updates.
+  if (typeof setInterval !== 'function') {
+    deps.logger.warn(
+      'tournament scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
+    );
+    SCANNER_STATE = { intervalId: null, running: true };
+    return makeHandle();
+  }
   const intervalId = setInterval(() => {
     try {
       runScannerTick(deps);

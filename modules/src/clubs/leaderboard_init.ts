@@ -55,14 +55,18 @@ export function ensureClubWeekLeaderboard(
       },
       /* enableRanks */ true,
     );
+    // Nakama's Go runtime returns `undefined` (not `{created:false}`) when
+    // the table already exists. Treat that as "existing" so re-boots are
+    // idempotent and don't log a spurious warning.
+    const wasCreated = !!(res && res.created);
     logger.info(
       'club_week leaderboard ensure: id=%s created=%s schedule=%s',
       CLUB_WEEK_LEADERBOARD_ID,
-      String(res.created),
+      String(wasCreated),
       CLUB_WEEK_RESET_SCHEDULE,
     );
     return {
-      created: res.created,
+      created: wasCreated,
       id: CLUB_WEEK_LEADERBOARD_ID,
       schedule: CLUB_WEEK_RESET_SCHEDULE,
     };

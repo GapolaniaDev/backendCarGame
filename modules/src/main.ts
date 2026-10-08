@@ -239,7 +239,7 @@ function InitModule(
   // exists with the Monday 00:00 UTC reset schedule. Idempotent —
   // re-creating an existing table is a no-op.
   ensureClubWeekLeaderboard(logger, nk);
-  registerLeaderboardWriteGuard(initializer);
+  registerLeaderboardWriteGuard(initializer, logger);
 
   // Phase 4: register the matchmaker matched-hook. The hook validates
   // candidate groups (mode/version/region aligned, size in {2,4,6})
