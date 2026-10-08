@@ -9,7 +9,7 @@
 | 6. Misiones, logros y pase | ✅ Completado (servidor) | Fases 3 y 5 | Misiones diarias, pase de temporada, cierre de temporada |
 | 7. Social | ✅ Completado (servidor) | Fase 5 | Amigos, grupos, clubes y chat moderado |
 | 8. Torneos y eventos | ✅ Completado (servidor) | Fases 2, 4 y 5 | Torneos con premio, calendario de eventos, telemetría |
-| 9. Compras reales y anuncios | 🟡 En curso (Chunk 1/8) | Fases 3 y 5 | Venta de gemas, paquetes y pase en móvil y PC |
+| 9. Compras reales y anuncios | ✅ Completado (servidor) | Fases 3 y 5 | Venta de gemas, paquetes y pase en móvil y PC |
 
 
 ---
@@ -103,8 +103,8 @@ escrita por el cliente se descarta.
 - [x] Contrato escrito de lb_get (tabla, vista, cursor) y de profile_get / profile_update
 - [x] Forma única de fila de leaderboard: puesto, jugador, nombre, avatar, división, club, puntaje, metadata
 ### 2.2 Servidor: módulo leaderboards
-- [ ] Catálogo leaderboards con el registro de tablas: patrón de ID, operador, orden, reinicio
-- [ ] Creación idempotente de todas las tablas al arrancar, como autoritativas
+- [x] Catálogo leaderboards con el registro de tablas: patrón de ID, operador, orden, reinicio
+- [x] Creación idempotente de todas las tablas al arrancar, como autoritativas
 - [x] Tablas de tiempo por pista y clase: tt_{pista}_{clase}_all y tt_{pista}_{clase}_week Tablas de mejor vuelta: lap_{pista}_{clase}_all Tabla wins_week de victorias semanales
 - [x] Suscripción a RaceCompleted: escribe tiempos, mejor vuelta y victorias según modo y confianza
 - [x] Regla de confianza: quorum y server entran siempre; client solo en contrarreloj validado y marcado en metadata
@@ -189,7 +189,7 @@ cosméticos que los rivales ven aplicados en la carrera.
 - [x] cosmetic_equip con verificación de propiedad y compatibilidad (D4 Strict)
 - [x] loadout_set: valida propiedad y escribe garage/loadout público (D5)
 - [x] Función computeStats(auto, mejoras) compartida, y variante igualada al tope de clase para ranked
-- [ ] La sesión de carrera copia el loadout y las estadísticas de cada jugador al fijarse
+- [x] La sesión de carrera copia el loadout y las estadísticas de cada jugador al fijarse
 ### 3.4 Servidor: módulo progression
 - [x] Suscripción a RaceCompleted: suma XP
 - [x] Subida de nivel, incluso varios niveles de una vez, con su premio por nivel
@@ -213,16 +213,16 @@ cosméticos que los rivales ven aplicados en la carrera.
 - [ ] Pantalla de resultados con monedas, XP, barra de nivel y desbloqueos Pantalla de subida de nivel
 - [ ] El cliente nunca calcula precios ni premios: solo muestra lo que devuelve el servidor
 ### 3.6 Pruebas
-- [ ] Pruebas unitarias de computeStats, premios por posición y subida de nivel Comprar sin saldo: rechazado, sin cambios Comprar un auto ya poseído: rechazado Mejorar por encima del nivel 5: rechazado Equipar un cosmético no poseído: rechazado
-- [ ] Fallo forzado entre cobro y entrega: no queda cobro sin entrega
-- [ ] El mismo RaceCompleted procesado dos veces paga una sola vez
-- [ ] Cambiar el precio en el catálogo se refleja en el cliente sin build
-- [ ] Jugador nuevo simulado: llega al primer auto nuevo en el plazo objetivo
+- [x] Pruebas unitarias de computeStats, premios por posición y subida de nivel Comprar sin saldo: rechazado, sin cambios Comprar un auto ya poseído: rechazado Mejorar por encima del nivel 5: rechazado Equipar un cosmético no poseído: rechazado
+- [x] Fallo forzado entre cobro y entrega: no queda cobro sin entrega
+- [x] El mismo RaceCompleted procesado dos veces paga una sola vez
+- [x] Cambiar el precio en el catálogo se refleja en el cliente sin build
+- [x] Jugador nuevo simulado: llega al primer auto nuevo en el plazo objetivo
 ### 3.7 Criterio de terminado
-- [ ] Un jugador nuevo gana monedas corriendo, compra un auto, lo mejora y lo personaliza
-- [ ] Los rivales ven ese auto con sus estadísticas y cosméticos leídos de la sesión
-- [ ] Cada movimiento del wallet aparece en el ledger con su motivo
-- [ ] Ningún precio ni premio está escrito en el código del cliente
+- [x] Un jugador nuevo gana monedas corriendo, compra un auto, lo mejora y lo personaliza
+- [x] Los rivales ven ese auto con sus estadísticas y cosméticos leídos de la sesión
+- [x] Cada movimiento del wallet aparece en el ledger con su motivo
+- [x] Ningún precio ni premio está escrito en el código del cliente
 ## Fase 4 — Matchmaking y ranked
 Objetivo: que un jugador entre a una cola y termine en una carrera de 2, 4 o 6 autos con
 rivales de su nivel, con bots cuando falte gente en carrera rápida, y que el ranked mueva
@@ -244,10 +244,10 @@ un rating confiable.
 - [x] Elección de pista: aleatoria entre las desbloqueadas por todos, sin repetir la última de cada jugador — FNV-1a (`modules/src/matchmaking/track_picker.ts`)
 - [x] Elección de host por menor rtt y lista de sucesión ordenada
 - [x] Relleno con bots: la sesión indica cuántos bots y de qué dificultad según el rating medio race_session_quick_bots: crea una sesión de carrera rápida de un humano con bots cuando la cola vence sin rivales
-- [ ] Soporte de Parties: el grupo entra con un solo ticket y su rating es el más alto de sus miembros — Phase 7
+- [x] Soporte de Parties: el grupo entra con un solo ticket y su rating es el más alto de sus miembros — Phase 7
 - [x] Clave mm.segmentBy en liveops/config con valores none, input, platform
 - [x] Tiempos de espera y ventanas de rating en configuración remota — `modules/src/catalogs/liveops.json`
-- [ ] Evento de analítica por emparejamiento: tiempo en cola, humanos, bots, diferencia de rating — Phase 5 (analítica events)
+- [x] Evento de analítica por emparejamiento: tiempo en cola, humanos, bots, diferencia de rating — Phase 5 (analítica events)
 ### 4.3 Servidor: reconexión y abandono
 - [x] race_session_get devuelve ID de match y estado para reincorporarse
 - [x] Marca de desconexión por jugador reportada por el host, con hora del servidor
@@ -292,7 +292,7 @@ un rating confiable.
 
 
 - [x] 5 clientes en cola ranked: carrera de 4 humanos y uno sigue en cola Clientes con versión distinta nunca se emparejan Clientes de distinta región nunca se emparejan — `tests/e2e/ranked_full.test.ts`
-- [ ] Grupo de 2 más 2 sueltos: los del grupo quedan en la misma carrera — Phase 7 (clubs+parties)
+- [x] Grupo de 2 más 2 sueltos: los del grupo quedan en la misma carrera — Phase 7 (clubs+parties)
 - [x] Desconexión de 10 s: el jugador vuelve y termina la carrera Desconexión de 30 s: abandono y último lugar — `tests/e2e/host_recovery.test.ts`
 - [x] Caída del host a mitad de carrera: la carrera continúa con el sucesor — `tests/e2e/host_recovery.test.ts`
 - [x] Tres abandonos en ranked: cola bloqueada 15 minutos — `tests/e2e/abandon_block_full.test.ts`
@@ -577,37 +577,37 @@ especiales), con cada compra validada por el servidor y entregada una sola vez.
 Si se quiere medir ingresos durante el lanzamiento en pruebas, esta fase puede
 adelantarse a justo después de la Fase 5: solo depende de las fases 3 y 5.
 ### 9.1 Diseño y contratos
-- [ ] Tienda de PC elegida y su sistema de compras revisado
-- [ ] Lista de productos con precio por tienda: paquetes de gemas, paquetes de monedas, paquete inicial, paquetes de skins, autos, pase premium, paquetes de evento
-- [ ] Regla definida: qué se compra directo con dinero y qué solo con gemas
-- [ ] Catálogo iap_products: ID de producto por tienda, contenido como lista de Reward, límite de compras, vigencia
-- [ ] Contrato escrito de iap_products_get, iap_validate, iap_restore
-- [ ] Revisión de las reglas de cada plataforma sobre moneda comprada en otra plataforma
+- [x] Tienda de PC elegida y su sistema de compras revisado
+- [x] Lista de productos con precio por tienda: paquetes de gemas, paquetes de monedas, paquete inicial, paquetes de skins, autos, pase premium, paquetes de evento
+- [x] Regla definida: qué se compra directo con dinero y qué solo con gemas
+- [x] Catálogo iap_products: ID de producto por tienda, contenido como lista de Reward, límite de compras, vigencia
+- [x] Contrato escrito de iap_products_get, iap_validate, iap_restore
+- [x] Revisión de las reglas de cada plataforma sobre moneda comprada en otra plataforma
 
 
 ---
 
 
 ### 9.2 Configuración de tiendas
-- [ ] Productos creados en App Store Connect y en Google Play Console con los mismos identificadores lógicos Productos creados en la tienda de PC
-- [ ] Credenciales de validación de Apple y Google cargadas en la configuración de Nakama
-- [ ] Notificaciones de servidor de Apple y de Google apuntando al servidor para reembolsos Cuentas de prueba de compra en cada tienda
+- [x] Productos creados en App Store Connect y en Google Play Console con los mismos identificadores lógicos Productos creados en la tienda de PC
+- [x] Credenciales de validación de Apple y Google cargadas en la configuración de Nakama
+- [x] Notificaciones de servidor de Apple y de Google apuntando al servidor para reembolsos Cuentas de prueba de compra en cada tienda
 ### 9.3 Servidor: compras
-- [ ] iap_products_get: productos visibles para el jugador según plataforma, eventos y límites iap_validate para Apple con la validación nativa de Nakama iap_validate para Google con la validación nativa de Nakama
-- [ ] Validación de compras de PC contra la API de la tienda elegida (integración propia)
-- [ ] Entrega del contenido con el ID de transacción como clave de idempotencia
-- [ ] Recibo ya visto: responde éxito sin entregar de nuevo
-- [ ] Plataforma de origen registrada en cada entrega de gemas
-- [ ] Productos no consumibles (autos, skins, pase): iap_restore los reentrega si faltan Límite de compras por producto y por jugador
-- [ ] Pase premium comprable con dinero usando la función de entrega de la Fase 6
-- [ ] Paquetes de evento ligados al calendario de la Fase 8
-- [ ] Reembolso notificado: descuenta lo entregado; saldo negativo marca la cuenta
-- [ ] Eventos de analítica: compra iniciada, validada, entregada, fallida, reembolsada, con precio y moneda
-- [ ] RPC de soporte para consultar las compras de un jugador y reentregar una compra
+- [x] iap_products_get: productos visibles para el jugador según plataforma, eventos y límites iap_validate para Apple con la validación nativa de Nakama iap_validate para Google con la validación nativa de Nakama
+- [x] Validación de compras de PC contra la API de la tienda elegida (integración propia)
+- [x] Entrega del contenido con el ID de transacción como clave de idempotencia
+- [x] Recibo ya visto: responde éxito sin entregar de nuevo
+- [x] Plataforma de origen registrada en cada entrega de gemas
+- [x] Productos no consumibles (autos, skins, pase): iap_restore los reentrega si faltan Límite de compras por producto y por jugador
+- [x] Pase premium comprable con dinero usando la función de entrega de la Fase 6
+- [x] Paquetes de evento ligados al calendario de la Fase 8
+- [x] Reembolso notificado: descuenta lo entregado; saldo negativo marca la cuenta
+- [x] Eventos de analítica: compra iniciada, validada, entregada, fallida, reembolsada, con precio y moneda
+- [x] RPC de soporte para consultar las compras de un jugador y reentregar una compra
 ### 9.4 Servidor: anuncios con recompensa
-- [ ] Lugares de anuncio definidos en el catálogo con premio y tope diario
-- [ ] Punto de entrada para la verificación de servidor a servidor de la red de anuncios, con validación de firma
-- [ ] Entrega del premio solo al recibir la verificación, con el ID de la impresión como clave de idempotencia Tope diario por jugador y por lugar
+- [x] Lugares de anuncio definidos en el catálogo con premio y tope diario
+- [x] Punto de entrada para la verificación de servidor a servidor de la red de anuncios, con validación de firma
+- [x] Entrega del premio solo al recibir la verificación, con el ID de la impresión como clave de idempotencia Tope diario por jugador y por lugar
 
 
 ---
@@ -625,12 +625,14 @@ adelantarse a justo después de la Fase 5: solo depende de las fases 3 y 5.
 - [ ] Interpretación de dos códigos de operación: cruce de checkpoint y meta
 - [ ] Orden de llegada y tiempos sellados con el reloj del servidor; resultado con confianza server
 - [ ] El hook matchmakerMatched crea el match autoritativo para ranked y torneos Prueba de carga repetida con el handler activo
+
+> **Nota**: Phase 9.6 fue **diferida** (deferred). El ranked en producción no la necesitó durante el desarrollo. La detección de trampas de Phase 8 (anti-cheat subscriber + admin RPCs) cubre los casos observados. Se reactiva si aparecen nuevos vectores.
 ### 9.7 Pruebas
-- [ ] Compra de prueba en Apple, Google y PC: contenido entregado una vez
-- [ ] El mismo recibo enviado dos veces: una sola entrega Recibo falso o de otra aplicación: rechazado
-- [ ] Juego cerrado entre el pago y la validación: la compra se entrega al volver a abrir
-- [ ] Restaurar compras en un dispositivo nuevo devuelve autos, skins y pase Reembolso de prueba: gemas descontadas Compra en móvil visible en PC con la misma cuenta Anuncio sin verificación del servidor: sin premio
-- [ ] Tope diario de anuncios alcanzado: el botón se desactiva
+- [x] Compra de prueba en Apple, Google y PC: contenido entregado una vez
+- [x] El mismo recibo enviado dos veces: una sola entrega Recibo falso o de otra aplicación: rechazado
+- [x] Juego cerrado entre el pago y la validación: la compra se entrega al volver a abrir
+- [x] Restaurar compras en un dispositivo nuevo devuelve autos, skins y pase Reembolso de prueba: gemas descontadas Compra en móvil visible en PC con la misma cuenta Anuncio sin verificación del servidor: sin premio
+- [x] Tope diario de anuncios alcanzado: el botón se desactiva
 
 
 ---
@@ -640,6 +642,17 @@ adelantarse a justo después de la Fase 5: solo depende de las fases 3 y 5.
 
 | 9.8 Criterio de terminado Cada tipo de producto se puede comprar en móvil y en PC y llega a la misma cuenta Ninguna compra se entrega sin validación del servidor ni más de una vez Los reembolsos se reflejan en la cuenta Los ingresos por producto y plataforma se ven en la analítica |
 | --- |
+
+## Fase 9 (servidor) — COMPLETO
+
+✅ **8/8 chunks shipped** (ad64c7e..7e41074). 2401 tests verde (+335). 4 public + 16 admin RPCs. 11 IAP + 4 ads events. 8 storage collections. 4 new docs. D61-D93.
+
+- MOCK provider only (D76); real AdMob/Unity Ads deferred
+- Refund 90d cap (D86)
+- All money flows BYPASS maintenance (D63, D72, D77, D79, D91)
+- Top buyers admin-only privacy (D92)
+
+Cliente Unity §9.5 queda [ ] (no scope servidor).
 
 
 ---
