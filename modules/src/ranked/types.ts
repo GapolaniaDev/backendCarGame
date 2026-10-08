@@ -90,7 +90,10 @@ export type InboxRewardType =
   | 'tournament_prize'
   | 'tournament_voided'
   | 'event_xp_applied'
-  | 'iap_purchase';
+  | 'iap_purchase'
+  | 'subscription_expired'
+  | 'subscription_expiring_soon'
+  | 'subscription_renewed';
 
 export interface InboxRewardPayload {
   /** Optional coin grant. */

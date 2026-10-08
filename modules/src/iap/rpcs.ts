@@ -49,6 +49,12 @@ import {
   writeFirstPurchase,
   type PurchaseRecord,
 } from './purchase_repo';
+import {
+  readSubscriptionWithVersion,
+  writeSubscriptionCreate,
+  writeSubscriptionUpdate,
+} from './subscription_repo';
+import type { IapSubscription } from './subscription';
 import type { IapPlatform, IapVerificationError } from './types';
 
 export type RpcHandler = (
@@ -226,13 +232,98 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       writeGarageUpdate(nk, next, obj.version);
     }
   }
-  // subscription: Chunk 4 wires full lifecycle; this chunk just records
-  // the activation via the audit row + analytics event. No monthly grant yet.
-  if (plan.subscriptionId !== undefined) {
-    emit(nk, logger, 'iap_subscription_activated', {
-      userId: userId,
+  // Subscription: full lifecycle (Chunk 4).
+  if (plan.subscriptionId !== undefined && plan.expiresAtUtc !== undefined) {
+    if (pack.kind !== 'subscription') {
+      // Defensive — planGrant only sets subscriptionId on subs.
+      return fail('INTERNAL', 'subscriptionId without subscription pack');
+    }
+    const originalTxId = input.originalTransactionId ?? input.transactionId;
+    const existing = readSubscriptionWithVersion(nk, userId);
+    let isRenewal = false;
+    let newSub: IapSubscription;
+    if (existing === null || existing.value.originalTransactionId !== originalTxId) {
+      // First activation OR a new sub replacing the old one. The old
+      // sub (if any) expires on its own expiresAtUtc — no explicit
+      // cancel needed.
+      newSub = {
+        userId,
+        packId: pack.id,
+        platform: input.platform,
+        originalTransactionId: originalTxId,
+        latestTransactionId: input.transactionId,
+        activatedAtUtc: nowUtc,
+        expiresAtUtc: plan.expiresAtUtc,
+        autoRenewing: true,
+        renewalHistory: [],
+        monthlyCosmeticGranted: false,
+      };
+    } else {
+      // Renewal: same originalTransactionId, bump expiresAtUtc.
+      isRenewal = true;
+      const nextExpiry = existing.value.expiresAtUtc + pack.durationDays * 86_400_000;
+      newSub = {
+        ...existing.value,
+        latestTransactionId: input.transactionId,
+        expiresAtUtc: nextExpiry,
+        autoRenewing: true,
+        monthlyCosmeticGranted: false,
+        renewalHistory: [
+          ...existing.value.renewalHistory,
+          {
+            transactionId: input.transactionId,
+            renewedAtUtc: nowUtc,
+            expiresAtUtc: nextExpiry,
+            monthlyCoinsGranted: 0, // filled below
+          },
+        ],
+      };
+    }
+
+    // First-activation OR per-cycle monthly grant (cosmetic + coins).
+    let monthlyCoinsApplied = 0;
+    if (plan.monthlyCosmeticId !== undefined && !newSub.monthlyCosmeticGranted) {
+      const obj = readGarageObject(nk, userId);
+      if (obj === null) {
+        const g = defaultGarage(userId, nowUtc);
+        writeGarageCreate(nk, addCosmeticToBag(g, plan.monthlyCosmeticId));
+      } else if (!obj.value.cosmeticsBag.includes(plan.monthlyCosmeticId)) {
+        writeGarageUpdate(nk, addCosmeticToBag(obj.value, plan.monthlyCosmeticId), obj.version);
+      }
+      newSub.monthlyCosmeticGranted = true;
+    }
+    if ((plan.monthlyCoins ?? 0) > 0) {
+      const monthlyKey = `iap_subscription_monthly:${originalTxId}:${newSub.expiresAtUtc}`;
+      const r2: Resp<WalletView> = grant(
+        nk,
+        userId,
+        { coins: plan.monthlyCoins ?? 0 },
+        { reason: 'iap', sourceId: `sub_monthly:${pack.id}:${newSub.expiresAtUtc}` },
+        monthlyKey,
+      );
+      if (r2.ok) {
+        monthlyCoinsApplied = plan.monthlyCoins ?? 0;
+        if (newBalance === undefined) newBalance = r2.data.coins;
+      }
+    }
+
+    // Backfill monthlyCoinsGranted on the last renewal entry.
+    if (isRenewal && newSub.renewalHistory.length > 0 && monthlyCoinsApplied > 0) {
+      const last = newSub.renewalHistory[newSub.renewalHistory.length - 1]!;
+      newSub.renewalHistory[newSub.renewalHistory.length - 1] = { ...last, monthlyCoinsGranted: monthlyCoinsApplied };
+    }
+
+    if (existing === null) {
+      writeSubscriptionCreate(nk, newSub);
+    } else {
+      writeSubscriptionUpdate(nk, newSub, existing.version);
+    }
+
+    emit(nk, logger, isRenewal ? 'iap_subscription_renewed' : 'iap_subscription_activated', {
+      userId,
       packId: pack.id,
-      expiresAtUtc: plan.expiresAtUtc ?? 0,
+      expiresAtUtc: newSub.expiresAtUtc,
+      isRenewal,
     });
   }
 

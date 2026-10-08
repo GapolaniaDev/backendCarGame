@@ -120,6 +120,8 @@ import {
 } from './anti_cheat/types';
 import { loadIapPacksCatalog } from './iap/catalog';
 import { iap_purchase } from './iap/rpcs';
+import { iap_subscription_status, iap_subscription_cancel } from './iap/subscription_rpcs';
+import { startSubscriptionScanner } from './iap/subscription_scanner';
 import { loadAdRewardsCatalog } from './ads/catalog';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
@@ -442,6 +444,9 @@ function InitModule(
   // Phase 8 Chunk 8: events scanner — reconciles profile.activeSpecialOffers
   // with the catalog. 5min tick.
   startEventScanner({ logger, nk });
+  // Phase 9 Chunk 4: subscription scanner — expiring-soon / expired
+  // inbox notifications + monthly grant catch-up. 5min tick.
+  startSubscriptionScanner(nk, logger);
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
@@ -500,6 +505,9 @@ function InitModule(
       // Phase 9 Chunk 3: IAP purchase (bypasses maintenance — money
       // already paid via Apple/Google, must still redeem).
       initializer.registerRpc('iap_purchase', iap_purchase);
+      // Phase 9 Chunk 4: subscription status + cancel (also maintenance-bypass).
+      initializer.registerRpc('iap_subscription_status', iap_subscription_status);
+      initializer.registerRpc('iap_subscription_cancel', iap_subscription_cancel);
       initializer.registerRpc('pass_get', pass_get);
       initializer.registerRpc('pass_claim', pass_claim);
       initializer.registerRpc('pass_buy_premium', pass_buy_premium);
