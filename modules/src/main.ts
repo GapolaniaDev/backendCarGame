@@ -123,6 +123,7 @@ import { iap_purchase } from './iap/rpcs';
 import { iap_subscription_status, iap_subscription_cancel } from './iap/subscription_rpcs';
 import { startSubscriptionScanner } from './iap/subscription_scanner';
 import { loadAdRewardsCatalog } from './ads/catalog';
+import { ad_watched } from './ads/rpcs';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
   report_player,
@@ -508,6 +509,8 @@ function InitModule(
       // Phase 9 Chunk 4: subscription status + cancel (also maintenance-bypass).
       initializer.registerRpc('iap_subscription_status', iap_subscription_status);
       initializer.registerRpc('iap_subscription_cancel', iap_subscription_cancel);
+      // Phase 9 Chunk 5: ad reward (maintenance-bypass, D77).
+      initializer.registerRpc('ad_watched', ad_watched);
       initializer.registerRpc('pass_get', pass_get);
       initializer.registerRpc('pass_claim', pass_claim);
       initializer.registerRpc('pass_buy_premium', pass_buy_premium);

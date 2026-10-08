@@ -93,7 +93,8 @@ export type InboxRewardType =
   | 'iap_purchase'
   | 'subscription_expired'
   | 'subscription_expiring_soon'
-  | 'subscription_renewed';
+  | 'subscription_renewed'
+  | 'ad_reward';
 
 export interface InboxRewardPayload {
   /** Optional coin grant. */

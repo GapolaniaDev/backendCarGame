@@ -30,6 +30,30 @@ export interface AdWatchEvent {
   rewardGranted: boolean;
 }
 
+/** Persisted at `ad_last_watched/{userId}/{tier}`. */
+export interface AdLastWatched {
+  lastWatchedAtUtc: number;
+  lastImpressionId: string;
+}
+
+/** Persisted at `ad_daily_count/{userId}/{utcDate}`. */
+export interface AdDailyCount {
+  count: number;
+  lastUpdatedUtc: number;
+}
+
+/** Persisted at `ad_watch_log/{userId}/{impressionId}`. */
+export interface AdWatchLog {
+  tier: AdTier;
+  adUnitId: string;
+  provider: AdProvider;
+  watchedAtUtc: number;
+  grantedAtUtc: number;
+  coinsGranted: number;
+  newBalance: number;
+  idempotencyKey: string;
+}
+
 const AD_TIERS: ReadonlySet<AdTier> = new Set<AdTier>([
   'small', 'medium', 'large', 'xlarge',
 ]);
