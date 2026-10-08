@@ -139,6 +139,12 @@ import {
   admin_cleanup_race_sessions,
 } from './admin/rpcs';
 import {
+  tournament_list,
+  tournament_get,
+  tournament_join,
+} from './tournaments/rpcs';
+import { loadTournamentsCatalog } from './tournaments/catalog';
+import {
   admin_marks_list,
   admin_marks_partials_view,
   admin_marks_confirm,
@@ -332,6 +338,11 @@ function InitModule(
     nk,
   );
 
+  // Phase 8 Chunk 5: tournaments catalog. Templates only — actual
+  // instances materialise lazily on first access via `tournament_list`
+  // / `tournament_get` / `tournament_join`.
+  loadTournamentsCatalog(logger, tournamentsJson);
+
   // Phase 5 Chunk 1: ensure the liveops config object is present in
   // storage. Wrapped in try/catch so a transient storage failure
   // (Postgres restart, etc.) never crashes boot — `loadLiveopsConfig`
@@ -457,6 +468,10 @@ function InitModule(
       initializer.registerRpc('admin_marks_dismiss', admin_marks_dismiss);
       initializer.registerRpc('admin_marks_sanction', admin_marks_sanction);
       initializer.registerRpc('admin_anti_cheat_stats_get', admin_anti_cheat_stats_get);
+      // Phase 8 Chunk 5: tournaments (3 RPCs).
+      initializer.registerRpc('tournament_list', tournament_list);
+      initializer.registerRpc('tournament_get', tournament_get);
+      initializer.registerRpc('tournament_join', tournament_join);
       initializer.registerRpc('relay_token', relay_token);
       // Phase 7 Chunk 1: friend codes + recent rivals.
       initializer.registerRpc('friend_code_get', friend_code_get);
