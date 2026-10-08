@@ -33,6 +33,7 @@ import { ensureLeaderboards } from './leaderboards/ensure';
 import { registerLeaderboardWriteGuard } from './leaderboards/hooks';
 import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
 import { subscribeClubWeek } from './clubs/club_week_subscriber';
+import { subscribeAntiCheat } from './anti_cheat/subscriber';
 import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
 import { loadProfilesCatalog } from './profiles/catalog';
@@ -137,6 +138,14 @@ import {
   admin_remove_player,
   admin_cleanup_race_sessions,
 } from './admin/rpcs';
+import {
+  admin_marks_list,
+  admin_marks_partials_view,
+  admin_marks_confirm,
+  admin_marks_dismiss,
+  admin_marks_sanction,
+  admin_anti_cheat_stats_get,
+} from './anti_cheat/rpcs';
 import {
   pass_get,
   pass_claim,
@@ -373,6 +382,10 @@ function InitModule(
   // for every human finisher. Runs last so a storage hiccup never
   // delays any earlier subscriber.
   subscribeClubWeek({ logger, nk, bus });
+  // Phase 8 Chunk 4: anti-cheat detection (partials / abrupt /
+  // quorum_disagreement). Runs AFTER missions, ranked, club_week so a
+  // storage hiccup never delays any earlier subscriber.
+  subscribeAntiCheat({ logger, nk, bus });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
@@ -437,6 +450,13 @@ function InitModule(
       initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
       initializer.registerRpc('admin_remove_player', admin_remove_player);
       initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
+      // Phase 8 Chunk 4: anti-cheat admin RPCs (6).
+      initializer.registerRpc('admin_marks_list', admin_marks_list);
+      initializer.registerRpc('admin_marks_partials_view', admin_marks_partials_view);
+      initializer.registerRpc('admin_marks_confirm', admin_marks_confirm);
+      initializer.registerRpc('admin_marks_dismiss', admin_marks_dismiss);
+      initializer.registerRpc('admin_marks_sanction', admin_marks_sanction);
+      initializer.registerRpc('admin_anti_cheat_stats_get', admin_anti_cheat_stats_get);
       initializer.registerRpc('relay_token', relay_token);
       // Phase 7 Chunk 1: friend codes + recent rivals.
       initializer.registerRpc('friend_code_get', friend_code_get);
