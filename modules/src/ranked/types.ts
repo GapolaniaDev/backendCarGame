@@ -91,6 +91,7 @@ export type InboxRewardType =
   | 'tournament_voided'
   | 'event_xp_applied'
   | 'iap_purchase'
+  | 'iap_refund'
   | 'subscription_expired'
   | 'subscription_expiring_soon'
   | 'subscription_renewed'

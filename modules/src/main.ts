@@ -124,6 +124,14 @@ import { iap_subscription_status, iap_subscription_cancel } from './iap/subscrip
 import { startSubscriptionScanner } from './iap/subscription_scanner';
 import { loadAdRewardsCatalog } from './ads/catalog';
 import { ad_watched } from './ads/rpcs';
+import {
+  admin_iap_purchases_list,
+  admin_iap_purchases_get,
+  admin_iap_refund,
+  admin_iap_fraud_flags_list,
+  admin_iap_fraud_flag_action,
+  admin_iap_revenue_stats_get,
+} from './iap/admin';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
   report_player,
@@ -511,6 +519,13 @@ function InitModule(
       initializer.registerRpc('iap_subscription_cancel', iap_subscription_cancel);
       // Phase 9 Chunk 5: ad reward (maintenance-bypass, D77).
       initializer.registerRpc('ad_watched', ad_watched);
+      // Phase 9 Chunk 6: 6 admin IAP RPCs (assertAdminKey + maintenance-bypass).
+      initializer.registerRpc('admin_iap_purchases_list', admin_iap_purchases_list);
+      initializer.registerRpc('admin_iap_purchases_get', admin_iap_purchases_get);
+      initializer.registerRpc('admin_iap_refund', admin_iap_refund);
+      initializer.registerRpc('admin_iap_fraud_flags_list', admin_iap_fraud_flags_list);
+      initializer.registerRpc('admin_iap_fraud_flag_action', admin_iap_fraud_flag_action);
+      initializer.registerRpc('admin_iap_revenue_stats_get', admin_iap_revenue_stats_get);
       initializer.registerRpc('pass_get', pass_get);
       initializer.registerRpc('pass_claim', pass_claim);
       initializer.registerRpc('pass_buy_premium', pass_buy_premium);

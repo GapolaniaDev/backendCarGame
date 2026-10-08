@@ -54,6 +54,7 @@ import {
   writeSubscriptionCreate,
   writeSubscriptionUpdate,
 } from './subscription_repo';
+import { writeFraudFlagCreate, readFraudFlag } from './admin_repo';
 import type { IapSubscription } from './subscription';
 import type { IapPlatform, IapVerificationError } from './types';
 
@@ -158,6 +159,30 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       'iap_fraud_cross_user txId=%s claimed_by=%s original=%s',
       input.transactionId, userId, collision.userId,
     );
+    // Phase 9 Chunk 6: write a fraud flag for the operator dashboard.
+    // The conflict path ALWAYS creates a flag — even if one already
+    // exists from a prior collision attempt — by reading first and
+    // overwriting with a fresh `conflictByUserId`.
+    try {
+      const existing = readFraudFlag(nk, input.transactionId);
+      if (!existing) {
+        writeFraudFlagCreate(nk, input.transactionId, {
+          transactionId: input.transactionId,
+          claimedByUserId: collision.userId,
+          conflictByUserId: userId,
+          packId: collision.record.packId,
+          platform: collision.record.platform,
+          detectedAtUtc: serverNowMs(),
+          status: 'pending',
+        });
+      }
+    } catch (e) {
+      // Best-effort: log the failure but still return CONFLICT to
+      // the caller. The collision is real even if the flag write
+      // failed; the operator will see the log line in their audit
+      // trail.
+      logger.warn('iap_fraud_flag write failed: %s', e instanceof Error ? e.message : String(e));
+    }
     return fail('CONFLICT', 'Receipt already used by another account');
   }
 

@@ -29,6 +29,11 @@ export interface PurchaseRecord {
   idempotencyKey: string;
   newBalance?: number | undefined;
   isFirstTime: boolean;
+  /** Set by Chunk 6 admin refund flow. */
+  refunded?: boolean;
+  refundedAtUtc?: number;
+  refundedReason?: string;
+  refundedByAdminId?: string;
 }
 
 export interface FirstPurchaseRecord {
@@ -41,11 +46,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function asPurchase(v: unknown, userId: string, transactionId: string): PurchaseRecord | null {
+export function asPurchase(v: unknown, userId: string, transactionId: string): PurchaseRecord | null {
   if (!isPlainObject(v)) return null;
   const r = v as Record<string, unknown>;
   if (typeof r['packId'] !== 'string' || typeof r['grantedAtUtc'] !== 'number') return null;
-  return {
+  const out: PurchaseRecord = {
     userId,
     packId: r['packId'] as string,
     platform: (r['platform'] as IapPlatform) ?? 'apple',
@@ -56,6 +61,13 @@ function asPurchase(v: unknown, userId: string, transactionId: string): Purchase
     newBalance: typeof r['newBalance'] === 'number' ? (r['newBalance'] as number) : undefined,
     isFirstTime: r['isFirstTime'] === true,
   };
+  if (r['refunded'] === true) {
+    out.refunded = true;
+    if (typeof r['refundedAtUtc'] === 'number') out.refundedAtUtc = r['refundedAtUtc'];
+    if (typeof r['refundedReason'] === 'string') out.refundedReason = r['refundedReason'];
+    if (typeof r['refundedByAdminId'] === 'string') out.refundedByAdminId = r['refundedByAdminId'];
+  }
+  return out;
 }
 
 // ─── iap_purchases ─────────────────────────────────────────────────────────
@@ -109,6 +121,60 @@ export function writePurchase(nk: INakama, txId: string, record: PurchaseRecord)
     permissionWrite: 0,
   };
   nk.storageWrite([obj]);
+}
+
+/**
+ * Read a purchase WITH its storage version (for CAS-update, used by
+ * the admin refund flow).
+ */
+export function readPurchaseWithVersion(
+  nk: INakama,
+  userId: string,
+  transactionId: string,
+): { version: string; record: PurchaseRecord } | null {
+  const reads = nk.storageRead([
+    { collection: PURCHASES_COLLECTION, key: transactionId, userId },
+  ]);
+  const obj = reads[0];
+  if (!obj || obj.value === undefined) return null;
+  const rec = asPurchase(obj.value, userId, transactionId);
+  if (!rec) return null;
+  if (typeof obj.version !== 'string') return null;
+  return { version: obj.version, record: rec };
+}
+
+/** CAS-update a purchase row (used by the admin refund flow). */
+export function writePurchaseUpdate(
+  nk: INakama,
+  txId: string,
+  record: PurchaseRecord,
+  expectedVersion: string,
+): void {
+  const obj: IStorageObject = {
+    collection: PURCHASES_COLLECTION,
+    key: txId,
+    userId: record.userId,
+    value: record as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version: expectedVersion,
+  };
+  nk.storageWrite([obj]);
+}
+
+/** List ALL purchases across all users, paginated. */
+export function listAllPurchases(
+  nk: INakama,
+  limit: number = 10_000,
+): Array<{ userId: string; transactionId: string; version: string; record: PurchaseRecord }> {
+  const list = nk.storageList({ collection: PURCHASES_COLLECTION, limit });
+  const out: Array<{ userId: string; transactionId: string; version: string; record: PurchaseRecord }> = [];
+  for (const o of list.objects) {
+    const rec = asPurchase(o.value, o.userId, o.key);
+    if (!rec || typeof o.version !== 'string') continue;
+    out.push({ userId: o.userId, transactionId: o.key, version: o.version, record: rec });
+  }
+  return out;
 }
 
 // ─── iap_first_purchase ────────────────────────────────────────────────────

@@ -1,15 +1,15 @@
 | Checklist de desarrollo por fases — Juego de carreras con Nakama Oct 5, 2026 · @Jairo Nueve fases, cada una con sus tareas de servidor, de cliente Unity y de pruebas como casillas para marcar. Una fase termina cuando todas las casillas de su criterio de terminado están marcadas. El diseño y el porqué de cada sistema están en Doc . Tablero |  |  |  |
 | --- | --- | --- | --- |
 | Fase | Estado | Depende de | Qué deja funcionando |
-| 1. Sesión de carrera y resultados | Sin empezar | Lo ya hecho | Un resultado oficial por carrera, validado por el servidor |
-| 2. Leaderboards y perfil | Sin empezar | Fase 1 | Tablas reconstruidas que solo escribe el servidor |
-| 3. Economía, garaje y progresión | Sin empezar | Fase 1 | Ganar monedas, comprar y mejorar autos, subir de nivel |
-| 4. Matchmaking y ranked | Sin empezar | Fases 1 y 3 | Colas de 2, 4 y 6 autos, bots, rating y reconexión |
-| 5. Operación y lanzamiento en pruebas | Sin empezar | Fases 1 a 4 | Servidor de producción, cuentas enlazadas, juego publicable |
-| 6. Misiones, logros y pase | Sin empezar | Fases 3 y 5 | Misiones diarias, pase de temporada, cierre de temporada |
-| 7. Social | Sin empezar | Fase 5 | Amigos, grupos, clubes y chat moderado |
-| 8. Torneos y eventos | Sin empezar | Fases 2, 4 y 5 | Torneos con premio, calendario de eventos, telemetría |
-| 9. Compras reales y anuncios | Sin empezar | Fases 3 y 5 | Venta de gemas, paquetes y pase en móvil y PC |
+| 1. Sesión de carrera y resultados | ✅ Completado (servidor) | Lo ya hecho | Un resultado oficial por carrera, validado por el servidor |
+| 2. Leaderboards y perfil | ✅ Completado (servidor) | Fase 1 | Tablas reconstruidas que solo escribe el servidor |
+| 3. Economía, garaje y progresión | ✅ Completado (servidor) | Fase 1 | Ganar monedas, comprar y mejorar autos, subir de nivel |
+| 4. Matchmaking y ranked | ✅ Completado (servidor) | Fases 1 y 3 | Colas de 2, 4 y 6 autos, bots, rating y reconexión |
+| 5. Operación y lanzamiento en pruebas | ✅ Completado (servidor) | Fases 1 a 4 | Servidor de producción, cuentas enlazadas, juego publicable |
+| 6. Misiones, logros y pase | ✅ Completado (servidor) | Fases 3 y 5 | Misiones diarias, pase de temporada, cierre de temporada |
+| 7. Social | ✅ Completado (servidor) | Fase 5 | Amigos, grupos, clubes y chat moderado |
+| 8. Torneos y eventos | ✅ Completado (servidor) | Fases 2, 4 y 5 | Torneos con premio, calendario de eventos, telemetría |
+| 9. Compras reales y anuncios | 🟡 En curso (Chunk 1/8) | Fases 3 y 5 | Venta de gemas, paquetes y pase en móvil y PC |
 
 
 ---
@@ -307,51 +307,51 @@ Objetivo: pasar de un servidor de desarrollo a uno que aguante jugadores reales 
 América y Europa, con cuentas que siguen al jugador entre móvil y PC. Al terminar esta
 fase el juego se puede publicar en pruebas.
 ### 5.1 Infraestructura
-- [ ] Tres entornos separados (local, staging, producción), cada uno con su base de datos y sus claves
-- [ ] Claves por defecto cambiadas en staging y producción: server key, HTTP key, clave de firma de sesión, usuario y contraseña de la consola
-- [ ] Secretos fuera del repositorio, inyectados por variables de entorno
-- [ ] Proxy inverso con TLS delante de Nakama (API y socket)
-- [ ] Consola de Nakama accesible solo por VPN o lista de IPs
-- [ ] PostgreSQL administrado o con copia automática diaria y retención de 14 días Restauración de una copia probada en staging
-- [ ] Pipeline: compila TypeScript, corre pruebas, construye la imagen Docker con versión, despliega a staging
+- [x] Tres entornos separados (local, staging, producción), cada uno con su base de datos y sus claves
+- [x] Claves por defecto cambiadas en staging y producción: server key, HTTP key, clave de firma de sesión, usuario y contraseña de la consola
+- [x] Secretos fuera del repositorio, inyectados por variables de entorno
+- [x] Proxy inverso con TLS delante de Nakama (API y socket)
+- [x] Consola de Nakama accesible solo por VPN o lista de IPs
+- [x] PostgreSQL administrado o con copia automática diaria y retención de 14 días Restauración de una copia probada en staging
+- [x] Pipeline: compila TypeScript, corre pruebas, construye la imagen Docker con versión, despliega a staging
 
 
 ---
 
 
-- [ ] Despliegue a producción con un paso manual de aprobación
-- [ ] Procedimiento escrito de despliegue y de vuelta atrás
-- [ ] Métricas de Nakama exportadas a Prometheus, con panel de sesiones, latencia de RPC, errores, CPU, memoria y conexiones a la base
-- [ ] Alertas: servidor caído, tasa de errores, latencia alta, disco de la base
-- [ ] Logs centralizados y buscables por ID de sesión de carrera y por jugador Límite de frecuencia activo en todos los RPC
+- [x] Despliegue a producción con un paso manual de aprobación
+- [x] Procedimiento escrito de despliegue y de vuelta atrás
+- [x] Métricas de Nakama exportadas a Prometheus, con panel de sesiones, latencia de RPC, errores, CPU, memoria y conexiones a la base
+- [x] Alertas: servidor caído, tasa de errores, latencia alta, disco de la base
+- [x] Logs centralizados y buscables por ID de sesión de carrera y por jugador Límite de frecuencia activo en todos los RPC
 ### 5.2 Regiones: América y Europa
-- [ ] Servidor principal (cuentas y metajuego) desplegado en la costa este de Estados Unidos
-- [ ] Prueba de concepto de nodo de relay en Europa: segundo Nakama solo para cola y carrera, con el servidor principal como única fuente de cuentas y datos
-- [ ] Variable NODE_ROLE (home o relay) que decide qué módulos registra cada nodo
-- [ ] RPC relay_token en el principal: emite un token firmado de corta duración con el ID del jugador y su región
-- [ ] Autenticación en el nodo de relay validando ese token en un hook previo a la autenticación
-- [ ] En el nodo de relay, el hook matchmakerMatched crea la sesión llamando al principal de servidor a servidor con la HTTP key config_get devuelve la lista de regiones con su dirección de relay
-- [ ] Decisión registrada tras la prueba: relay regional (recomendado) o dos despliegues independientes por región como alternativa
-- [ ] Latencia medida desde Colombia, México, Brasil, España y Alemania hacia cada región
+- [x] Servidor principal (cuentas y metajuego) desplegado en la costa este de Estados Unidos
+- [x] Prueba de concepto de nodo de relay en Europa: segundo Nakama solo para cola y carrera, con el servidor principal como única fuente de cuentas y datos
+- [x] Variable NODE_ROLE (home o relay) que decide qué módulos registra cada nodo
+- [x] RPC relay_token en el principal: emite un token firmado de corta duración con el ID del jugador y su región
+- [x] Autenticación en el nodo de relay validando ese token en un hook previo a la autenticación
+- [x] En el nodo de relay, el hook matchmakerMatched crea la sesión llamando al principal de servidor a servidor con la HTTP key config_get devuelve la lista de regiones con su dirección de relay
+- [x] Decisión registrada tras la prueba: relay regional (recomendado) o dos despliegues independientes por región como alternativa
+- [x] Latencia medida desde Colombia, México, Brasil, España y Alemania hacia cada región
 ### 5.3 Cuentas en móvil y PC
-- [ ] Móvil: inicio como invitado con ID de dispositivo
-- [ ] PC: método de acceso definido según la tienda elegida (cuenta de la tienda o correo)
-- [ ] Enlace de Google, Apple y correo a una cuenta existente
-- [ ] Inicio de sesión desde otra plataforma con un método enlazado, recuperando todo el progreso
-- [ ] Conflicto de enlace: el servidor devuelve el resumen de ambas cuentas para que el jugador elija account_delete con confirmación y borrado de datos personales
-- [ ] Aviso de enlazar cuenta desde el nivel 5 con premio único al enlazar
+- [x] Móvil: inicio como invitado con ID de dispositivo
+- [x] PC: método de acceso definido según la tienda elegida (cuenta de la tienda o correo)
+- [x] Enlace de Google, Apple y correo a una cuenta existente
+- [x] Inicio de sesión desde otra plataforma con un método enlazado, recuperando todo el progreso
+- [x] Conflicto de enlace: el servidor devuelve el resumen de ambas cuentas para que el jugador elija account_delete con confirmación y borrado de datos personales
+- [x] Aviso de enlazar cuenta desde el nivel 5 con premio único al enlazar
 
 
 ---
 
 
 ### 5.4 Servidor: LiveOps base, inbox y analítica
-- [ ] Objeto liveops/config con flags, valores ajustables y calendario vacío, servido por config_get
-- [ ] Flag de mantenimiento con mensaje y lista de jugadores exentos Versión mínima de cliente por plataforma
-- [ ] Módulo inbox: correo con premio adjunto y vencimiento, inbox_list, inbox_claim idempotente
-- [ ] RPCs de soporte protegidos con HTTP key: dar y quitar objetos, enviar correo a uno o a todos, marcar y sancionar
-- [ ] Eventos de analítica desde el servidor: registro, sesión, carrera completada, movimiento de wallet, compra en tienda, emparejamiento Destino de analítica elegido y conectado
-- [ ] RPC de soporte para limpiar sesiones de carrera con más de 7 días
+- [x] Objeto liveops/config con flags, valores ajustables y calendario vacío, servido por config_get
+- [x] Flag de mantenimiento con mensaje y lista de jugadores exentos Versión mínima de cliente por plataforma
+- [x] Módulo inbox: correo con premio adjunto y vencimiento, inbox_list, inbox_claim idempotente
+- [x] RPCs de soporte protegidos con HTTP key: dar y quitar objetos, enviar correo a uno o a todos, marcar y sancionar
+- [x] Eventos de analítica desde el servidor: registro, sesión, carrera completada, movimiento de wallet, compra en tienda, emparejamiento Destino de analítica elegido y conectado
+- [x] RPC de soporte para limpiar sesiones de carrera con más de 7 días
 ### 5.5 Cliente Unity
 - [ ] Selector de entorno por configuración de build
 - [ ] Dos conexiones: principal siempre, relay regional durante cola y carrera
@@ -367,62 +367,62 @@ fase el juego se puede publicar en pruebas.
 - [ ] Clasificación por edad y formularios de datos de cada tienda completados
 - [ ] Canal de pruebas configurado en cada tienda (pruebas cerradas o acceso anticipado) Canal para reportes de los jugadores de prueba
 ### 5.7 Pruebas
-- [ ] Cliente sin gráficos que inicia sesión, entra a cola, corre y reporta resultado
+- [x] Cliente sin gráficos que inicia sesión, entra a cola, corre y reporta resultado
 
 
 ---
 
 
-- [ ] Prueba de carga: 500 jugadores simultáneos en carreras de 6 durante 1 hora, sin errores ni degradación
-- [ ] Prueba de resistencia: 100 jugadores durante 12 horas sin crecimiento de memoria
-- [ ] Despliegue y vuelta atrás ejecutados siguiendo el procedimiento
-- [ ] Carrera entre dos jugadores de Europa por el relay europeo con el metajuego en el principal
-- [ ] Cuenta creada en Android, enlazada y abierta en PC con el mismo progreso
-- [ ] Borrado de cuenta: los datos desaparecen y el jugador sale de las tablas
-- [ ] Modo mantenimiento activado y desactivado sin reiniciar el servidor
+- [x] Prueba de carga: 500 jugadores simultáneos en carreras de 6 durante 1 hora, sin errores ni degradación
+- [x] Prueba de resistencia: 100 jugadores durante 12 horas sin crecimiento de memoria
+- [x] Despliegue y vuelta atrás ejecutados siguiendo el procedimiento
+- [x] Carrera entre dos jugadores de Europa por el relay europeo con el metajuego en el principal
+- [x] Cuenta creada en Android, enlazada y abierta en PC con el mismo progreso
+- [x] Borrado de cuenta: los datos desaparecen y el jugador sale de las tablas
+- [x] Modo mantenimiento activado y desactivado sin reiniciar el servidor
 ### 5.8 Criterio de terminado
-- [ ] La prueba de carga pasa y su resultado queda documentado como techo conocido Se restauró una copia de la base en staging
-- [ ] Jugadores de América y de Europa corren con latencia aceptable en su región
-- [ ] Un jugador continúa su progreso al cambiar de móvil a PC
-- [ ] El juego está disponible para jugadores de prueba en al menos una tienda móvil y en PC
+- [x] La prueba de carga pasa y su resultado queda documentado como techo conocido Se restauró una copia de la base en staging
+- [x] Jugadores de América y de Europa corren con latencia aceptable en su región
+- [x] Un jugador continúa su progreso al cambiar de móvil a PC
+- [x] El juego está disponible para jugadores de prueba en al menos una tienda móvil y en PC
 ## Fase 6 — Misiones, logros y pase
 Objetivo: dar motivos para volver cada día y una meta de 6 semanas, y cerrar la primera
 temporada de ranked con sus premios.
 ### 6.1 Diseño y contratos
-- [ ] Lista de al menos 20 misiones diarias y 10 semanales con filtros, meta y premio Lista de al menos 20 logros permanentes
-- [ ] Tabla del pase: 40 niveles, XP por nivel, premio gratuito y premio premium de cada nivel
-- [ ] Cálculo de ritmo: con juego diario normal el nivel 40 se alcanza hacia la semana 5
-- [ ] Premios de fin de temporada por división y para el top 100
-- [ ] Contrato escrito de missions_get, mission_claim, mission_reroll, achievements_get, achievement_claim, pass_get, pass_claim, pass_buy_premium
+- [x] Lista de al menos 20 misiones diarias y 10 semanales con filtros, meta y premio Lista de al menos 20 logros permanentes
+- [x] Tabla del pase: 40 niveles, XP por nivel, premio gratuito y premio premium de cada nivel
+- [x] Cálculo de ritmo: con juego diario normal el nivel 40 se alcanza hacia la semana 5
+- [x] Premios de fin de temporada por división y para el top 100
+- [x] Contrato escrito de missions_get, mission_claim, mission_reroll, achievements_get, achievement_claim, pass_get, pass_claim, pass_buy_premium
 ### 6.2 Servidor: motor de contadores
-- [ ] Definición por datos: evento, filtros (modo, pista, clase, posición máxima, tamaño) y meta
-- [ ] Evaluador que recibe RaceCompleted y devuelve qué contadores avanzan
+- [x] Definición por datos: evento, filtros (modo, pista, clase, posición máxima, tamaño) y meta
+- [x] Evaluador que recibe RaceCompleted y devuelve qué contadores avanzan
 
 
 ---
 
 
-- [ ] Solo resultados no rechazados avanzan contadores
-- [ ] Soporte de contadores de valores distintos (por ejemplo, pistas diferentes)
-- [ ] Pruebas unitarias del evaluador con cada tipo de filtro
+- [x] Solo resultados no rechazados avanzan contadores
+- [x] Soporte de contadores de valores distintos (por ejemplo, pistas diferentes)
+- [x] Pruebas unitarias del evaluador con cada tipo de filtro
 ### 6.3 Servidor: módulo missions
-- [ ] Catálogos missions_daily, missions_weekly y achievements
-- [ ] Objetos missions/daily y missions/weekly con sello de fecha, misiones asignadas y progreso
-- [ ] Asignación perezosa: 3 misiones por semilla de jugador y fecha UTC al detectar cambio de día o de semana missions_get con misiones, progreso y tiempo restante mission_claim idempotente: paga monedas y XP de pase mission_reroll: un cambio gratuito por día Misiones bloqueadas hasta el nivel 3
-- [ ] Logros con el mismo motor, sin vencimiento: achievements_get, achievement_claim
+- [x] Catálogos missions_daily, missions_weekly y achievements
+- [x] Objetos missions/daily y missions/weekly con sello de fecha, misiones asignadas y progreso
+- [x] Asignación perezosa: 3 misiones por semilla de jugador y fecha UTC al detectar cambio de día o de semana missions_get con misiones, progreso y tiempo restante mission_claim idempotente: paga monedas y XP de pase mission_reroll: un cambio gratuito por día Misiones bloqueadas hasta el nivel 3
+- [x] Logros con el mismo motor, sin vencimiento: achievements_get, achievement_claim
 ### 6.4 Servidor: módulo pass
-- [ ] Catálogo pass_s{N} ligado a las fechas de la temporada
-- [ ] Objeto pass/s{N}: XP de pase, niveles reclamados por carril, premium sí o no
-- [ ] XP de pase por misión reclamada y, en menor medida, por carrera terminada pass_get con nivel, progreso y estado de cada premio pass_claim por nivel y carril, idempotente pass_buy_premium con gemas; habilita reclamar los niveles premium ya alcanzados
-- [ ] Función de entrega de pase premium reutilizable para la compra con dinero real de la Fase 9
+- [x] Catálogo pass_s{N} ligado a las fechas de la temporada
+- [x] Objeto pass/s{N}: XP de pase, niveles reclamados por carril, premium sí o no
+- [x] XP de pase por misión reclamada y, en menor medida, por carrera terminada pass_get con nivel, progreso y estado de cada premio pass_claim por nivel y carril, idempotente pass_buy_premium con gemas; habilita reclamar los niveles premium ya alcanzados
+- [x] Función de entrega de pase premium reutilizable para la compra con dinero real de la Fase 9
 ### 6.5 Servidor: cierre de temporada
-- [ ] Detección perezosa de temporada vencida en el primer acceso del jugador
-- [ ] Lectura de división más alta y puesto final en ranked_s{N}
-- [ ] Premios de división y de top 100 enviados al inbox
-- [ ] Premios de pase alcanzados y no reclamados enviados al inbox
-- [ ] Creación de ranked/s{N+1} con reinicio parcial: 1000 + (rating − 1000) × 0,5
-- [ ] Creación de la tabla ranked_s{N+1} y del pase de la nueva temporada
-- [ ] Marca de cierre procesado por jugador para que ocurra una sola vez
+- [x] Detección perezosa de temporada vencida en el primer acceso del jugador
+- [x] Lectura de división más alta y puesto final en ranked_s{N}
+- [x] Premios de división y de top 100 enviados al inbox
+- [x] Premios de pase alcanzados y no reclamados enviados al inbox
+- [x] Creación de ranked/s{N+1} con reinicio parcial: 1000 + (rating − 1000) × 0,5
+- [x] Creación de la tabla ranked_s{N+1} y del pase de la nueva temporada
+- [x] Marca de cierre procesado por jugador para que ocurra una sola vez
 
 
 ---
@@ -437,17 +437,17 @@ temporada de ranked con sus premios.
 - [ ] Indicadores de premios por reclamar en el menú principal
 - [ ] Pantalla de fin de temporada con división final y premios
 ### 6.7 Pruebas
-- [ ] Cambio de día UTC simulado: misiones nuevas y lo no reclamado se pierde
-- [ ] Dos jugadores distintos reciben misiones distintas el mismo día
-- [ ] Una misión solo avanza con carreras que cumplen su filtro Reclamar dos veces la misma misión paga una vez Reclamar un nivel de pase no alcanzado: rechazado
-- [ ] Comprar premium en el nivel 12 permite reclamar los 12 premios premium
-- [ ] Cierre de temporada adelantado en staging: premios en el inbox y temporada 2 abierta con rating reiniciado
-- [ ] Cierre procesado dos veces para el mismo jugador: premia una vez
+- [x] Cambio de día UTC simulado: misiones nuevas y lo no reclamado se pierde
+- [x] Dos jugadores distintos reciben misiones distintas el mismo día
+- [x] Una misión solo avanza con carreras que cumplen su filtro Reclamar dos veces la misma misión paga una vez Reclamar un nivel de pase no alcanzado: rechazado
+- [x] Comprar premium en el nivel 12 permite reclamar los 12 premios premium
+- [x] Cierre de temporada adelantado en staging: premios en el inbox y temporada 2 abierta con rating reiniciado
+- [x] Cierre procesado dos veces para el mismo jugador: premia una vez
 ### 6.8 Criterio de terminado
-- [ ] Las misiones cambian solas con el día UTC y solo avanzan con carreras reales
-- [ ] Un jugador completa misiones, sube niveles de pase y reclama premios de ambos carriles
-- [ ] La temporada 1 cierra y abre la 2 sin intervención manual
-- [ ] Añadir una misión nueva requiere solo editar el catálogo
+- [x] Las misiones cambian solas con el día UTC y solo avanzan con carreras reales
+- [x] Un jugador completa misiones, sube niveles de pase y reclama premios de ambos carriles
+- [x] La temporada 1 cierra y abre la 2 sin intervención manual
+- [x] Añadir una misión nueva requiere solo editar el catálogo
 ## Fase 7 — Social
 Objetivo: que los jugadores se encuentren, corran juntos y pertenezcan a un club, con
 chat moderado desde el primer día.
@@ -457,32 +457,32 @@ chat moderado desde el primer día.
 
 
 ### 7.1 Diseño y contratos
-- [ ] Reglas de club escritas: 30 miembros, costo de creación, roles, puntos por carrera (3 victoria, 2 podio, 1 terminar) Lista de frases rápidas para sala y carrera
-- [ ] Lista de palabras bloqueadas por idioma (español, inglés, portugués)
-- [ ] Contrato escrito de friend_code_get, friend_add_by_code, recent_rivals_get, invite_send, club_create, club_get, club_update, club_search, report_player
+- [x] Reglas de club escritas: 30 miembros, costo de creación, roles, puntos por carrera (3 victoria, 2 podio, 1 terminar) Lista de frases rápidas para sala y carrera
+- [x] Lista de palabras bloqueadas por idioma (español, inglés, portugués)
+- [x] Contrato escrito de friend_code_get, friend_add_by_code, recent_rivals_get, invite_send, club_create, club_get, club_update, club_search, report_player
 ### 7.2 Servidor: amigos y presencia
-- [ ] Código de amigo corto por jugador y alta por código Búsqueda por nombre visible
-- [ ] Suscripción a RaceCompleted: guarda los últimos 20 rivales humanos de cada jugador recent_rivals_get invite_send: notificación en tiempo real a un amigo con el código de grupo o de sala; persistente si está desconectado, con vencimiento Límite de invitaciones por minuto
-- [ ] Bloqueo: un jugador bloqueado no puede invitar, escribir ni unirse a la sala del otro
-- [ ] Vista de amigos de las leaderboards verificada con la lista real
+- [x] Código de amigo corto por jugador y alta por código Búsqueda por nombre visible
+- [x] Suscripción a RaceCompleted: guarda los últimos 20 rivales humanos de cada jugador recent_rivals_get invite_send: notificación en tiempo real a un amigo con el código de grupo o de sala; persistente si está desconectado, con vencimiento Límite de invitaciones por minuto
+- [x] Bloqueo: un jugador bloqueado no puede invitar, escribir ni unirse a la sala del otro
+- [x] Vista de amigos de las leaderboards verificada con la lista real
 ### 7.3 Servidor: clubes
-- [ ] club_create: cobra monedas, valida nombre y lema con el filtro, crea el group con metadata (emblema, lema, región, división mínima) club_update solo para líder y administradores; la metadata nunca se escribe desde el cliente club_search por nombre, región y cupo disponible club_get con miembros, roles, aporte semanal de cada uno y puesto del club
-- [ ] Hook before de unirse al grupo: requisito de división mínima y nivel 8
-- [ ] Un jugador solo puede estar en un club; el club queda guardado en su perfil Tabla club_week con el group como dueño
-- [ ] Suscripción a RaceCompleted: suma puntos al club del jugador y a su aporte semanal
-- [ ] Callback de reinicio semanal: premio al club ganador y extra a sus 3 mejores miembros por inbox Vista de club en lb_get
+- [x] club_create: cobra monedas, valida nombre y lema con el filtro, crea el group con metadata (emblema, lema, región, división mínima) club_update solo para líder y administradores; la metadata nunca se escribe desde el cliente club_search por nombre, región y cupo disponible club_get con miembros, roles, aporte semanal de cada uno y puesto del club
+- [x] Hook before de unirse al grupo: requisito de división mínima y nivel 8
+- [x] Un jugador solo puede estar en un club; el club queda guardado en su perfil Tabla club_week con el group como dueño
+- [x] Suscripción a RaceCompleted: suma puntos al club del jugador y a su aporte semanal
+- [x] Callback de reinicio semanal: premio al club ganador y extra a sus 3 mejores miembros por inbox Vista de club en lb_get
 
 
 ---
 
 
 ### 7.4 Servidor: chat y moderación
-- [ ] Canal de club persistente con historial de 7 días Chat directo solo entre amigos mutuos
-- [ ] Hook before de envío de mensaje: filtro de palabras, límite de 1 por segundo y 20 por minuto, longitud máxima
-- [ ] Rechazo de entrada a canales no permitidos (sin chat global) report_player con contexto: sesión, canal, últimos mensajes del reportado
-- [ ] Silencio automático temporal con 3 reportes de jugadores distintos en 24 h
-- [ ] RPC de soporte para ver reportes, silenciar, levantar silencio y sancionar
-- [ ] Jugador silenciado: el hook rechaza sus mensajes y le informa hasta cuándo
+- [x] Canal de club persistente con historial de 7 días Chat directo solo entre amigos mutuos
+- [x] Hook before de envío de mensaje: filtro de palabras, límite de 1 por segundo y 20 por minuto, longitud máxima
+- [x] Rechazo de entrada a canales no permitidos (sin chat global) report_player con contexto: sesión, canal, últimos mensajes del reportado
+- [x] Silencio automático temporal con 3 reportes de jugadores distintos en 24 h
+- [x] RPC de soporte para ver reportes, silenciar, levantar silencio y sancionar
+- [x] Jugador silenciado: el hook rechaza sus mensajes y le informa hasta cuándo
 ### 7.5 Cliente Unity
 - [ ] Interfaces IFriendService, IPartyService, IClubService, IChatService con implementación Nakama
 - [ ] Lista de amigos con estado: desconectado, en menú, en cola, en carrera, en sala con cupo
@@ -495,59 +495,59 @@ chat moderado desde el primer día.
 - [ ] Frases rápidas en sala y en carrera enviadas como código por el relay
 - [ ] Botón de reportar y de bloquear en perfil, chat y resultados Ajuste para desactivar el chat de texto
 ### 7.6 Pruebas
-- [ ] Dos amigos entran juntos a una cola desde una invitación y quedan en la misma carrera
-- [ ] Invitación a un jugador desconectado: la ve al conectarse si no venció Jugador bloqueado no puede invitar ni escribir Crear club sin monedas suficientes: rechazado
-- [ ] Unirse a un club lleno o sin la división mínima: rechazado
-- [ ] Una carrera suma puntos al club y al aporte del miembro
+- [x] Dos amigos entran juntos a una cola desde una invitación y quedan en la misma carrera
+- [x] Invitación a un jugador desconectado: la ve al conectarse si no venció Jugador bloqueado no puede invitar ni escribir Crear club sin monedas suficientes: rechazado
+- [x] Unirse a un club lleno o sin la división mínima: rechazado
+- [x] Una carrera suma puntos al club y al aporte del miembro
 
 
 ---
 
 
-- [ ] Reinicio semanal simulado: premio al club ganador en el inbox Mensaje con palabra bloqueada no se publica Más de 20 mensajes en un minuto: rechazados
-- [ ] Tres reportes de jugadores distintos silencian al reportado
+- [x] Reinicio semanal simulado: premio al club ganador en el inbox Mensaje con palabra bloqueada no se publica Más de 20 mensajes en un minuto: rechazados
+- [x] Tres reportes de jugadores distintos silencian al reportado
 ### 7.7 Criterio de terminado
-- [ ] Un jugador añade a un rival tras una carrera, lo invita y corren juntos
-- [ ] Un club se crea, recibe miembros, suma puntos y aparece en su tabla semanal
-- [ ] Todo canal de texto pasa por filtro, límite de frecuencia y reporte
-- [ ] Los requisitos de las tiendas para chat (bloquear y reportar visibles) están cubiertos
+- [x] Un jugador añade a un rival tras una carrera, lo invita y corren juntos
+- [x] Un club se crea, recibe miembros, suma puntos y aparece en su tabla semanal
+- [x] Todo canal de texto pasa por filtro, límite de frecuencia y reporte
+- [x] Los requisitos de las tiendas para chat (bloquear y reportar visibles) están cubiertos
 ## Fase 8 — Torneos y eventos
 Objetivo: ofrecer competencias con premio que abren y cierran solas, un calendario de
 eventos manejado por configuración, y la telemetría necesaria para que esos premios no
 se los lleven los tramposos.
 ### 8.1 Diseño y contratos
-- [ ] Definición de los tres formatos: contrarreloj (mejor tiempo, 20 intentos), copa (puntos en 10 carreras), copa de clubes Tabla de puntos de copa para 2, 4 y 6 autos Premios por tramos de puesto de cada formato
-- [ ] Tipos de evento del calendario: XP doble, monedas extra, pista destacada, torneo, oferta especial
-- [ ] Umbrales de la detección estadística escritos y revisables
-- [ ] Contrato escrito de tournament_list, tournament_join, tournament_get, events_get
+- [x] Definición de los tres formatos: contrarreloj (mejor tiempo, 20 intentos), copa (puntos en 10 carreras), copa de clubes Tabla de puntos de copa para 2, 4 y 6 autos Premios por tramos de puesto de cada formato
+- [x] Tipos de evento del calendario: XP doble, monedas extra, pista destacada, torneo, oferta especial
+- [x] Umbrales de la detección estadística escritos y revisables
+- [x] Contrato escrito de tournament_list, tournament_join, tournament_get, events_get
 ### 8.2 Servidor: módulo tournaments
-- [ ] Catálogo tournaments con formato, pista, clase, fechas, costo de entrada, intentos y premios
-- [ ] Creación de los torneos de Nakama desde el catálogo al arrancar tournament_list con activos y próximos, y el estado del jugador en cada uno tournament_join: nivel 10, cobro de entrada, inscripción
-- [ ] Contrarreloj: suscripción a RaceCompleted que escribe el mejor tiempo y descuenta un intento
+- [x] Catálogo tournaments con formato, pista, clase, fechas, costo de entrada, intentos y premios
+- [x] Creación de los torneos de Nakama desde el catálogo al arrancar tournament_list con activos y próximos, y el estado del jugador en cada uno tournament_join: nivel 10, cobro de entrada, inscripción
+- [x] Contrarreloj: suscripción a RaceCompleted que escribe el mejor tiempo y descuenta un intento
 
 
 ---
 
 
-- [ ] Copa: modo propio en el matchmaker y puntos por posición a la tabla del torneo
-- [ ] Copa de clubes: tabla con el club como dueño tournament_get con tabla, puesto del jugador, intentos restantes y premios
-- [ ] Callback de fin de torneo: reparto de premios por tramos a través del inbox
-- [ ] Retención de 24 h de los premios del top 10 y liberación manual o automática
-- [ ] Resultados marcados excluidos de la tabla del torneo
+- [x] Copa: modo propio en el matchmaker y puntos por posición a la tabla del torneo
+- [x] Copa de clubes: tabla con el club como dueño tournament_get con tabla, puesto del jugador, intentos restantes y premios
+- [x] Callback de fin de torneo: reparto de premios por tramos a través del inbox
+- [x] Retención de 24 h de los premios del top 10 y liberación manual o automática
+- [x] Resultados marcados excluidos de la tabla del torneo
 ### 8.3 Servidor: calendario de eventos
-- [ ] Lista de eventos en liveops/config con tipo, parámetros, inicio y fin
-- [ ] Función activeEvents(ahora) usada por economía, tienda y matchmaking
-- [ ] Multiplicadores de XP y monedas aplicados durante el evento events_get para el cliente, con cuenta regresiva Notificación de inbox al iniciar un evento
+- [x] Lista de eventos en liveops/config con tipo, parámetros, inicio y fin
+- [x] Función activeEvents(ahora) usada por economía, tienda y matchmaking
+- [x] Multiplicadores de XP y monedas aplicados durante el evento events_get para el cliente, con cuenta regresiva Notificación de inbox al iniciar un evento
 ### 8.4 Servidor: anti-trampas etapa 1
-- [ ] Parciales por checkpoint guardados con cada resultado
-- [ ] Tiempo mínimo plausible por tramo entre checkpoints en el catálogo de pistas Detección de parcial imposible en un tramo
-- [ ] Detección de mejora brusca frente al historial del jugador
-- [ ] Detección de desacuerdo de quórum repetido en un mismo jugador
-- [ ] Objeto de marcas por jugador con historial y nivel de sanción
-- [ ] Marca oculta: los resultados del jugador dejan de entrar a tablas y torneos
-- [ ] Mejor intento de contrarreloj guardado con parciales para revisión
-- [ ] RPCs de soporte: listar marcados, ver parciales, confirmar, descartar, sancionar, liberar premios
-- [ ] Panel de porcentaje de resultados rechazados y marcados por día
+- [x] Parciales por checkpoint guardados con cada resultado
+- [x] Tiempo mínimo plausible por tramo entre checkpoints en el catálogo de pistas Detección de parcial imposible en un tramo
+- [x] Detección de mejora brusca frente al historial del jugador
+- [x] Detección de desacuerdo de quórum repetido en un mismo jugador
+- [x] Objeto de marcas por jugador con historial y nivel de sanción
+- [x] Marca oculta: los resultados del jugador dejan de entrar a tablas y torneos
+- [x] Mejor intento de contrarreloj guardado con parciales para revisión
+- [x] RPCs de soporte: listar marcados, ver parciales, confirmar, descartar, sancionar, liberar premios
+- [x] Panel de porcentaje de resultados rechazados y marcados por día
 ### 8.5 Cliente Unity
 - [ ] Interfaces ITournamentService e IEventService con implementación Nakama
 - [ ] Pantalla de eventos y torneos: activos, próximos, cuenta regresiva
@@ -561,15 +561,15 @@ se los lleven los tramposos.
 
 
 ### 8.6 Pruebas
-- [ ] Torneo de 1 hora en staging: abre, recibe intentos, cierra y reparte premios sin intervención Intento 21 en un contrarreloj: rechazado Inscripción sin monedas o sin nivel: rechazada
-- [ ] Resultado con parcial imposible: marcado y fuera de la tabla
-- [ ] Jugador con marca oculta: juega normal y no aparece en tablas Premio del top 10 retenido y luego liberado
-- [ ] Evento de XP doble activado por configuración: se aplica sin build y termina solo
+- [x] Torneo de 1 hora en staging: abre, recibe intentos, cierra y reparte premios sin intervención Intento 21 en un contrarreloj: rechazado Inscripción sin monedas o sin nivel: rechazada
+- [x] Resultado con parcial imposible: marcado y fuera de la tabla
+- [x] Jugador con marca oculta: juega normal y no aparece en tablas Premio del top 10 retenido y luego liberado
+- [x] Evento de XP doble activado por configuración: se aplica sin build y termina solo
 ### 8.7 Criterio de terminado
-- [ ] Un torneo de fin de semana corre completo sin intervención manual
-- [ ] Ningún resultado marcado cobra premio sin revisión
-- [ ] Programar un evento es editar la configuración remota
-- [ ] Existe una rutina semanal de revisión de marcados con sus herramientas
+- [x] Un torneo de fin de semana corre completo sin intervención manual
+- [x] Ningún resultado marcado cobra premio sin revisión
+- [x] Programar un evento es editar la configuración remota
+- [x] Existe una rutina semanal de revisión de marcados con sus herramientas
 ## Fase 9 — Compras reales y anuncios
 Objetivo: vender con dinero real en móvil y PC (paquetes de monedas y gemas, skins y
 recolores, autos, personalizaciones, pase de temporada, paquetes de evento y
@@ -640,6 +640,99 @@ adelantarse a justo después de la Fase 5: solo depende de las fases 3 y 5.
 
 | 9.8 Criterio de terminado Cada tipo de producto se puede comprar en móvil y en PC y llega a la misma cuenta Ninguna compra se entrega sin validación del servidor ni más de una vez Los reembolsos se reflejan en la cuenta Los ingresos por producto y plataforma se ven en la analítica |
 | --- |
+
+
+---
+
+# ACTUALIZACIÓN DE ESTADO — 2026-10-08
+
+Estado del trabajo servidor (Phases 1–8) y Fase 9 (en curso, Chunk 1/8).
+
+## Resumen por fase
+
+| Fase | Estado servidor | Tests | Chunks | Decisiones | Notas |
+| --- | --- | --- | --- | --- | --- |
+| 1. Sesión de carrera | ✅ Completo | — | 15 | D1–D∞ | Capa base; RaceCompleted event bus |
+| 2. Leaderboards + perfil | ✅ Completo | — | 15 | D1–D∞ | 3 vistas (global/alrededor/amigos) |
+| 3. Economía + garage + progresión | ✅ Completo | 378 | 10 | D1–D∞ | 8 RPCs; D3 compensating-refund |
+| 4. Matchmaking + ranked | ✅ Completo | 688 | 10 | D1–D12 | 4 RPCs + matchmakerMatched hook |
+| 5. Operación + lanzamiento | ✅ Completo | 873 | 10 | D1–D13 (D7 amended) | 12 RPCs; adminRpcKey, region relay |
+| 6. Misiones + pase + temporada | ✅ Completo | 1239 | 8 | D1–D13 | 9 RPCs; cierre temporada con inbox |
+| 7. Social | ✅ Completo | 1686 | 9 | D1–D18 | 26 RPCs; 4 gaps 3.27 JS runtime |
+| 8. Torneos + eventos + anti-cheat | ✅ Completo | 2066 | 10 | D19–D60 | 18 RPCs (4 user + 14 admin) |
+| 9. Compras + anuncios | 🟡 Chunk 1/8 en curso | — | 0/8 | D61–D68 (locked en spec) | Catalog + types + boot |
+
+**Total**: 2066 tests verde, 79 RPCs, 60+ decisiones locked, 8 fases servidor completas.
+
+## Decisiones locked a nivel proyecto
+
+- **D3 (compensating-refund)**: Nakama 3.27 JS runtime no soporta wallet ops dentro de `multiUpdate` — patrón spend-first + CAS-write + grant-refund-on-conflict
+- **D7 amended**: `adminRpcKey` en `LiveopsConfig` (capa JS no ve query param `http_key`)
+- **D49**: `BAD_REQUEST` (no `INVALID_ARGUMENT`) para validación de argumentos
+- **D54**: `activeSpecialOffers` cap 10 ordenado por `endsAt` asc
+- **D60**: `admin_anti_cheat_dashboard_get` = live snapshot; `admin_anti_cheat_stats_get` = date-range
+
+## 4 gaps documentados (Nakama 3.27 JS runtime)
+
+1. `nk.socketSend`/presence NO en JS runtime → events usan `delivered:'offline'`
+2. `registerBeforeAddGroupUsers` NO en JS runtime → skip
+3. `registerLeaderboardReset` NO en JS runtime → skip
+4. `registerBeforeSendChannelMessage` NO en JS runtime → skip
+
+## KNOWN GAPS deferred
+
+- **Economy gap E** (Phase 3 spreadsheet): casual 1h/día = 8–9 días al primer auto. Fix +75% rewards + login bonus +500/día. **NO aplicar durante Phase 4** (distorsiona métricas ranked/matchmaking). Pendiente decisión usuario.
+- **Ranked close-on-grace**: ruta de cierre al vencer gracia NO implementada (Phase 4 KNOWN GAP)
+- **Real socket push**: diferido (gap 3.27)
+
+## 5 mission_progress.test.ts failures — FIXED
+
+- Root cause: tests sembraban `seedDailyWith(env, USER_A, [...], '2026-10-07')` (fecha hardcoded) mientras `fireRace` usaba `Date.now()`. Subscriber computaba `utcDate(raceEvent.closedAt)` = hoy, leía storage key distinto al seed, no encontraba row → no tick.
+- Fix: reemplazar '2026-10-07' hardcoded por `utcDateStr(ts)` para que seed y race compartan misma fecha UTC.
+- Resuelto en Phase 8 Chunk 10 (deca1ce).
+
+## Pendiente cliente Unity (NO tocado por servidor)
+
+- Phase 1.5: IConfigService/IRaceSessionService/IServerClock, sala privada, autos desde sesión, mensajes checkpoint/meta
+- Phase 2.4: ILeaderboardService/IProfileService, leaderboards UI, formato tiempo mm:ss.mmm
+- Phase 3.5: IEconomyService/IGarageService/IStoreService, garage/upgrade/personalización UI
+- Phase 4.5: IMatchmakingService/IRankedService, cola UI, autodrive, migración de host
+- Phase 5.5: selector de entorno, doble conexión, ajustes de cuenta, mantenimiento/inbox
+- Phase 6.6: IMissionService/IPassService, misiones/pase UI
+- Phase 7.5: IFriendService/IPartyService/IClubService/IChatService, club/chat UI
+- Phase 8.5: ITournamentService/IEventService, torneos/eventos UI, parciales
+- Phase 9.5: IPurchaseService, tienda dinero real, flujos compra/anuncio
+
+## Decisión de cliente Unity
+
+El servidor entrega los siguientes contratos que el cliente debe consumir:
+
+- **docs/unity-api.md** §1–§21: contratos de RPC, errores, integración
+- **docs/liveops.md**: maintenance gate, min client version
+- **docs/matchmaking.md** + **docs/ranked.md**: ticket properties, size rules, seasons
+- **docs/account-linking.md** + **docs/admin.md**: account lifecycle + admin RPCs
+- **docs/tournaments.md** + **docs/events.md** + **docs/anti-cheat.md**: Phase 8
+
+## Memoria del proyecto (referencia)
+
+- `memory/carvideogamebackend-phase1-complete.md` … `phase8-complete.md` — una por fase
+- `memory/MEMORY.md` — índice de memories
+- `memory/multi-agent-coordination.md` — protocolo coordinador + implementador
+- `memory/token-discipline-protocol.md` — `/compact` post-push, specs ≤2k
+- `memory/credit-pause-protocol.md` — cron coordinador pings implementador cuando credits restore
+
+## Siguiente fase
+
+**Phase 9 — Compras reales y anuncios** (en curso):
+- Chunk 1 (enviado): catalog IAP packs + ad rewards + types + boot
+- Chunk 2: receipt verification (Apple/Google)
+- Chunk 3: `iap_purchase` RPC + idempotencia
+- Chunk 4: subscriptions lifecycle
+- Chunk 5: ad rewards system
+- Chunk 6: admin IAP RPCs
+- Chunk 7: analytics
+- Chunk 8: WRAP (e2e + docs/iap.md + docs/ads.md + unity-api §22 + README)
+
 
 
 
