@@ -1981,3 +1981,193 @@ foreach (var s in offers.sections) {
 
 See `docs/tournaments.md`, `docs/events.md`, `docs/anti-cheat.md`,
 `docs/admin.md` for the full operator surface.
+
+---
+
+## 22. Phase 9 RPCs — IAP, ads, admin analytics
+
+Phase 9 ships three public RPCs (the IAP + ads + subscription surface)
+and sixteen admin RPCs (six for IAP operations + ten for analytics).
+All bypass maintenance (D63, D72, D77, D79, D91).
+
+### 22.1 Public RPCs
+
+- `iap_purchase({platform, productId, receiptData, transactionId})` —
+  single entry point for Apple/Google/Mock purchases. The client passes
+  the platform-specific productId (`com.cvg.coins100` for Apple,
+  `coins_100` for Google). Returns the same shape regardless of provider.
+  Maintenance bypass (D63). See `docs/iap.md` §2.
+- `iap_subscription_status({})` — read the caller's current sub state.
+  No body. Returns `{hasSubscription, subscription: {isActive, isExpired,
+  expiresAtUtc, autoRenewing, ...}}` or `{hasSubscription: false}`.
+  Maintenance bypass (D72). See `docs/iap.md` §7.
+- `iap_subscription_cancel({platform, transactionId})` — one-way cancel
+  (D70). Sub remains active until `expiresAtUtc`. Re-cancel returns
+  `CONFLICT`. Maintenance bypass (D72).
+- `ad_watched({tier, provider, adUnitId, impressionId, watchedAtUtc})`
+  — single entry point for rewarded ads. The client generates the
+  `impressionId` as a UUID v4; the server verifies format + 60s skew.
+  `provider` is `mock` only in Phase 9 (D76). Maintenance bypass (D77).
+  See `docs/ads.md` §2.
+
+### 22.2 Admin RPCs (16 total)
+
+All use `body.adminKey` (D7 amended). The HTTP `?http_key` query param
+still works for ad-hoc curl tests but the JS check is the source of
+truth.
+
+#### IAP operations (6 — Phase 9 Chunk 6)
+
+- `admin_iap_purchases_list({platform?, userId?, limit?, cursor?})` —
+  filter purchases. D80 pagination via `storageList` cursor.
+- `admin_iap_purchases_get({userId, transactionId})` — full purchase +
+  attached fraud flags.
+- `admin_iap_refund({userId, transactionId, reason})` — 90d cap (D86).
+  Empty reason → `BAD_REQUEST`. Already refunded → `CONFLICT` (D90).
+- `admin_iap_fraud_flags_list({status?})` — filter by `pending` /
+  `reviewed` / `actioned` / `dismissed`.
+- `admin_iap_fraud_flag_action({transactionId, action, reason})` —
+  `ban` adds a 30d `admin_anti_cheat_sanction` on the conflicting user
+  (D85); `dismiss` / `confirm` are status flips.
+- `admin_iap_revenue_stats_get({fromDate, toDate, platform?})` —
+  per-platform totals + 60s cache (D83). `netRevenue = totalRevenue - refunded`.
+
+#### IAP analytics (4 — Phase 9 Chunk 7)
+
+- `admin_iap_analytics_get({fromDate, toDate})` — aggregated counts:
+  `totalInitiated`, `totalValidated`, `totalDelivered`, `totalFailed`,
+  `validationRate`, `deliveryRate`, `totalRefunded`, `netRevenue`,
+  `purchaseCount`, `uniqueBuyers`, `adWatchCount`, `adCoinsGranted`,
+  `averageOrderValue`. 60s cache.
+- `admin_iap_ltv_get({cohortWeekStart, windows: ['7d'|'30d'|'90d']})` —
+  cohort math (D93): cohort = first delivered in
+  `[cohortStart, cohortStart+7d)`, LTV windows measured from cohort
+  start. Returns `{cohortSize, ltv: {7d, 30d, 90d}, perPack[]}`.
+- `admin_iap_funnel_get({packId?, platform?, fromDate?, toDate?})` —
+  3 stages (initiated/validated/delivered) with `conversionFromInitiated`
+  and `conversionFromPrevious`. `byPack` and `byPlatform` mirror the
+  global funnel.
+- `admin_iap_top_buyers_get({fromDate, toDate, limit?})` —
+  `admin-only privacy` (D92). `username` resolved via `nk.accountGetId`.
+  Default limit 20 (1..200).
+
+#### Ads analytics (1 — same RPC, different signal)
+
+The ad pipeline emits 4 event types (`ad_watch_initiated`,
+`ad_watch_granted`, `ad_watch_blocked`, `ad_watch_failed`) and the
+`admin_iap_analytics_get` RPC aggregates `ad_watch_granted` into
+`adWatchCount` + `adCoinsGranted` (per the date range). No dedicated
+ads admin RPC in Phase 9 — see `docs/ads.md` §7.
+
+#### Subscriptions (no new admin RPC in Phase 9)
+
+Subscription state is read via the public `iap_subscription_status`.
+The 5-min scanner handles renewal + expiry. Operators audit
+`iap_subscriptions/{userId}` directly.
+
+#### Maintenance bypass + cache
+
+All 16 admin RPCs bypass maintenance. The 6 with aggregation logic
+(1 IAP revenue + 4 IAP analytics + 1 ads via `admin_iap_analytics_get`)
+use 60s in-memory TTL caches keyed on input parameters.
+
+### 22.3 Error codes (IAP slice)
+
+| Code | Cause |
+|---|---|
+| `UNAUTHENTICATED` | `ctx.userId` missing (iap_purchase, ad_watched) |
+| `BAD_REQUEST` | Missing/invalid field; empty refund reason; invalid platform |
+| `NOT_FOUND` | Pack not in catalog; tier not in catalog; purchase not found; subscription not on file |
+| `CONFLICT` | Cross-user fraud; refund window expired; already refunded; daily cap reached; cooldown not elapsed; already cancelled |
+| `INTERNAL` | Receipt verify failure; mock verify failure; storage write failure |
+| `SERVICE_UNAVAILABLE` | Admin key not configured |
+
+### 22.4 Client integration recipe
+
+```csharp
+// On IAP purchase (post-store-transaction callback):
+var platform = StoreKit.IsApple() ? "apple" : "google";
+var productId = StoreKit.GetCurrentProductId();
+var receiptData = StoreKit.GetReceiptBase64();
+var txId = StoreKit.GetTransactionId();
+var r = await NakamaClient.Rpc("iap_purchase", new {
+  platform, productId, receiptData, transactionId = txId
+});
+if (r.idempotent) {
+  // Replay — content was already granted on first call. Update UI and exit.
+  return;
+}
+// On success, refresh wallet + garage from the new balance.
+var content = r.content;
+if (content.coinsGranted > 0)  ShowToast($"+{content.coinsGranted} coins");
+if (content.firstTimeBonus > 0) ShowToast($"+{content.firstTimeBonus} first-time bonus!");
+if (content.cosmeticId != null) ShowToast("New cosmetic unlocked");
+```
+
+```csharp
+// On rewarded ad completion (Unity Ads / AdMob callback):
+var impressionId = Guid.NewGuid().ToString();
+var watchedAtUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+var r = await NakamaClient.Rpc("ad_watched", new {
+  tier, provider = "mock", adUnitId, impressionId, watchedAtUtc
+});
+if (r.idempotent) {
+  // Same impressionId replayed — same reward. Refresh UI, exit.
+  return;
+}
+ShowToast($"+{r.coinsGranted} coins");
+UpdateDailyAdCounter(r.dailyCount, r.dailyCap);  // e.g. "3 / 10 today"
+if (r.dailyCount >= r.dailyCap) {
+  DisableAdButton();
+}
+```
+
+```csharp
+// On subscription status poll (every 60s on home tab):
+var r = await NakamaClient.Rpc("iap_subscription_status", new { });
+if (!r.hasSubscription) {
+  ShowSubscriptionUpsell();
+  return;
+}
+if (r.subscription.isActive && r.subscription.autoRenewing) {
+  ShowActiveBadge();
+} else if (r.subscription.isActive && !r.subscription.autoRenewing) {
+  ShowCancellingBadge($"Renews until {FormatDate(r.subscription.expiresAtUtc)}");
+} else {
+  ShowExpiredBadge();
+}
+```
+
+```csharp
+// On subscription cancel (settings → "Cancel subscription"):
+// First: ask the App Store / Play Store to show their native cancel UI.
+// After their confirmation:
+var r = await NakamaClient.Rpc("iap_subscription_cancel", new {
+  platform, transactionId = latestTransactionId
+});
+// Sub remains active until expiresAtUtc. UI should show "Cancelling —
+// active until {date}".
+```
+
+### 22.5 Polling cadences
+
+| RPC | Recommended cadence | Reason |
+|---|---|---|
+| `iap_purchase` | per store-transaction (event) | one-shot |
+| `iap_subscription_status` | every 60s on home tab | balance may change from renewal (server-driven) |
+| `iap_subscription_cancel` | one-shot on user tap | not polled |
+| `ad_watched` | per ad completion (event) | one-shot |
+| `admin_iap_analytics_get` | every 5min on operator dashboard | 60s server cache makes 30s polls wasteful |
+| `admin_iap_ltv_get` | every 1h on operator dashboard | cohort math is heavy |
+| `admin_iap_funnel_get` | every 5min | 60s server cache |
+| `admin_iap_top_buyers_get` | every 1h on operator dashboard | privacy-sensitive; not for end-user UI |
+
+### 22.6 Privacy
+
+`admin_iap_top_buyers_get` is **admin-only** (D92). The `username` field
+in the response is resolved via `nk.accountGetId` and MUST NOT be
+exposed to end users. The RPC also bypasses maintenance so operators can
+audit buyers during a maintenance window.
+
+See `docs/iap.md`, `docs/ads.md`, and `docs/admin.md` §13-15 for the
+full operator surface.

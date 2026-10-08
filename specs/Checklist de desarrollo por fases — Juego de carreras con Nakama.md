@@ -644,9 +644,9 @@ adelantarse a justo después de la Fase 5: solo depende de las fases 3 y 5.
 
 ---
 
-# ACTUALIZACIÓN DE ESTADO — 2026-10-08
+# ACTUALIZACIÓN DE ESTADO — 2026-10-09
 
-Estado del trabajo servidor (Phases 1–8) y Fase 9 (en curso, Chunk 1/8).
+Estado del trabajo servidor (Phases 1–9 completas; Fase 9 wrap Chunk 8 cerrado).
 
 ## Resumen por fase
 
@@ -660,9 +660,9 @@ Estado del trabajo servidor (Phases 1–8) y Fase 9 (en curso, Chunk 1/8).
 | 6. Misiones + pase + temporada | ✅ Completo | 1239 | 8 | D1–D13 | 9 RPCs; cierre temporada con inbox |
 | 7. Social | ✅ Completo | 1686 | 9 | D1–D18 | 26 RPCs; 4 gaps 3.27 JS runtime |
 | 8. Torneos + eventos + anti-cheat | ✅ Completo | 2066 | 10 | D19–D60 | 18 RPCs (4 user + 14 admin) |
-| 9. Compras + anuncios | 🟡 Chunk 1/8 en curso | — | 0/8 | D61–D68 (locked en spec) | Catalog + types + boot |
+| 9. Compras + anuncios | ✅ Completo | 2401 | 8 | D61–D93 | 11 IAP + 4 ads RPCs (4 user + 7 admin + 4 analytics) |
 
-**Total**: 2066 tests verde, 79 RPCs, 60+ decisiones locked, 8 fases servidor completas.
+**Total**: 2401 tests verde, 90 RPCs, 93+ decisiones locked, 9 fases servidor completas.
 
 ## Decisiones locked a nivel proyecto
 

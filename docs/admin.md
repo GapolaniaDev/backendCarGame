@@ -390,7 +390,119 @@ analytics timestamp` (or `Date.now()` if no analytics rows exist yet).
 
 ---
 
-## 13. Files
+## 13. Phase 9 — admin IAP RPCs (chunk 6)
+
+Six RPCs for IAP operations. All `assertAdminKey` + maintenance-bypass
+(D79) + 60s TTL cache where applicable + `emitAdminAction` audit.
+
+| RPC | Purpose | Cache |
+|---|---|---|
+| `admin_iap_purchases_list` | Filter purchases (platform/userId/limit/cursor) | none |
+| `admin_iap_purchases_get` | Full purchase + attached fraud flags | none |
+| `admin_iap_refund` | Refund a single purchase (90d cap, D86) | invalidates `revenue_stats:` |
+| `admin_iap_fraud_flags_list` | Filter fraud flags (status) | none |
+| `admin_iap_fraud_flag_action` | Apply `ban` / `dismiss` / `confirm` (D85) | none |
+| `admin_iap_revenue_stats_get` | Aggregated revenue + refunds by platform (D83) | `revenue_stats:` (60s) |
+
+### `admin_iap_refund` (D86, D90)
+
+- **90-day cap** — `grantedAtUtc < now - 90d` → `CONFLICT: refund window expired`.
+- **Already refunded** — `refunded === true` → `CONFLICT` (D90). The
+  `idempotencyKey` cache is checked second; the explicit `refunded`
+  boolean takes precedence.
+- **Empty reason** — `BAD_REQUEST`. Operators must supply an audit trail.
+- **Wallet reversal** — `wallet.spend(..., 'admin_refund')`. The user's
+  balance may go negative; operators are expected to grant
+  compensating coins via `admin_wallet_grant` if needed.
+- **Inbox** — `iap_refund` reward with `{coins, note: 'Refund: {reason}'}`.
+- **Emit** — `iap_refund_completed` event with `{userId, transactionId, amountCoins, reason, adminUserId}`.
+
+### `admin_iap_revenue_stats_get` (D83)
+
+Returns `{byPlatform: [{platform, totalRevenue, refunded, netRevenue,
+purchaseCount}], totals: {...}}`. Cache key = `revenue_stats:` (60s TTL).
+
+The `netRevenue = totalRevenue - refunded` (so a single 200-coin
+purchase that's later refunded gives `netRevenue = -200` for that
+platform on the day of the refund — the operator reads the per-platform
+breakdown to see the offset). The pre-existing `byPlatform` typo bug
+(`get` instead of `set` in the refunded loop) was fixed in Chunk 6.
+
+### `admin_iap_fraud_flag_action` (D85)
+
+`{action: 'ban' | 'dismiss' | 'confirm'}`:
+
+- `ban` — sets `iap_fraud_flags.status = 'actioned'`, action `ban`, AND
+  fires `admin_anti_cheat_sanction` against the conflicting user for
+  30 days. The first user (legitimate) is unaffected.
+- `dismiss` — sets `status = 'dismissed'`, action `dismiss`. The flag
+  is preserved for audit but no action is taken.
+- `confirm` — sets `status = 'reviewed'`, action `confirm`. The first
+  user is flagged for follow-up (no immediate sanction).
+
+---
+
+## 14. Phase 9 — admin ads RPCs (chunk 5)
+
+The ads system has no dedicated admin RPCs in Phase 9. Operators query
+ad activity via:
+
+- `admin_iap_analytics_get` — returns `adWatchCount` + `adCoinsGranted`
+  for a date range (the `ad_watch_granted` event).
+- `wallet_get` (via the user's session) — current balance.
+- Direct storage reads — `ad_daily_count/{userId}/{date}`,
+  `ad_last_watched/{userId}/{tier}`.
+
+If real AdMob / Unity Ads integration lands (post-Phase 9 gap, D76), a
+future chunk will add `admin_ad_stats_get` and `admin_ad_config_get` to
+expose the operator surface.
+
+---
+
+## 15. Phase 9 — admin IAP analytics RPCs (chunk 7)
+
+Four analytics RPCs reading from `analytics_events` (Phase 5 Chunk 7
+storage). All bypass maintenance (D91) + 60s TTL cache + `emitAdminAction`.
+
+| RPC | Input | Output | Cache key |
+|---|---|---|---|
+| `admin_iap_analytics_get` | `{fromDate, toDate}` | aggregated counts + netRevenue | `${from}\|${to}` |
+| `admin_iap_ltv_get` | `{cohortWeekStart, windows[]}` | cohortSize + per-window LTV + perPack | `${cohort}\|${sortedWindows}` |
+| `admin_iap_funnel_get` | `{packId?, platform?, fromDate?, toDate?}` | stages + byPack + byPlatform | `${packId\|*}\|${platform\|*}\|${from}\|${to}` |
+| `admin_iap_top_buyers_get` | `{fromDate, toDate, limit?}` | buyers (admin-only, D92) | `${from}\|${to}\|${limit}` |
+
+### LTV cohort math (D93)
+
+`cohortWeekStart` is an ISO date (YYYY-MM-DD). The cohort is the set
+of users whose FIRST `iap_purchase_delivered` event has
+`cohortDate ∈ [cohortWeekStart, cohortWeekStart+7d)`. The 7d/30d/90d
+LTV windows are measured from `cohortStart`, not from each user's
+purchase date.
+
+### Funnel conversion
+
+3 stages — `initiated → validated → delivered`. Per stage:
+- `count` = distinct `transactionId` count
+- `conversionFromInitiated` = `count / initiatedCount`
+- `conversionFromPrevious` = `count / previousStageCount`
+
+`byPack` and `byPlatform` mirror the global funnel but bucketed.
+
+### top_buyers privacy (D92)
+
+`admin_iap_top_buyers_get` is the only analytics RPC that returns
+`username`. The username is resolved via `nk.accountGetId` (try/catch —
+missing accounts yield an empty string). Operators MUST NOT surface
+this list to end users.
+
+### Maintenance bypass (D91)
+
+All 4 analytics RPCs bypass maintenance — operators can see revenue
+during a maintenance window (D91). The same 60s cache applies.
+
+---
+
+## 16. Files
 
 | Concern | File |
 |---|---|

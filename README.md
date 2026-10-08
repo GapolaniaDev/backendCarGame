@@ -891,3 +891,108 @@ human review, and an admin dashboard for live-ops.
 - [`docs/anti-cheat.md`](docs/anti-cheat.md) — detection, storage, review RPCs, gotchas.
 - [`docs/admin.md`](docs/admin.md) §10-12 — Phase 8 admin RPCs (chunks 4, 7, 9).
 - [`docs/unity-api.md`](docs/unity-api.md) §21 — client integration recipe.
+
+## Phase 9 — IAP, Ads, Analytics
+
+Phase 9 closes the monetization loop: real-money IAPs (Apple + Google +
+mock dev), rewarded video ads (mock provider), subscription lifecycle
+with renewal + cancel, and four admin analytics RPCs for revenue / LTV /
+funnel / top buyers. All Phase 9 RPCs (public and admin) bypass
+maintenance — money has already been charged or the ad already played.
+
+### Module table (Phase 9)
+
+| Concern | File | Phase 9 Chunks |
+|---|---|---|
+| IAP catalog (iap_packs.json) | `modules/src/catalogs/iap_packs.json` | 1 |
+| IAP types + plan + catalog | `modules/src/iap/{types,catalog,plan}.ts` | 1, 3 |
+| Receipt verify (mock + apple + google) | `modules/src/iap/verify*.ts` | 2 |
+| IAP dispatcher + 24h dedup | `modules/src/iap/dispatcher.ts` | 2 |
+| `iap_purchase` RPC | `modules/src/iap/rpcs.ts` | 3 |
+| Cross-user fraud detection | `modules/src/iap/fraud.ts` | 3 |
+| First-time bonus dedup | `modules/src/iap/first_time.ts` | 3 |
+| Subscription lifecycle + 2 RPCs | `modules/src/iap/subscription*.ts` | 4 |
+| 5-min subscription scanner | `modules/src/iap/sub_scanner.ts` | 4 |
+| Ad rewards catalog (ad_rewards.json) | `modules/src/catalogs/ad_rewards.json` | 1 |
+| Ad types + cooldown + cap | `modules/src/ads/{types,cooldown,cap}.ts` | 5 |
+| `ad_watched` RPC + mock verify | `modules/src/ads/rpcs.ts` | 5 |
+| Admin IAP RPCs (6) | `modules/src/iap/admin_rpcs.ts` | 6 |
+| Admin refund + fraud + revenue stats | `modules/src/iap/admin_refund.ts` | 6 |
+| Analytics events (11 IAP + 4 ads) | `modules/src/analytics/iap_events.ts` | 7 |
+| LTV cohort math | `modules/src/analytics/ltv.ts` | 7 |
+| Funnel aggregation | `modules/src/analytics/funnel.ts` | 7 |
+| Top buyers resolver | `modules/src/analytics/top_buyers.ts` | 7 |
+| Admin analytics RPCs (4) | `modules/src/analytics/rpcs.ts` | 7 |
+
+### Phase 9 RPC quick reference (end-user)
+
+| RPC | Caller | Description |
+|---|---|---|
+| `iap_purchase` | any (home) | Apple / Google / mock purchase → grant |
+| `iap_subscription_status` | any (home) | Read current sub state |
+| `iap_subscription_cancel` | any (home) | One-way cancel (D70) |
+| `ad_watched` | any (home) | Reward grant (MOCK provider, D76) |
+
+### Phase 9 RPC quick reference (operator)
+
+| RPC | Description |
+|---|---|
+| `admin_iap_purchases_list` | Filter purchases (platform/userId/cursor) |
+| `admin_iap_purchases_get` | Full purchase + fraud flags |
+| `admin_iap_refund` | Reverse a purchase (90d cap, D86) |
+| `admin_iap_fraud_flags_list` | Pending / reviewed / actioned / dismissed |
+| `admin_iap_fraud_flag_action` | ban (30d anti_cheat) / dismiss / confirm |
+| `admin_iap_revenue_stats_get` | Per-platform totals + net (60s cache) |
+| `admin_iap_analytics_get` | 11 IAP + 4 ads event aggregates (60s cache) |
+| `admin_iap_ltv_get` | Cohort LTV (7d/30d/90d windows, D93) |
+| `admin_iap_funnel_get` | 3-stage funnel with conversion rates |
+| `admin_iap_top_buyers_get` | Top buyers with username (admin-only, D92) |
+
+### Phase 9 decisions locked (D61-D93)
+
+- **D61-D67** (chunks 1-3): 8 `IapVerificationError` codes; Google
+  pre-signed bearer (no in-runtime JWT); 24h sha256(platform+txId) dedup;
+  maintenance bypass; cross-user fraud scan; first-time bonus 1-shot
+  per (userId, packId); no audit on failed verify.
+- **D68-D72** (chunk 4): monthly grant idempotent; renewal via
+  `originalTransactionId`; one-way cancel CONFLICT; 30d hard-delete; both
+  subscription RPCs bypass maintenance.
+- **D73-D78** (chunk 5): UUID v4 + 60s skew tolerance; per-tier cooldown;
+  DAILY_CAP=10 per UTC day; cap-first check before grant; MOCK provider
+  only; idempotent on `impressionId`; home-only maintenance bypass.
+- **D79-D86** (chunk 6): 60s revenue cache; `admin_iap_refund` 90d cap;
+  30d anti_cheat sanction on `ban`; 5 whitelisted reasons for
+  `admin_wallet_grant`; inbox key `${userId}/${rewardId}`; CAS-update
+  `byPlatform` set; already-refunded CONFLICT.
+- **D87-D93** (chunk 7): 11 IAP + 4 ads analytics events; admin-only
+  privacy on `top_buyers`; maintenance bypass on all 4 analytics RPCs;
+  LTV cohort = users with first `iap_purchase_delivered` in
+  `[cohortStart, cohortStart+7d)`, 7d/30d/90d windows measured from
+  cohort start; funnel stages = distinct `transactionId` counts.
+
+### Phase 9 status
+
+| Chunk | Status | Commit | Description |
+|---|---|---|---|
+| Chunk 1 | ✅ | `ad64c7e` | IAP + ad rewards catalogs + types + boot |
+| Chunk 2 | ✅ | `c078920` | Receipt verify (mock + apple + google) + dispatch |
+| Chunk 3 | ✅ | `d2ca65d` | `iap_purchase` + idempotency + content grant + cross-user fraud |
+| Chunk 4 | ✅ | `0c68478` | Subscription lifecycle + 2 RPCs + 5min scanner |
+| Chunk 5 | ✅ | `7d1d9cc` | `ad_watched` + cooldowns + daily cap (MOCK) |
+| Chunk 6 | ✅ | `5afb993` | 6 admin IAP RPCs (list/get/refund/fraud/revenue) |
+| Chunk 7 | ✅ | `8d49a52` | 11 IAP + 4 ads events + 4 admin analytics RPCs (LTV/funnel/top) |
+| Chunk 8 | ✅ (this) | wrap (phase9-flow e2e + docs/iap + docs/ads + admin §13-15 + unity-api §22 + README) |
+
+### Phase 9 documentation
+
+- [`docs/iap.md`](docs/iap.md) — packs, purchase flow, receipt verify,
+  first-time bonus, cross-user fraud, refund, subscription, analytics,
+  storage, error codes, gotchas.
+- [`docs/ads.md`](docs/ads.md) — tiers, `ad_watched`, MOCK provider,
+  cooldowns + daily cap, idempotency, storage, analytics, error codes,
+  gotchas.
+- [`docs/admin.md`](docs/admin.md) §13-15 — Phase 9 admin RPCs (chunks
+  6, 7) — IAP operations + ads + IAP analytics.
+- [`docs/unity-api.md`](docs/unity-api.md) §22 — client integration
+  recipe (iap_purchase / iap_subscription_* / ad_watched + admin
+  analytics), polling cadences, privacy.
