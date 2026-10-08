@@ -145,6 +145,14 @@ import {
   tournament_get,
   tournament_join,
 } from './tournaments/rpcs';
+import {
+  admin_tournament_list,
+  admin_tournament_get,
+  admin_tournament_release_prizes,
+  admin_tournament_void_refund,
+  admin_tournament_cancel,
+  admin_tournament_extend,
+} from './tournaments/admin';
 import { loadTournamentsCatalog } from './tournaments/catalog';
 import {
   admin_marks_list,
@@ -480,6 +488,13 @@ function InitModule(
       initializer.registerRpc('tournament_list', tournament_list);
       initializer.registerRpc('tournament_get', tournament_get);
       initializer.registerRpc('tournament_join', tournament_join);
+      // Phase 8 Chunk 7: admin tournament RPCs (6).
+      initializer.registerRpc('admin_tournament_list', admin_tournament_list);
+      initializer.registerRpc('admin_tournament_get', admin_tournament_get);
+      initializer.registerRpc('admin_tournament_release_prizes', admin_tournament_release_prizes);
+      initializer.registerRpc('admin_tournament_void_refund', admin_tournament_void_refund);
+      initializer.registerRpc('admin_tournament_cancel', admin_tournament_cancel);
+      initializer.registerRpc('admin_tournament_extend', admin_tournament_extend);
       initializer.registerRpc('relay_token', relay_token);
       // Phase 7 Chunk 1: friend codes + recent rivals.
       initializer.registerRpc('friend_code_get', friend_code_get);

@@ -87,7 +87,8 @@ export type InboxRewardType =
   | 'season_silver'
   | 'season_bronze'
   | 'season_compensation'
-  | 'tournament_prize';
+  | 'tournament_prize'
+  | 'tournament_voided';
 
 export interface InboxRewardPayload {
   /** Optional coin grant. */

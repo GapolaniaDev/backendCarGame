@@ -298,3 +298,36 @@ export function countParticipants(
 export interface TournamentEntryRow extends TournamentEntry {
   paidEntryFee: number;
 }
+
+/**
+ * List every entry for a given tournament. Uses `nk.storageList` 1-arg
+ * (the userId variant would scope to a single user; we want ALL
+ * participants) and filters by `key === tournamentId`. Returns the
+ * storage row shape (with `paidEntryFee`) so the admin void-refund
+ * path can use the exact paid amount.
+ */
+export function listAllEntries(
+  nk: INakama,
+  tournamentId: string,
+): TournamentEntryRow[] {
+  const objs = nk.storageList({
+    collection: TOURNAMENT_ENTRIES_COLLECTION,
+    limit: 5000,
+  });
+  const out: TournamentEntryRow[] = [];
+  for (const obj of objs.objects) {
+    if (obj.key !== tournamentId) continue;
+    const v = obj.value as Partial<TournamentEntryRow>;
+    if (
+      v &&
+      typeof v === 'object' &&
+      v.schemaVersion === 1 &&
+      typeof v.userId === 'string' &&
+      typeof v.tournamentId === 'string' &&
+      typeof v.paidEntryFee === 'number'
+    ) {
+      out.push(v as TournamentEntryRow);
+    }
+  }
+  return out;
+}

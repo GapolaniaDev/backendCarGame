@@ -40,6 +40,11 @@ export interface TournamentRewards {
 /**
  * Lazy-created instance (Chunk 5 surface). Stored as the source of
  * truth once an instance is created from a template.
+ *
+ * Phase 8 Chunk 7 — the following fields are OPTIONAL and absent on
+ * rows written by the Chunk 5/6 lazy-create path. `tournamentState()`
+ * falls back to time-based inference when they're undefined; the
+ * scanner + admin RPCs write them as transitions happen.
  */
 export interface Tournament {
   schemaVersion: 1;
@@ -54,6 +59,15 @@ export interface Tournament {
   minLevel: number;
   prizes: TournamentPrizeTier[];
   createdAt: number;
+  /** Persisted state. Absent = fall back to time-based inference. */
+  state?: 'open' | 'closing' | 'closed';
+  /** True after `admin_tournament_cancel` — no prizes, no refund. */
+  cancelled?: boolean;
+  /** True after `admin_tournament_void_refund` — refunds distributed, no prizes. */
+  voided?: boolean;
+  /** UTC epoch-ms when the scanner transitioned the row to 'closed'
+   *  (or when an admin RPC cancelled/voided it). */
+  closedAt?: number;
 }
 
 /**

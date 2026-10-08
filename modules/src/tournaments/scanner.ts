@@ -168,8 +168,19 @@ function transitionToClosing(
   t: Tournament,
   nowUtc: number,
 ): boolean {
-  // The state field isn't persisted on the row today; we infer it
-  // from endsAt vs nowUtc. This transition only logs + emits.
+  // Phase 8 Chunk 7 — persist the state so list/get/join reflect the
+  // live transition (not just the time-based inference).
+  try {
+    if (t.state !== 'closing') {
+      const next: Tournament = { ...t, state: 'closing' };
+      writeTournamentInstance(nk, next);
+    }
+  } catch (e) {
+    logger.error(
+      'tournament transitionToClosing write failed tid=%s: %s',
+      t.id, e instanceof Error ? e.message : String(e),
+    );
+  }
   logger.debug('tournament transitioning to closing tid=%s endsAt=%d', t.id, t.endsAt);
   emit(nk, logger, 'tournament_closing', { tournamentId: t.id, endsAt: t.endsAt, nowUtc });
   return true;
@@ -193,12 +204,13 @@ function closeTournament(
     granted += grantPrizeRow(nk, logger, t.id, row, nowUtc) ? 1 : 0;
   }
 
-  // Persist a marker on the row so re-ticks don't double-send. The
-  // row schema is the same Tournament shape; we just bump the
-  // version and log the close.
+  // Persist the closed state on the row so re-ticks are idempotent and
+  // list/get reflect the transition.
   try {
-    const next: Tournament = { ...t };
-    writeTournamentInstance(nk, next);
+    if (t.state !== 'closed' || t.closedAt !== nowUtc) {
+      const next: Tournament = { ...t, state: 'closed', closedAt: nowUtc };
+      writeTournamentInstance(nk, next);
+    }
   } catch (e) {
     logger.error(
       'tournament close write failed tid=%s: %s',
@@ -274,6 +286,22 @@ function grantPrizeRow(
     return false;
   }
   return true;
+}
+
+/**
+ * Public wrapper: re-export the same `grantPrizeRow` so the admin
+ * `admin_tournament_release_prizes` path can reuse the idempotent
+ * grant + inbox send (idempotency key `tournament_prize:{tid}:{uid}:{rank}`).
+ * Returns true when both the wallet grant and inbox send succeeded.
+ */
+export function grantTournamentPrize(
+  nk: INakama,
+  logger: ILogger,
+  tournamentId: string,
+  row: PrizeDistributionRow,
+  nowUtc: number,
+): boolean {
+  return grantPrizeRow(nk, logger, tournamentId, row, nowUtc);
 }
 
 function safeDeleteInstance(nk: INakama, templateId: string, logger: ILogger): void {

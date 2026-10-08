@@ -291,6 +291,18 @@ export const tournament_join_impl: RpcHandler = (ctx, logger, nk, body) => {
       tournamentId, state,
     }));
   }
+  // Phase 8 Chunk 7 — admin-cancelled / admin-voided tournaments are
+  // terminal even when the window hasn't elapsed.
+  if (t.cancelled === true) {
+    return JSON.stringify(err('FORBIDDEN', 'tournament was cancelled by an admin', {
+      tournamentId,
+    }));
+  }
+  if (t.voided === true) {
+    return JSON.stringify(err('FORBIDDEN', 'tournament was voided by an admin', {
+      tournamentId,
+    }));
+  }
 
   // Level gate.
   const lvl = callerLevel(nk, userId);

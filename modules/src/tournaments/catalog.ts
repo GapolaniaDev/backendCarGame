@@ -166,6 +166,11 @@ export type TournamentState = 'open' | 'closing' | 'closed';
 
 /** Compute state purely from the window + `nowUtc`. */
 export function tournamentState(t: Tournament, nowUtc: number): TournamentState {
+  // Phase 8 Chunk 7 — admin-driven terminal states always win.
+  if (t.cancelled === true) return 'closed';
+  if (t.voided === true) return 'closed';
+  // Persisted state (set by the scanner) takes priority over time inference.
+  if (t.state === 'closed' || t.state === 'closing' || t.state === 'open') return t.state;
   if (nowUtc >= t.endsAt) return 'closed';
   if (nowUtc >= t.endsAt - 60 * 60 * 1000) return 'closing';
   return 'open';
