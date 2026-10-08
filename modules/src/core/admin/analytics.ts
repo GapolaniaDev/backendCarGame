@@ -42,7 +42,20 @@ export type AnalyticsEventName =
   | 'party_invite_sent'
   | 'party_left'
   | 'party_kicked'
-  | 'party_joined';
+  | 'party_joined'
+  // Phase 9 Chunk 7 — IAP / Ad analytics events.
+  | 'iap_purchase_initiated'
+  | 'iap_purchase_validated'
+  | 'iap_purchase_delivered'
+  | 'iap_purchase_failed'
+  | 'iap_refund_completed'
+  | 'iap_subscription_activated'
+  | 'iap_subscription_renewed'
+  | 'iap_subscription_cancelled'
+  | 'ad_watch_initiated'
+  | 'ad_watch_granted'
+  | 'ad_watch_blocked'
+  | 'ad_watch_failed';
 
 export interface AnalyticsWebhook {
   url: string;

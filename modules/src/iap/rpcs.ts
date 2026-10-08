@@ -143,12 +143,28 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
   const inputOrErr = asInput(parsed.raw);
-  if ('error' in inputOrErr) return fail('BAD_REQUEST', inputOrErr.error);
+  if ('error' in inputOrErr) {
+    // Phase 9 Chunk 7: input validation failure → iap_purchase_failed.
+    emit(nk, logger, 'iap_purchase_failed', {
+      userId, failureReason: inputOrErr.error,
+    });
+    return fail('BAD_REQUEST', inputOrErr.error);
+  }
   const input = inputOrErr;
+  // Phase 9 Chunk 7: iap_purchase_initiated (first thing after input parse).
+  emit(nk, logger, 'iap_purchase_initiated', {
+    userId,
+    platform: input.platform,
+    productId: input.productId,
+    transactionId: input.transactionId,
+  });
 
   // 2. Pack lookup.
   const pack = findIapPackByProductId(input.platform, input.productId);
   if (!pack) {
+    emit(nk, logger, 'iap_purchase_failed', {
+      userId, transactionId: input.transactionId, failureReason: 'NOT_FOUND: unknown productId',
+    });
     return fail('NOT_FOUND', `unknown productId: ${input.productId}`);
   }
 
@@ -183,6 +199,9 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       // trail.
       logger.warn('iap_fraud_flag write failed: %s', e instanceof Error ? e.message : String(e));
     }
+    emit(nk, logger, 'iap_purchase_failed', {
+      userId, transactionId: input.transactionId, failureReason: 'CONFLICT: cross-user receipt',
+    });
     return fail('CONFLICT', 'Receipt already used by another account');
   }
 
@@ -220,11 +239,20 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   );
   if (!verifyResult.valid) {
     const code = verifyErrorToCode(verifyResult.error);
+    const reason = `verification_failed: ${verifyResult.error ?? 'unknown'}`;
+    emit(nk, logger, 'iap_purchase_failed', {
+      userId, transactionId: input.transactionId, packId: pack.id,
+      platform: input.platform, failureReason: reason,
+    });
     if (code === 'INTERNAL') {
       return fail('INTERNAL', `verification failed: ${verifyResult.error}`);
     }
     return fail(code, `receipt rejected: ${verifyResult.error}`);
   }
+  // Phase 9 Chunk 7: iap_purchase_validated.
+  emit(nk, logger, 'iap_purchase_validated', {
+    userId, transactionId: input.transactionId, packId: pack.id, platform: input.platform,
+  });
 
   // 6. First-time check.
   const nowUtc = serverNowMs();
@@ -242,7 +270,14 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       { reason: 'iap', sourceId: `iap:${pack.id}:${input.transactionId}` },
       `iap_purchase:${input.transactionId}`,
     );
-    if (!r.ok) return fail(asCode(r.error?.code), r.error?.message ?? 'grant failed');
+    if (!r.ok) {
+      emit(nk, logger, 'iap_purchase_failed', {
+        userId, transactionId: input.transactionId, packId: pack.id,
+        platform: input.platform, amountCoins: totalCoins(plan),
+        failureReason: `grant_failed: ${r.error?.message ?? 'unknown'}`,
+      });
+      return fail(asCode(r.error?.code), r.error?.message ?? 'grant failed');
+    }
     newBalance = r.data.coins;
   }
   if (plan.cosmeticId !== undefined) {
@@ -261,6 +296,10 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (plan.subscriptionId !== undefined && plan.expiresAtUtc !== undefined) {
     if (pack.kind !== 'subscription') {
       // Defensive — planGrant only sets subscriptionId on subs.
+      emit(nk, logger, 'iap_purchase_failed', {
+        userId, transactionId: input.transactionId, packId: pack.id,
+        platform: input.platform, failureReason: 'subscription_without_subscription_pack',
+      });
       return fail('INTERNAL', 'subscriptionId without subscription pack');
     }
     const originalTxId = input.originalTransactionId ?? input.transactionId;
@@ -384,7 +423,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
     nowUtc,
   );
 
-  // Analytics: emit for the IAP flow.
+  // Analytics: emit for the IAP flow (legacy + Chunk 7 delivered).
   emit(nk, logger, 'iap_purchase', {
     userId: userId,
     packId: pack.id,
@@ -392,6 +431,16 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
     productId: input.productId,
     coinsGranted: totalCoins(plan),
     isFirstTime,
+  });
+  // Phase 9 Chunk 7: iap_purchase_delivered.
+  emit(nk, logger, 'iap_purchase_delivered', {
+    userId,
+    transactionId: input.transactionId,
+    packId: pack.id,
+    platform: input.platform,
+    amountCoins: totalCoins(plan),
+    isFirstTime,
+    cohortDate: new Date(nowUtc).toISOString().slice(0, 10),
   });
 
   const out: IapPurchaseOutput = {

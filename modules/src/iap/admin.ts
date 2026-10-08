@@ -22,7 +22,7 @@ import type { ErrorCode } from '../core/errors';
 import { parseInput } from '../core/parse_input';
 import { serverNowMs } from '../core/time';
 import { assertAdminKey, withoutAdminKey } from '../admin/auth';
-import { emitAdminAction } from '../core/admin/analytics';
+import { emit, emitAdminAction } from '../core/admin/analytics';
 import { spend, type WalletView } from '../economy/wallet';
 import { sendReward } from '../liveops/inbox';
 import { readPurchaseWithVersion, writePurchaseUpdate } from './purchase_repo';
@@ -308,6 +308,14 @@ export const admin_iap_refund_impl: RpcHandler = (ctx, logger, nk, body) => {
   );
   // Invalidate the stats cache so the operator sees the new totals.
   invalidateRevenueStatsCache();
+  // Phase 9 Chunk 7: iap_refund_completed (D89 — analytics payload includes reason + amount).
+  emit(nk, logger, 'iap_refund_completed', {
+    userId,
+    transactionId,
+    amountCoins: amount,
+    reason,
+    adminUserId,
+  });
   emitAdminAction(nk, logger, 'admin_iap_refund', {
     userId,
     transactionId,

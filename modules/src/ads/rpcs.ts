@@ -115,12 +115,28 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
   const inputOrErr = asInput(parsed.raw);
-  if ('error' in inputOrErr) return fail('BAD_REQUEST', inputOrErr.error);
+  if ('error' in inputOrErr) {
+    emit(nk, logger, 'ad_watch_failed', {
+      userId, errorCode: 'BAD_REQUEST', failureReason: inputOrErr.error,
+    });
+    return fail('BAD_REQUEST', inputOrErr.error);
+  }
   const input = inputOrErr;
+  // Phase 9 Chunk 7: ad_watch_initiated.
+  emit(nk, logger, 'ad_watch_initiated', {
+    userId,
+    tier: input.tier,
+    provider: input.provider,
+    adUnitId: input.adUnitId,
+    transactionId: input.impressionId,
+  });
 
   // 1. Tier lookup.
   const tierRow = findAdRewardTier(input.tier);
   if (!tierRow) {
+    emit(nk, logger, 'ad_watch_failed', {
+      userId, transactionId: input.impressionId, errorCode: 'NOT_FOUND', failureReason: 'unknown tier',
+    });
     return fail('NOT_FOUND', `unknown tier: ${input.tier}`);
   }
 
@@ -151,6 +167,10 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
     nowUtc,
   );
   if (!v.valid) {
+    emit(nk, logger, 'ad_watch_failed', {
+      userId, transactionId: input.impressionId, tier: input.tier,
+      errorCode: v.error ?? 'UNKNOWN', failureReason: 'mock_verify_failed',
+    });
     return fail(verifyErrorToCode(v.error), `ad rejected: ${v.error}`);
   }
 
@@ -166,6 +186,10 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
     AD_DAILY_CAP,
   );
   if (!plan.ok) {
+    emit(nk, logger, 'ad_watch_blocked', {
+      userId, transactionId: input.impressionId, tier: input.tier,
+      failureReason: plan.reason === 'COOLDOWN' ? 'cooldown' : 'daily_cap',
+    });
     return fail('CONFLICT', plan.reason === 'COOLDOWN'
       ? `cooldown not elapsed for tier ${input.tier}`
       : 'daily ad cap reached',
@@ -232,6 +256,14 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
     coinsGranted: tierRow.coins,
     newBalance,
     dailyCount: (todayCount?.count ?? 0) + 1,
+  });
+  // Phase 9 Chunk 7: ad_watch_granted.
+  emit(nk, logger, 'ad_watch_granted', {
+    userId,
+    transactionId: input.impressionId,
+    tier: input.tier,
+    adUnitId: input.adUnitId,
+    amountCoins: tierRow.coins,
   });
 
   const out: AdWatchedOutput = {

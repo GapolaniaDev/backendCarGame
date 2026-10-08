@@ -132,6 +132,12 @@ import {
   admin_iap_fraud_flag_action,
   admin_iap_revenue_stats_get,
 } from './iap/admin';
+import {
+  admin_iap_analytics_get,
+  admin_iap_ltv_get,
+  admin_iap_funnel_get,
+  admin_iap_top_buyers_get,
+} from './analytics/rpcs';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
   report_player,
@@ -526,6 +532,11 @@ function InitModule(
       initializer.registerRpc('admin_iap_fraud_flags_list', admin_iap_fraud_flags_list);
       initializer.registerRpc('admin_iap_fraud_flag_action', admin_iap_fraud_flag_action);
       initializer.registerRpc('admin_iap_revenue_stats_get', admin_iap_revenue_stats_get);
+      // Phase 9 Chunk 7: 4 admin IAP analytics RPCs (assertAdminKey + maintenance-bypass D91).
+      initializer.registerRpc('admin_iap_analytics_get', admin_iap_analytics_get);
+      initializer.registerRpc('admin_iap_ltv_get', admin_iap_ltv_get);
+      initializer.registerRpc('admin_iap_funnel_get', admin_iap_funnel_get);
+      initializer.registerRpc('admin_iap_top_buyers_get', admin_iap_top_buyers_get);
       initializer.registerRpc('pass_get', pass_get);
       initializer.registerRpc('pass_claim', pass_claim);
       initializer.registerRpc('pass_buy_premium', pass_buy_premium);
