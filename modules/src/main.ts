@@ -108,6 +108,8 @@ import blockedWordsJson from './catalogs/blocked_words.json';
 import tournamentsJson from './catalogs/tournaments.json';
 import eventsJson from './catalogs/events.json';
 import markThresholdsJson from './catalogs/mark_thresholds.json';
+import iapPacksJson from './catalogs/iap_packs.json';
+import adRewardsJson from './catalogs/ad_rewards.json';
 import { loadBlockedWordsCatalog } from './chat/blocked_words';
 import { loadEventsCatalog } from './core/active_events';
 import {
@@ -116,6 +118,8 @@ import {
 import {
   validateMarkThresholdsFile,
 } from './anti_cheat/types';
+import { loadIapPacksCatalog } from './iap/catalog';
+import { loadAdRewardsCatalog } from './ads/catalog';
 import { chat_send, chat_list } from './chat/rpcs';
 import {
   report_player,
@@ -363,6 +367,12 @@ function InitModule(
   // instances materialise lazily on first access via `tournament_list`
   // / `tournament_get` / `tournament_join`.
   loadTournamentsCatalog(logger, tournamentsJson);
+
+  // Phase 9 Chunk 1: IAP packs + ad reward tiers. Both catalogs are
+  // cross-platform; the runtime resolves by `packId` (the IAP RPCs
+  // route by `appleProductId` / `googleProductId`).
+  loadIapPacksCatalog(logger, iapPacksJson);
+  loadAdRewardsCatalog(logger, adRewardsJson);
 
   // Phase 5 Chunk 1: ensure the liveops config object is present in
   // storage. Wrapped in try/catch so a transient storage failure

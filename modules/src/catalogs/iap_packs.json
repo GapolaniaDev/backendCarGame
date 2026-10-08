@@ -1,0 +1,99 @@
+[
+  {
+    "id": "coins_100",
+    "kind": "consumable",
+    "displayName": "100 Coins",
+    "baseCoins": 100,
+    "firstTimeBonus": 50,
+    "appleProductId": "com.cvg.coins100",
+    "googleProductId": "coins_100",
+    "sortOrder": 1
+  },
+  {
+    "id": "coins_500",
+    "kind": "consumable",
+    "displayName": "500 Coins",
+    "baseCoins": 500,
+    "firstTimeBonus": 100,
+    "appleProductId": "com.cvg.coins500",
+    "googleProductId": "coins_500",
+    "sortOrder": 2
+  },
+  {
+    "id": "coins_1200",
+    "kind": "consumable",
+    "displayName": "1200 Coins",
+    "baseCoins": 1200,
+    "firstTimeBonus": 300,
+    "appleProductId": "com.cvg.coins1200",
+    "googleProductId": "coins_1200",
+    "sortOrder": 3
+  },
+  {
+    "id": "coins_3000",
+    "kind": "consumable",
+    "displayName": "3000 Coins",
+    "baseCoins": 3000,
+    "firstTimeBonus": 800,
+    "appleProductId": "com.cvg.coins3000",
+    "googleProductId": "coins_3000",
+    "sortOrder": 4
+  },
+  {
+    "id": "coins_8000",
+    "kind": "consumable",
+    "displayName": "8000 Coins",
+    "baseCoins": 8000,
+    "firstTimeBonus": 2000,
+    "appleProductId": "com.cvg.coins8000",
+    "googleProductId": "coins_8000",
+    "sortOrder": 5
+  },
+  {
+    "id": "gem_pack_500_50off",
+    "kind": "non_consumable",
+    "displayName": "500 Gems (50% off first time)",
+    "cosmeticId": "gem_pack_500",
+    "appleProductId": "com.cvg.gempack500",
+    "googleProductId": "gem_pack_500",
+    "sortOrder": 6
+  },
+  {
+    "id": "starter_bundle",
+    "kind": "non_consumable",
+    "displayName": "Starter Bundle",
+    "cosmeticId": "starter_bundle",
+    "appleProductId": "com.cvg.starterbundle",
+    "googleProductId": "starter_bundle",
+    "sortOrder": 7
+  },
+  {
+    "id": "paint_pack_neon",
+    "kind": "non_consumable",
+    "displayName": "Neon Paint Pack",
+    "cosmeticId": "paint_neon",
+    "appleProductId": "com.cvg.paintneon",
+    "googleProductId": "paint_neon",
+    "sortOrder": 8
+  },
+  {
+    "id": "trail_pack_legendary",
+    "kind": "non_consumable",
+    "displayName": "Legendary Trail Pack",
+    "cosmeticId": "trail_legendary",
+    "appleProductId": "com.cvg.traillegendary",
+    "googleProductId": "trail_legendary",
+    "sortOrder": 9
+  },
+  {
+    "id": "monthly_pass",
+    "kind": "subscription",
+    "displayName": "Monthly Pass",
+    "durationDays": 30,
+    "monthlyCoins": 500,
+    "monthlyCosmeticId": "pass_exclusive_01",
+    "appleProductId": "com.cvg.monthlypass",
+    "googleProductId": "monthly_pass",
+    "sortOrder": 10
+  }
+]

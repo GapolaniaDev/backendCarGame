@@ -1,0 +1,6 @@
+[
+  { "tier": "small", "coins": 5, "cooldownSeconds": 300 },
+  { "tier": "medium", "coins": 15, "cooldownSeconds": 900 },
+  { "tier": "large", "coins": 30, "cooldownSeconds": 1800 },
+  { "tier": "xlarge", "coins": 60, "cooldownSeconds": 3600 }
+]
