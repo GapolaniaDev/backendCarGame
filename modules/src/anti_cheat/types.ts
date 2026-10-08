@@ -1,15 +1,10 @@
-// Phase 8 Chunk 1 — Anti-cheat types + severity mapping.
-
-/**
- * Severity ladder. Storage is `markCount`; severity is DERIVED from the
- * thresholds in `mark_thresholds.json`:
- *
- *   - 1 mark             → low
- *   - 2-3 marks          → medium
- *   - 4+ marks           → high
- *   - manually hidden    → hidden (admin_sanction RPC, Chunk 4)
- */
-export type AntiCheatSeverity = 'low' | 'medium' | 'high' | 'hidden';
+// Phase 8 Chunk 1 — Anti-cheat types + severity thresholds catalog.
+//
+// Severity is `low` / `medium` / `high` — derived from the catalog
+// thresholds by `severityForMarkCount` (in `./marks.ts`, Chunk 3).
+// "Hidden" is NOT a severity — it's a runtime property of the per-user
+// mark list (a mark can have `hiddenUntilUtc` or the user can have
+// reached a high mark count).
 
 /**
  * Reasons a mark can be issued. Detection helpers (Chunk 2) emit
@@ -19,39 +14,6 @@ export type MarkKind =
   | 'partial_impossible'      // sector time below minSectionTimeMs
   | 'abrupt_improvement'      // race time dropped > X% vs player median
   | 'quorum_disagreement';    // clients disagreed on race state
-
-/**
- * Per-player anti-cheat state. Stored in
- * `anti_cheat/{userId}/{userId}` (owner-scoped, server-writable).
- */
-export interface AntiCheatMark {
-  schemaVersion: 1;
-  userId: string;
-  raceId: string;
-  kind: MarkKind;
-  /** Raw mark count the SUBSCRIBER sees. Severity is derived. */
-  markCount: number;
-  severity: AntiCheatSeverity;
-  detectedAt: number;
-  /** Subscriber marks CONFIRMED after cross-checks pass; manual
-   * dismiss via `admin_dismiss_mark` (Chunk 4). */
-  status: 'pending' | 'confirmed' | 'dismissed';
-  cooldownUntil: number | null; // epoch-ms
-}
-
-/**
- * Anti-cheat aggregate (cached). Rebuilt by the subscriber; readers
- * (admin RPC, leaderboard guard) hit this for the canonical markCount.
- */
-export interface AntiCheatAggregate {
-  schemaVersion: 1;
-  userId: string;
-  markCount: number;
-  severity: AntiCheatSeverity;
-  lastMarkAt: number | null;
-  cooldownUntil: number | null;
-  hidden: boolean;            // set by admin_sanction
-}
 
 export interface MarkThresholdsFile {
   version: number;
@@ -84,21 +46,4 @@ export function validateMarkThresholdsFile(
     return { ok: false, reason: 'cooldownDays must be a positive number' };
   }
   return { ok: true, value: r as unknown as MarkThresholdsFile };
-}
-
-/**
- * Map a mark count + hidden flag to a severity label using the
- * catalog thresholds. Pure — caller supplies the thresholds to keep
- * this helper testable.
- */
-export function severityForMarkCount(
-  markCount: number,
-  hidden: boolean,
-  thresholds: { low: number; medium: number; high: number },
-): AntiCheatSeverity {
-  if (hidden) return 'hidden';
-  if (markCount >= thresholds.high) return 'high';
-  if (markCount >= thresholds.medium) return 'medium';
-  if (markCount >= thresholds.low) return 'low';
-  return 'low';
 }
