@@ -94,6 +94,91 @@ interface EntryReadResult {
   version: string;
 }
 
+/**
+ * Phase 8 Chunk 6 — checkpoints format produced by the subscriber.
+ * Each section's `elapsedMs` is the cumulative time-to-that-section;
+ * `bestMs` is the player's best across attempts (null on first run).
+ */
+export interface TournamentCheckpointInput {
+  sectionIndex: number;
+  elapsedMs: number;
+  bestMs: number | null;
+}
+
+/**
+ * Update an entry after a successful race. CAS-retry handles
+ * concurrent race submissions for the same user. The caller passes
+ * `nowUtc` to stamp `updatedAt`; `newAttemptTimeMs` is the new
+ * `totalMs` (lower than the existing best keeps the best unchanged;
+ * otherwise the best becomes the new time).
+ *
+ * Throws when the entry is absent (caller should have read first
+ * via `readEntry`) or when CAS retries exhaust.
+ */
+export function updateEntryAfterRace(
+  nk: INakama,
+  tournamentId: string,
+  userId: string,
+  newAttemptTimeMs: number,
+  checkpoints: ReadonlyArray<TournamentCheckpointInput>,
+  nowUtc: number,
+): TournamentEntry {
+  for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt += 1) {
+    const existing = readEntryRow(nk, tournamentId, userId);
+    if (existing === null) {
+      throw new Error('updateEntryAfterRace: entry not found');
+    }
+    const prev = existing.record;
+    const nextBest: number | null =
+      prev.bestTimeMs === null || newAttemptTimeMs < prev.bestTimeMs
+        ? newAttemptTimeMs
+        : prev.bestTimeMs;
+    const next: TournamentEntry = {
+      ...prev,
+      attemptsRemaining: Math.max(0, prev.attemptsRemaining - 1),
+      bestTimeMs: nextBest,
+      checkpoints: checkpoints.map((c) => ({
+        sectionIndex: c.sectionIndex,
+        elapsedMs: c.elapsedMs,
+        bestMs: c.bestMs,
+      })),
+      updatedAt: nowUtc,
+    };
+    const obj: IStorageObject = {
+      collection: TOURNAMENT_ENTRIES_COLLECTION,
+      key: tournamentId,
+      userId,
+      value: next as unknown as Record<string, unknown>,
+      permissionRead: 1,
+      permissionWrite: 0,
+      version: existing.version,
+    };
+    try {
+      nk.storageWrite([obj]);
+      return next;
+    } catch {
+      if (attempt === MAX_CAS_RETRIES - 1) {
+        throw new Error('updateEntryAfterRace: CAS retries exhausted');
+      }
+    }
+  }
+  throw new Error('updateEntryAfterRace: unreachable');
+}
+
+/**
+ * Delete a tournament entry. Idempotent. Used by the scanner when
+ * the post-close retention window elapses (24h).
+ */
+export function deleteEntry(
+  nk: INakama,
+  tournamentId: string,
+  userId: string,
+): void {
+  nk.storageDelete([
+    { collection: TOURNAMENT_ENTRIES_COLLECTION, key: tournamentId, userId },
+  ]);
+}
+
 function readEntryRow(
   nk: INakama,
   tournamentId: string,

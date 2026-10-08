@@ -306,17 +306,27 @@ export function submitReport(
   report: RaceReport,
   expectedVersion: string,
   nowMs: number,
+  /**
+   * Phase 8 Chunk 6 — when set, stamps the matching roster entry so
+   * the propagated RaceResult carries the tournament id. First-write
+   * wins: a second submit by the same player on the same session
+   * does not overwrite the stamp.
+   */
+  tournamentId?: string,
 ): { version: string } {
-  const newRoster = session.roster.map((e) =>
-    e.userId === reporterId
-      ? {
-          ...e,
-          reportedAt: nowMs,
-          totalMs: report.totalMs,
-          laps: report.laps.slice(),
-        }
-      : e,
-  );
+  const newRoster = session.roster.map((e) => {
+    if (e.userId !== reporterId) return e;
+    const next: RosterEntry = {
+      ...e,
+      reportedAt: nowMs,
+      totalMs: report.totalMs,
+      laps: report.laps.slice(),
+    };
+    if (tournamentId !== undefined && e.tournamentId === undefined) {
+      next.tournamentId = tournamentId;
+    }
+    return next;
+  });
   const nextSession: RaceSession = {
     ...session,
     roster: newRoster,

@@ -97,6 +97,8 @@ function loadBundleWithLiveops(
     console,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
     setImmediate,
     clearImmediate,
   };

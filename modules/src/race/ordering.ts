@@ -90,24 +90,28 @@ export function computeResults(roster: readonly RosterEntry[]): RaceResult[] {
   const results: RaceResult[] = [];
 
   sorted.forEach((e, i) => {
-    results.push({
+    const r: RaceResult = {
       rank: i + 1,
       userId: e.userId,
       isBot: e.isBot,
       totalMs: e.totalMs,
       abandoned: false,
-    });
+    };
+    if (e.tournamentId !== undefined) r.tournamentId = e.tournamentId;
+    results.push(r);
   });
 
   const baseRank = sorted.length + 1;
   abandoned.forEach((e, i) => {
-    results.push({
+    const r: RaceResult = {
       rank: baseRank + i,
       userId: e.userId,
       isBot: e.isBot,
       totalMs: 0,
       abandoned: true,
-    });
+    };
+    if (e.tournamentId !== undefined) r.tournamentId = e.tournamentId;
+    results.push(r);
   });
 
   return results;

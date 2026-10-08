@@ -87,6 +87,7 @@ import {
   handleRaceCompletedForProgression,
   type RaceCompletedProgressionSummary,
 } from '../progression/subscriber';
+import { readEntry as readTournamentEntry, readTournamentInstance } from '../tournaments/repo';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -859,6 +860,38 @@ function race_submit_result_impl(
   });
   if (!v2.ok) return toJson(v2);
 
+  // Phase 8 Chunk 6: optional tournamentId stamp. When provided,
+  // verify the tournament instance exists + the player has joined +
+  // has attempts remaining. Bots never carry a tournament stamp.
+  let stampTournamentId: string | undefined;
+  if (typeof parsed.data.tournamentId === 'string' && parsed.data.tournamentId.length > 0) {
+    if (report.isBotReport) {
+      return toJson(err('BAD_REQUEST', 'bots cannot carry a tournamentId'));
+    }
+    const tid = parsed.data.tournamentId;
+    const t = readTournamentInstance(nk, tid);
+    if (t === null) {
+      return toJson(err('NOT_FOUND', `tournament ${tid} not found`));
+    }
+    if (t.trackId !== cur.session.trackId) {
+      return toJson(err('FORBIDDEN', 'tournament track mismatch', {
+        tournamentId: tid, tournamentTrack: t.trackId, raceTrack: cur.session.trackId,
+      }));
+    }
+    const entry = readTournamentEntry(nk, tid, reporterId);
+    if (entry === null) {
+      return toJson(err('FORBIDDEN', 'caller has not joined the tournament', {
+        tournamentId: tid,
+      }));
+    }
+    if (entry.attemptsRemaining <= 0) {
+      return toJson(err('FORBIDDEN', 'no tournament attempts remaining', {
+        tournamentId: tid, attemptsRemaining: entry.attemptsRemaining,
+      }));
+    }
+    stampTournamentId = tid;
+  }
+
   // Atomically write report + bump roster (CAS on session.version).
   // Throws on version conflict (another concurrent submission); the
   // outer race_submit_result call from the other request will likely
@@ -866,7 +899,10 @@ function race_submit_result_impl(
   // result via the read-back, OR this request gets CONFLICT.
   let newSessionVersion: string;
   try {
-    const r = submitReport(nk, cur.session, reporterId, report, cur.version, serverNowMs());
+    const r = submitReport(
+      nk, cur.session, reporterId, report, cur.version, serverNowMs(),
+      stampTournamentId,
+    );
     newSessionVersion = r.version;
   } catch (e) {
     logger.warn(

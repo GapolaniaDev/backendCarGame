@@ -34,6 +34,8 @@ import { registerLeaderboardWriteGuard } from './leaderboards/hooks';
 import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
 import { subscribeClubWeek } from './clubs/club_week_subscriber';
 import { subscribeAntiCheat } from './anti_cheat/subscriber';
+import { subscribeTournaments } from './tournaments/subscriber';
+import { startTournamentScanner } from './tournaments/scanner';
 import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
 import { loadProfilesCatalog } from './profiles/catalog';
@@ -397,6 +399,12 @@ function InitModule(
   // quorum_disagreement). Runs AFTER missions, ranked, club_week so a
   // storage hiccup never delays any earlier subscriber.
   subscribeAntiCheat({ logger, nk, bus });
+  // Phase 8 Chunk 6: tournament subscriber. Runs AFTER anti-cheat so
+  // a hidden cheater's race is never paired with a tournament entry.
+  subscribeTournaments({ logger, nk, bus });
+  // Phase 8 Chunk 6: state-machine scanner — transitions open/closing/closed
+  // and distributes prizes on close. 60s tick.
+  startTournamentScanner({ logger, nk });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.

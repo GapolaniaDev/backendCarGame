@@ -1015,7 +1015,15 @@ export function loadBundleForTest(): LoadedBundle {
   const bundlePath = path.resolve(__dirname, '..', '..', 'modules', 'index.js');
   const code = fs.readFileSync(bundlePath, 'utf8');
 
-  const sandbox: Record<string, unknown> = {};
+  const sandbox: Record<string, unknown> = {
+    // Phase 8 Chunk 6: tournament scanner uses setInterval/clearInterval.
+    // goja doesn't expose Node's timer globals by default in a vm
+    // context, so we inject the same surface the runtime would.
+    setInterval,
+    clearInterval,
+    setTimeout,
+    clearTimeout,
+  };
   const context = vm.createContext(sandbox);
   // The bundle ends with `globalThis.InitModule = InitModule;`, so the
   // value returned by `vm.runInContext` is the InitModule function itself.

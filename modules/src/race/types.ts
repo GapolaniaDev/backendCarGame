@@ -67,6 +67,14 @@ export interface RosterEntry {
    * never came back).
    */
   disconnectReportedAt?: number;
+  /**
+   * Phase 8 Chunk 6 — optional tournament id stamp. Set on the first
+   * `race_submit_result` call that carries `tournamentId` in the
+   * payload. Propagated to the resulting `RaceResult` so the
+   * tournament subscriber can pair the result with the player's
+   * entry. Server-managed (never accepted from the client directly).
+   */
+  tournamentId?: string;
 }
 
 // ─── Reports (per-user submissions) ──────────────────────────────────────────
@@ -132,6 +140,14 @@ export interface RaceResult {
   abandoned: boolean;
   /** True if the player finished but their individual laps failed validation. */
   lapSumInvalid?: boolean;
+  /**
+   * Phase 8 Chunk 6 — tournament id when this race was a tournament
+   * attempt. Carried through from the RosterEntry stamp on
+   * `race_submit_result`. Subscribers (the tournament subscriber
+   * specifically) use this to pair the result with the player's
+   * entry. Undefined for non-tournament races.
+   */
+  tournamentId?: string;
 }
 
 // ─── RaceCompleted event payload ─────────────────────────────────────────────
@@ -236,6 +252,15 @@ export interface RaceSubmitResultInput {
    * impersonation); on mismatch it returns `FORBIDDEN`.
    */
   callerUserId: string;
+  /**
+   * Phase 8 Chunk 6 — optional tournament id. When set, the server
+   * stamps the corresponding RosterEntry (and propagated RaceResult)
+   * with this id so the tournament subscriber can pair the result
+   * with the player's entry. The RPC verifies the caller has joined
+   * the tournament; mismatches return FORBIDDEN. Omitted for
+   * non-tournament races.
+   */
+  tournamentId?: string;
 }
 
 export type ConfidenceOutcome = 'quorum' | 'client' | 'server';
