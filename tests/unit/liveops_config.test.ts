@@ -273,3 +273,125 @@ describe('liveops config (Phase 5 Chunk 1) — validate (pure)', () => {
     ).toThrow(/endUtc/);
   });
 });
+
+describe('liveops config (Phase 9 Chunk 2) — iapVerification', () => {
+  const baseValid: LiveopsConfig = {
+    schemaVersion: 1,
+    version: 1,
+    flags: { maintenance: false },
+    minClientVersion: {
+      ios: '0.1.0', android: '0.1.0', windows: '0.1.0', macos: '0.1.0', linux: '0.1.0',
+    },
+    regions: [{ id: 'us', displayName: 'America', relayUrl: 'wss://us.example.com' }],
+    calendar: [],
+  };
+
+  it('accepts a mock provider config', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'mock', environment: 'sandbox', timeoutMs: 10000 },
+    })).not.toThrow();
+  });
+
+  it('accepts an apple provider with shared secret', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: {
+        provider: 'apple',
+        appleSharedSecret: 'a'.repeat(32),
+        environment: 'production',
+        timeoutMs: 10000,
+      },
+    })).not.toThrow();
+  });
+
+  it('accepts a google provider with service account + package name', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: {
+        provider: 'google',
+        googleServiceAccount: 'ya29.fake',
+        packageName: 'com.cvg.game',
+        environment: 'sandbox',
+        timeoutMs: 10000,
+      },
+    })).not.toThrow();
+  });
+
+  it('rejects an unknown provider', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'steam' as never, environment: 'sandbox', timeoutMs: 10000 },
+    })).toThrow(/provider/);
+  });
+
+  it('rejects an unknown environment', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'mock', environment: 'dev' as never, timeoutMs: 10000 },
+    })).toThrow(/environment/);
+  });
+
+  it('rejects timeoutMs < 1000', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'mock', environment: 'sandbox', timeoutMs: 500 },
+    })).toThrow(/timeoutMs/);
+  });
+
+  it('rejects timeoutMs > 60000', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'mock', environment: 'sandbox', timeoutMs: 70000 },
+    })).toThrow(/timeoutMs/);
+  });
+
+  it('rejects apple provider missing appleSharedSecret', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'apple', environment: 'sandbox', timeoutMs: 10000 },
+    })).toThrow(/appleSharedSecret/);
+  });
+
+  it('rejects google provider missing googleServiceAccount', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'google', environment: 'sandbox', timeoutMs: 10000 },
+    })).toThrow(/googleServiceAccount/);
+  });
+
+  it('rejects google provider missing packageName', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: { provider: 'google', googleServiceAccount: 'x', environment: 'sandbox', timeoutMs: 10000 },
+    })).toThrow(/packageName/);
+  });
+
+  it('rejects non-object iapVerification', () => {
+    expect(() => validate({
+      ...baseValid,
+      iapVerification: 'mock' as never,
+    })).toThrow(/iapVerification must be an object/);
+  });
+});
+
+describe('liveops config (Phase 9 Chunk 2) — bundled default iapVerification', () => {
+  it('bootEnsure writes the bundled default including the mock iapVerification block', () => {
+    const nak = makeNakama();
+    bootEnsure(nak.nakama, makeLogger().logger);
+    const v = nak.store.get(LIVEOPS_STORAGE_KEY)?.value as Record<string, unknown> | undefined;
+    expect(v).toBeDefined();
+    const iv = v!['iapVerification'] as { provider: string; environment: string; timeoutMs: number } | undefined;
+    expect(iv).toBeDefined();
+    expect(iv!.provider).toBe('mock');
+    expect(iv!.environment).toBe('sandbox');
+    expect(iv!.timeoutMs).toBe(10000);
+  });
+
+  it('loadLiveopsConfig returns the bundled iapVerification on fresh state', () => {
+    const nak = makeNakama();
+    const cfg = loadLiveopsConfig(nak.nakama);
+    expect(cfg.iapVerification).toBeDefined();
+    expect(cfg.iapVerification!.provider).toBe('mock');
+  });
+});

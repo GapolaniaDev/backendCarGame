@@ -10,6 +10,26 @@ export type ClientPlatform = 'ios' | 'android' | 'windows' | 'macos' | 'linux';
 export type CalendarEntryType = 'event' | 'tournament' | 'maintenance';
 export type NodeRole = 'home' | 'relay';
 
+/**
+ * Provider of receipt verification. `mock` is for development/CI and
+ * returns a deterministic canned result. Phase 9 Chunk 2 (D61).
+ */
+export type IapVerificationProvider = 'mock' | 'apple' | 'google';
+export type IapEnvironment = 'sandbox' | 'production';
+
+export interface IapVerificationConfig {
+  provider: IapVerificationProvider;
+  /** Required when provider='apple'. */
+  appleSharedSecret?: string;
+  /** Required when provider='google'. base64 of the service account JSON. */
+  googleServiceAccount?: string;
+  /** Android package name (e.g. com.cvg.game). Required when provider='google'. */
+  packageName?: string;
+  environment: IapEnvironment;
+  /** Per-request timeout. Default 10000ms (D61). */
+  timeoutMs: number;
+}
+
 export interface LiveopsRegion {
   id: string;
   displayName: string;
@@ -70,4 +90,11 @@ export interface LiveopsConfig {
    * round-trip to home. Phase 5 Chunk 8.
    */
   relayTokenSecret?: string;
+  /**
+   * Receipt verification config for IAPs (Phase 9 Chunk 2). When set
+   * the `verifyReceipt` dispatcher routes to the configured provider;
+   * when unset the dispatcher rejects every receipt with
+   * `VERIFICATION_FAILED`. D61.
+   */
+  iapVerification?: IapVerificationConfig;
 }

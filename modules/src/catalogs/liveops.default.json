@@ -14,5 +14,10 @@
     { "id": "us", "displayName": "America", "relayUrl": "wss://api.gapolaniadev.com" },
     { "id": "eu", "displayName": "Europe", "relayUrl": "wss://eu.gapolaniadev.com" }
   ],
-  "calendar": []
+  "calendar": [],
+  "iapVerification": {
+    "provider": "mock",
+    "environment": "sandbox",
+    "timeoutMs": 10000
+  }
 }

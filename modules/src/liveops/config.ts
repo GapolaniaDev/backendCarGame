@@ -75,6 +75,16 @@ const bundled: Readonly<LiveopsConfig> = Object.freeze({
   // override per-region. Same shape as `adminRpcKey` — never shipped
   // as-is.
   relayTokenSecret: 'p5v8-region-relay-dev-secret-rotate-in-prod',
+  // iapVerification defaults to the mock provider in dev. Ops swaps
+  // to apple|google in `liveops_config_override` after provisioning
+  // the per-provider secrets. Phase 9 Chunk 2 (D61).
+  ...(((liveopsDefault as { iapVerification?: unknown }).iapVerification !== undefined)
+    ? {
+      iapVerification: Object.freeze({
+        ...(liveopsDefault as { iapVerification: { provider: 'mock' | 'apple' | 'google'; environment: 'sandbox' | 'production'; timeoutMs: number; appleSharedSecret?: string; googleServiceAccount?: string; packageName?: string } }).iapVerification,
+      }),
+    }
+    : {}),
 });
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -218,6 +228,42 @@ export function validate(raw: unknown): asserts raw is LiveopsConfig {
   if (rts !== undefined && (typeof rts !== 'string' || (rts as string).length === 0)) {
     fail('relayTokenSecret must be a non-empty string when present');
   }
+
+  // iapVerification: optional. When absent the receipt dispatcher
+  // rejects everything. When present, per-provider required fields.
+  const ivRaw = r['iapVerification'];
+  if (ivRaw !== undefined) {
+    if (!isPlainObject(ivRaw)) fail('iapVerification must be an object when present');
+    const iv = ivRaw as Record<string, unknown>;
+    const provider = iv['provider'];
+    if (provider !== 'mock' && provider !== 'apple' && provider !== 'google') {
+      fail('iapVerification.provider must be mock|apple|google');
+    }
+    const env = iv['environment'];
+    if (env !== 'sandbox' && env !== 'production') {
+      fail('iapVerification.environment must be sandbox|production');
+    }
+    const tm = iv['timeoutMs'];
+    if (typeof tm !== 'number' || !Number.isInteger(tm) || (tm as number) < 1000 || (tm as number) > 60000) {
+      fail('iapVerification.timeoutMs must be an integer in [1000, 60000]');
+    }
+    if (provider === 'apple') {
+      const s = iv['appleSharedSecret'];
+      if (typeof s !== 'string' || (s as string).length < 16) {
+        fail('iapVerification.appleSharedSecret must be a non-empty string of >=16 chars when provider=apple');
+      }
+    }
+    if (provider === 'google') {
+      const sa = iv['googleServiceAccount'];
+      if (typeof sa !== 'string' || (sa as string).length === 0) {
+        fail('iapVerification.googleServiceAccount must be a non-empty string when provider=google');
+      }
+      const pkg = iv['packageName'];
+      if (typeof pkg !== 'string' || (pkg as string).length === 0) {
+        fail('iapVerification.packageName must be a non-empty string when provider=google');
+      }
+    }
+  }
 }
 
 // ─── Read path (NO cache) ─────────────────────────────────────────────────
@@ -318,5 +364,6 @@ function freeze(cfg: LiveopsConfig): LiveopsConfig {
     ...(cfg.analyticsWebhook !== undefined ? { analyticsWebhook: cfg.analyticsWebhook } : {}),
     ...(cfg.nodeRole !== undefined ? { nodeRole: cfg.nodeRole } : {}),
     ...(cfg.relayTokenSecret !== undefined ? { relayTokenSecret: cfg.relayTokenSecret } : {}),
+    ...(cfg.iapVerification !== undefined ? { iapVerification: Object.freeze({ ...cfg.iapVerification }) } : {}),
   });
 }

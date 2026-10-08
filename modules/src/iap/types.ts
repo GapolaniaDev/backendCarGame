@@ -173,3 +173,55 @@ export function validateIapPacksFile(raw: unknown): ValidateResult<IapPack[]> {
   }
   return { ok: true, value: out };
 }
+
+// ─── Phase 9 Chunk 2 — Receipt verification result ──────────────────────────
+
+/**
+ * Verification failure codes. Maps to the gateway-level `ErrorCode` but
+ * scoped to the IAP flow so callers can branch on intent (e.g. retry
+ * network errors, drop already-consumed). D61.
+ */
+export type IapVerificationError =
+  | 'VERIFICATION_FAILED'   // store returned non-zero status
+  | 'PRODUCT_MISMATCH'      // productId does not match the catalog pack
+  | 'EXPIRED'               // subscription past expiresAtUtc
+  | 'NETWORK_ERROR'         // timeout, DNS, connection refused
+  | 'INVALID_RECEIPT'       // malformed receipt / token
+  | 'ALREADY_CONSUMED'      // consumable already consumed (Google)
+  | 'PROVIDER_MISMATCH'     // cross-platform receipt (e.g. apple token to google)
+  | 'INTERNAL_ERROR';       // catch-all
+
+export type IapVerificationProvider = 'mock' | 'apple' | 'google';
+
+export interface IapVerificationResult {
+  valid: boolean;
+  platform: IapPlatform;
+  /** The productId the receipt verified for. */
+  productId: string;
+  /** The transactionId the store assigned (Apple: transaction_id, Google: orderId). */
+  transactionId: string;
+  /** Apple original_transaction_id, Google orderId of the FIRST purchase. */
+  originalTransactionId: string;
+  /** Server-side purchase UTC ms. */
+  purchaseDateUtc: number;
+  /** Server-side expiry UTC ms. Subscriptions only. */
+  expiresAtUtc?: number;
+  /** true when transactionId != originalTransactionId (renewal). */
+  isSubscriptionRenewal: boolean;
+  /** Populated when `valid === false`. */
+  error?: IapVerificationError;
+}
+
+export interface IapVerificationConfig {
+  provider: IapVerificationProvider;
+  /** Required when provider='apple'. */
+  appleSharedSecret?: string;
+  /** Required when provider='google'. base64 of the service account JSON. */
+  googleServiceAccount?: string;
+  /** Android package name (e.g. com.cvg.game). */
+  packageName: string;
+  environment: 'sandbox' | 'production';
+  /** Per-request timeout. Default 10000ms (D61). */
+  timeoutMs: number;
+}
+
