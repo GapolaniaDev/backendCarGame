@@ -166,6 +166,14 @@ import {
   admin_anti_cheat_stats_get,
 } from './anti_cheat/rpcs';
 import {
+  admin_overview_get,
+  admin_tournaments_stats_get,
+  admin_events_stats_get,
+  admin_players_search,
+  admin_wallet_grant,
+  admin_anti_cheat_dashboard_get,
+} from './admin/dashboard';
+import {
   pass_get,
   pass_claim,
   pass_buy_premium,
@@ -494,6 +502,13 @@ function InitModule(
       initializer.registerRpc('admin_marks_dismiss', admin_marks_dismiss);
       initializer.registerRpc('admin_marks_sanction', admin_marks_sanction);
       initializer.registerRpc('admin_anti_cheat_stats_get', admin_anti_cheat_stats_get);
+      // Phase 8 Chunk 9: admin dashboard RPCs (6).
+      initializer.registerRpc('admin_overview_get', admin_overview_get);
+      initializer.registerRpc('admin_tournaments_stats_get', admin_tournaments_stats_get);
+      initializer.registerRpc('admin_events_stats_get', admin_events_stats_get);
+      initializer.registerRpc('admin_players_search', admin_players_search);
+      initializer.registerRpc('admin_wallet_grant', admin_wallet_grant);
+      initializer.registerRpc('admin_anti_cheat_dashboard_get', admin_anti_cheat_dashboard_get);
       // Phase 8 Chunk 5: tournaments (3 RPCs).
       initializer.registerRpc('tournament_list', tournament_list);
       initializer.registerRpc('tournament_get', tournament_get);

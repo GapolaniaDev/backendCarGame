@@ -37,6 +37,7 @@ import {
   emptyStats,
   type DailyAntiCheatStats,
 } from './stats';
+import { invalidateDashboardCache } from '../admin/cache';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -304,6 +305,8 @@ export const admin_marks_confirm_impl: RpcHandler = (_ctx, logger, nk, body) => 
   emitAdminAction(nk, logger, 'anti_cheat:marks_confirm', {
     userId, markId,
   });
+  invalidateDashboardCache('anti_cheat_dashboard:');
+  invalidateDashboardCache('overview:');
 
   const payload: AdminMarksConfirmOutput = { confirmed: true, markId };
   return JSON.stringify(ok(payload));
@@ -352,6 +355,8 @@ export const admin_marks_dismiss_impl: RpcHandler = (_ctx, logger, nk, body) => 
   emitAdminAction(nk, logger, 'anti_cheat:marks_dismiss', {
     userId, markId, reason,
   });
+  invalidateDashboardCache('anti_cheat_dashboard:');
+  invalidateDashboardCache('overview:');
 
   const payload: AdminMarksDismissOutput = { dismissed: true, markId };
   return JSON.stringify(ok(payload));
@@ -422,6 +427,8 @@ export const admin_marks_sanction_impl: RpcHandler = (_ctx, logger, nk, body) =>
     userId, markId, durationHours, hidden, reason,
     ...(untilUtc !== undefined ? { untilUtc } : {}),
   });
+  invalidateDashboardCache('anti_cheat_dashboard:');
+  invalidateDashboardCache('overview:');
 
   const payload: AdminMarksSanctionOutput = {
     hidden,

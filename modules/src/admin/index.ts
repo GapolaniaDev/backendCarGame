@@ -14,6 +14,37 @@ export {
   type RpcHandler,
 } from './rpcs';
 
+export {
+  admin_overview_get,
+  admin_overview_get_impl,
+  admin_tournaments_stats_get,
+  admin_tournaments_stats_get_impl,
+  admin_events_stats_get,
+  admin_events_stats_get_impl,
+  admin_players_search,
+  admin_players_search_impl,
+  admin_wallet_grant,
+  admin_wallet_grant_impl,
+  admin_anti_cheat_dashboard_get,
+  admin_anti_cheat_dashboard_get_impl,
+} from './dashboard';
+
+export type {
+  AdminOverviewGetInput,
+  AdminOverviewGetOutput,
+  AdminTournamentsStatsGetInput,
+  AdminTournamentsStatsGetOutput,
+  AdminEventsStatsGetInput,
+  AdminEventsStatsGetOutput,
+  AdminPlayersSearchInput,
+  AdminPlayersSearchRow,
+  AdminPlayersSearchOutput,
+  AdminWalletGrantInput,
+  AdminWalletGrantOutput,
+  AdminAntiCheatDashboardGetInput,
+  AdminAntiCheatDashboardGetOutput,
+} from './dashboard';
+
 export type {
   AdminWalletAdjustInput,
   AdminWalletAdjustOutput,
@@ -33,3 +64,21 @@ export { walletAdjust } from './wallet_admin';
 export { sendInboxBulk } from './inbox_admin';
 export { sanitizeSession, removePlayer } from './sanitize';
 export { cleanupRaceSessions } from './cleanup';
+export {
+  DASHBOARD_CACHE_TTL_MS,
+  invalidateDashboardCache,
+  clearDashboardCache,
+} from './cache';
+export {
+  zeroFillDateRange,
+  utcDateStr,
+  inUtcDay,
+  aggregateTournamentsByDay,
+  aggregateEventsByDay,
+  playerMatchesSearch,
+  tournamentToDayInput,
+  type TournamentDayInput,
+  type TournamentDayStats,
+  type EventDayInput,
+  type EventsDayStats,
+} from './stats';
