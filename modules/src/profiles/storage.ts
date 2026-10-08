@@ -61,6 +61,14 @@ export interface ProfileRecord {
    * to `false` via `ensureAccountLinkField`.
    */
   accountLinkBonusClaimed?: boolean;
+  /**
+   * Phase 8 Chunk 8: ids of currently-active `special_offer` events
+   * the player qualifies for. Capped at
+   * `events/scanner.ts:ACTIVE_SPECIAL_OFFERS_CAP` (10) and reconciled
+   * by `startEventScanner` every 5min. Read by `store_get` to decide
+   * whether to apply a discount to a given offer.
+   */
+  activeSpecialOffers?: string[];
 }
 
 export function readProfile(

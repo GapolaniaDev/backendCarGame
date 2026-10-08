@@ -88,7 +88,8 @@ export type InboxRewardType =
   | 'season_bronze'
   | 'season_compensation'
   | 'tournament_prize'
-  | 'tournament_voided';
+  | 'tournament_voided'
+  | 'event_xp_applied';
 
 export interface InboxRewardPayload {
   /** Optional coin grant. */

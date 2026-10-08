@@ -36,6 +36,9 @@ import { subscribeClubWeek } from './clubs/club_week_subscriber';
 import { subscribeAntiCheat } from './anti_cheat/subscriber';
 import { subscribeTournaments } from './tournaments/subscriber';
 import { startTournamentScanner } from './tournaments/scanner';
+import { subscribeEvents } from './events/subscriber';
+import { startEventScanner } from './events/scanner';
+import { event_list } from './events/rpcs';
 import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
 import { loadProfilesCatalog } from './profiles/catalog';
@@ -413,6 +416,13 @@ function InitModule(
   // Phase 8 Chunk 6: state-machine scanner — transitions open/closing/closed
   // and distributes prizes on close. 60s tick.
   startTournamentScanner({ logger, nk });
+  // Phase 8 Chunk 8: events subscriber. Runs AFTER tournaments (last in
+  // the chain) so the XP bonus is computed on the final shape of the
+  // race and never delays an earlier subscriber.
+  subscribeEvents({ logger, nk, bus });
+  // Phase 8 Chunk 8: events scanner — reconciles profile.activeSpecialOffers
+  // with the catalog. 5min tick.
+  startEventScanner({ logger, nk });
   setRaceBus(bus);
 
   // Register the RPCs as individual top-level statements.
@@ -495,6 +505,8 @@ function InitModule(
       initializer.registerRpc('admin_tournament_void_refund', admin_tournament_void_refund);
       initializer.registerRpc('admin_tournament_cancel', admin_tournament_cancel);
       initializer.registerRpc('admin_tournament_extend', admin_tournament_extend);
+      // Phase 8 Chunk 8: event_list RPC.
+      initializer.registerRpc('event_list', event_list);
       initializer.registerRpc('relay_token', relay_token);
       // Phase 7 Chunk 1: friend codes + recent rivals.
       initializer.registerRpc('friend_code_get', friend_code_get);

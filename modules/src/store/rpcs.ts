@@ -44,6 +44,8 @@ import type {
   StoreSection,
   StoreOffer,
 } from './types';
+import { getEventsCatalog } from '../core/active_events';
+import { readProfile } from '../profiles/storage';
 
 export interface StoreGetInput {
   /** Optional client-supplied "now" for deterministic tests. */
@@ -126,11 +128,38 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     purchasedPackIds: new Set<string>(garage.purchasedPacks),
   };
 
+  // Phase 8 Chunk 8: read the player's `activeSpecialOffers` so we can
+  // decorate each visible offer with basePrice/finalPrice and an
+  // optional `activeSpecialOfferId`. The list is reconciled by the
+  // 5min `startEventScanner`; a profile without the field simply sees
+  // no discount (default path).
+  const profile = readProfile(nk, userId);
+  const activeOfferIds = new Set<string>(profile?.activeSpecialOffers ?? []);
+  const pricingByOffer = computeSpecialOfferPricing(activeOfferIds, nowMs);
+
   const filtered = rotated.map((section) => {
     const { visible } = filterOffersForSection(section, ctxFilter);
     return {
       section: { id: section.id, displayName: section.displayName },
-      offers: visible.map((v: FilteredOffer) => ({ offer: v.offer, isDailyOffer: v.isDailyOffer })),
+      offers: visible.map((v: FilteredOffer) => {
+        const offer = v.offer;
+        const pricing = pricingByOffer.get(offer.offerId);
+        return {
+          offer,
+          isDailyOffer: v.isDailyOffer,
+          basePrice: {
+            coins: typeof offer.priceCoins === 'number' ? offer.priceCoins : 0,
+            gems: typeof offer.priceGems === 'number' ? offer.priceGems : 0,
+          },
+          finalPrice: pricing
+            ? pricing.finalPrice
+            : {
+                coins: typeof offer.priceCoins === 'number' ? offer.priceCoins : 0,
+                gems: typeof offer.priceGems === 'number' ? offer.priceGems : 0,
+              },
+          ...(pricing ? { activeSpecialOfferId: pricing.eventId } : {}),
+        };
+      }),
     };
   });
 
@@ -345,6 +374,49 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+interface SpecialOfferPricing {
+  eventId: string;
+  finalPrice: { coins: number; gems: number };
+}
+
+/**
+ * Map offerId → special-offer pricing when the player has a `special_offer`
+ * event whose `payload.sku` targets that offerId. Multiple matching events
+ * are deduped by offerId (the player can only see the discount once per
+ * offer even if two events match). Returns an empty map when no active
+ * special offer applies.
+ */
+function computeSpecialOfferPricing(
+  activeOfferIds: ReadonlySet<string>,
+  nowUtc: number,
+): Map<string, SpecialOfferPricing> {
+  if (activeOfferIds.size === 0) return new Map();
+  const catalog = getEventsCatalog();
+  const out = new Map<string, SpecialOfferPricing>();
+  for (const ev of catalog) {
+    if (!activeOfferIds.has(ev.id)) continue;
+    if (ev.kind !== 'special_offer') continue;
+    const startsAt = Date.parse(ev.startsAtUtc);
+    const endsAt = Date.parse(ev.endsAtUtc);
+    if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt)) continue;
+    if (!(startsAt <= nowUtc && nowUtc < endsAt)) continue;
+    const payload = ev.payload as { sku?: unknown; discountPct?: unknown };
+    if (typeof payload.sku !== 'string' || payload.sku.length === 0) continue;
+    if (out.has(payload.sku)) continue; // first one wins
+    const offer = findOffer(payload.sku);
+    if (!offer) continue;
+    const baseCoins = typeof offer.priceCoins === 'number' ? offer.priceCoins : 0;
+    const baseGems = typeof offer.priceGems === 'number' ? offer.priceGems : 0;
+    const pct = typeof payload.discountPct === 'number' && Number.isFinite(payload.discountPct)
+      ? Math.max(0, Math.min(100, payload.discountPct))
+      : 0;
+    const finalCoins = pct > 0 && baseCoins > 0 ? Math.max(1, Math.floor(baseCoins * (100 - pct) / 100)) : baseCoins;
+    const finalGems = pct > 0 && baseGems > 0 ? Math.max(1, Math.floor(baseGems * (100 - pct) / 100)) : baseGems;
+    out.set(offer.offerId, { eventId: ev.id, finalPrice: { coins: finalCoins, gems: finalGems } });
+  }
+  return out;
+}
 
 function findOffer(offerId: string): StoreOffer | null {
   const catalog = getStoreCatalog();

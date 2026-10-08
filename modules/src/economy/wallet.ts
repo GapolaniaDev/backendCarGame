@@ -297,7 +297,8 @@ function isLedgerReason(value: string): value is LedgerReason {
     value === 'mission' ||
     value === 'store' ||
     value === 'level' ||
-    value === 'admin'
+    value === 'admin' ||
+    value === 'event'
   );
 }
 
