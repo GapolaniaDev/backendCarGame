@@ -11,6 +11,20 @@ export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 /** Storage collection for race sessions. */
 export const RACE_SESSIONS_COLLECTION = 'race_sessions';
 
+/**
+ * Active-session index (plan T-08, audit PC-08): one system-owned object
+ * per player, key = userId, value `{ sessionId, since }`. Written when the
+ * player creates, joins or is matched into a session; removed when that
+ * session closes. `race_session_get` without a `sessionId` resolves it.
+ */
+export const RACE_ACTIVE_COLLECTION = 'race_active';
+
+/**
+ * A `created` session the player never started stops being "active"
+ * after this long (a matchmaker session nobody used, plan T-09).
+ */
+export const CREATED_SESSION_TTL_MS = 10 * 60_000;
+
 /** Storage sub-collection (key in session doc) for per-user reports. */
 export const RACE_REPORTS_COLLECTION = 'race_sessions';
 

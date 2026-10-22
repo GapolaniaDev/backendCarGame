@@ -33,7 +33,7 @@ import { serverNowMs } from '../core/time';
 import type { EventBus } from '../core/event_bus';
 import { ensureRuntimeState, withRuntime } from '../core/runtime_state';
 import type { IContext, ILogger, INakama } from '../nkruntime';
-import { RATE_LIMITS } from './constants';
+import { CREATED_SESSION_TTL_MS, RATE_LIMITS } from './constants';
 import { canTransition } from './state';
 import {
   allSubmitted,
@@ -42,6 +42,7 @@ import {
   createSession,
   lookupLastClosed,
   markStarted,
+  readActiveIndex,
   readSession,
   reportDisconnect,
   submitReport,
@@ -274,6 +275,7 @@ function race_session_create_impl(
 
   // Build minimal session — host is the only roster entry, no reports yet.
   const sessionId = nk.uuidv4();
+  const nowMs = serverNowMs();
   // Phase 4 Chunk 8: stats equalization for ranked sessions.
   const hostStats = loadoutStatsFor(nk, hostId, input.hostLoadout, input.mode === 'ranked' ? 'ranked' : 'normal');
   const hostLoadout: Loadout = hostStats
@@ -296,6 +298,7 @@ function race_session_create_impl(
     host: hostId,
     hostSuccession: [hostId],
     state: 'created',
+    createdAt: nowMs,
     startedAt: null,
     results: [],
     flags: { needsReview: false },
@@ -303,7 +306,7 @@ function race_session_create_impl(
   };
 
   try {
-    createSession(nk, session);
+    createSession(nk, session, [hostId], nowMs);
   } catch (e) {
     logger.error(
       'race_session_create storage error: %s',
@@ -381,15 +384,18 @@ function race_session_get_impl(
     return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
   }
 
-  // No sessionId → look up the caller's lastClosed index. Chunk 9 will
-  // populate this index on session close. Until then, the lookup
-  // returns null and we surface NOT_FOUND.
+  // No sessionId → the caller's active session (T-08, audit PC-08), so a
+  // restarted client can rejoin; without one, the last closed session.
   if (!sessionId) {
+    const active = resolveActiveSession(nk, callerId, serverNowMs());
+    if (active !== null) {
+      logger.debug('race_session_get caller=%s via active index sid=%s', callerId, active.id);
+      const out: RaceSessionGetOutput = { session: active };
+      return toJson(ok(out));
+    }
     const last = lookupLastClosed(nk, callerId);
     if (!last) {
-      return toJson(
-        err('NOT_FOUND', 'no lastClosed index for caller (live-session lookup not yet implemented)'),
-      );
+      return toJson(err('NOT_FOUND', 'caller has no active or closed race session'));
     }
     const result = readSession(nk, last.sessionId);
     if (!result) {
@@ -422,6 +428,27 @@ function race_session_get_impl(
   logger.debug('race_session_get sid=%s caller=%s', sessionId, callerId);
   const out: RaceSessionGetOutput = { session: result.session };
   return toJson(ok(out));
+}
+
+/**
+ * The caller's live session from the `race_active` index, or `null` when
+ * the index is empty or stale: the session is gone or closed, the caller
+ * left its roster, or it sat in `created` longer than
+ * `CREATED_SESSION_TTL_MS` (an unused matchmaker session).
+ */
+function resolveActiveSession(nk: INakama, callerId: string, nowMs: number): RaceSession | null {
+  const pointer = readActiveIndex(nk, callerId);
+  if (pointer === null) return null;
+  const cur = readSession(nk, pointer.sessionId);
+  if (cur === null) return null;
+  const session = cur.session;
+  if (session.state === 'closed') return null;
+  if (!session.roster.some((e) => e.userId === callerId)) return null;
+  if (session.state === 'created') {
+    const since = session.createdAt ?? pointer.since;
+    if (nowMs - since > CREATED_SESSION_TTL_MS) return null;
+  }
+  return session;
 }
 
 // ─── race_session_join ───────────────────────────────────────────────────────
@@ -534,6 +561,7 @@ function race_session_join_impl(
       cur.session,
       { userId: joinerId, loadout: joinerLoadout, isBot: false },
       cur.version,
+      serverNowMs(),
     );
   } catch (e) {
     logger.warn(
@@ -1182,6 +1210,7 @@ function race_session_quick_bots_impl(
     host: built.host,
     hostSuccession: built.hostSuccession,
     state: 'started',
+    createdAt: startedAt,
     startedAt,
     results: [],
     flags: { needsReview: false, botSession: true },
@@ -1189,7 +1218,12 @@ function race_session_quick_bots_impl(
   };
 
   try {
-    createSession(nk, session);
+    createSession(
+      nk,
+      session,
+      built.roster.filter((e) => !e.isBot).map((e) => e.userId),
+      startedAt,
+    );
   } catch (e) {
     logger.error(
       'race_session_quick_bots sid=%s storage error: %s',

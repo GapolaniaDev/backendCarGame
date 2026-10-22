@@ -6,10 +6,15 @@
 // (collection name, key shape, owner userId). Handlers depend on this
 // module — they never touch `nk.storageRead` directly.
 
-import type { INakama, IStorageObject } from '../nkruntime';
+import type { INakama, IStorageKey, IStorageObject } from '../nkruntime';
 import { readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
 import type { EventBus } from '../core/event_bus';
-import { RACE_SESSIONS_COLLECTION, RACE_EVENT_RACE_COMPLETED, SYSTEM_USER_ID } from './constants';
+import {
+  RACE_ACTIVE_COLLECTION,
+  RACE_SESSIONS_COLLECTION,
+  RACE_EVENT_RACE_COMPLETED,
+  SYSTEM_USER_ID,
+} from './constants';
 import { aggregateForClose } from './ordering';
 import type {
   Confidence,
@@ -62,13 +67,97 @@ export function readSession(
 export function createSession(
   nk: INakama,
   session: RaceSession,
+  /** Players whose active-session index points here after the write (T-08). */
+  activeFor: readonly string[] = [],
+  nowMs: number = Date.now(),
 ): { version: string } {
-  return writeJson<PersistedSession>(nk, {
+  if (activeFor.length === 0) {
+    return writeJson<PersistedSession>(nk, {
+      collection: RACE_SESSIONS_COLLECTION,
+      key: session.id,
+      ownerId: SYSTEM_USER_ID,
+      value: session as unknown as PersistedSession,
+    });
+  }
+  const sessionWrite: IStorageObject = {
     collection: RACE_SESSIONS_COLLECTION,
     key: session.id,
-    ownerId: SYSTEM_USER_ID,
+    userId: SYSTEM_USER_ID,
     value: session as unknown as PersistedSession,
-  });
+    permissionRead: 0,
+    permissionWrite: 0,
+  };
+  const ack = nk.multiUpdate(
+    undefined,
+    [sessionWrite, ...activeFor.map((u) => activeIndexWrite(u, session.id, nowMs))],
+    undefined,
+    undefined,
+    undefined,
+  );
+  const first = ack.storageWriteAcks[0];
+  if (!first) {
+    throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
+  }
+  return { version: first.version };
+}
+
+// ─── Active-session index (plan T-08, audit PC-08) ──────────────────────────
+
+/** Value of a `race_active/{userId}` index object. */
+export interface ActiveSessionPointer {
+  sessionId: string;
+  since: number;
+}
+
+/** Storage write that points `userId`'s active-session index at `sessionId`. */
+export function activeIndexWrite(userId: string, sessionId: string, nowMs: number): IStorageObject {
+  return {
+    collection: RACE_ACTIVE_COLLECTION,
+    key: userId,
+    userId: SYSTEM_USER_ID,
+    value: { sessionId, since: nowMs },
+    permissionRead: 0,
+    permissionWrite: 0,
+  };
+}
+
+/** The session the player is currently in, or `null` when the index is empty. */
+export function readActiveIndex(nk: INakama, userId: string): ActiveSessionPointer | null {
+  const obj = nk.storageRead([
+    { collection: RACE_ACTIVE_COLLECTION, key: userId, userId: SYSTEM_USER_ID },
+  ])[0];
+  if (!obj) return null;
+  const v = obj.value as { sessionId?: unknown; since?: unknown };
+  if (typeof v.sessionId !== 'string' || v.sessionId.length === 0) return null;
+  return { sessionId: v.sessionId, since: typeof v.since === 'number' ? v.since : 0 };
+}
+
+/**
+ * Remove the active-session index of every roster human that still points
+ * at `sessionId` (a player who already moved to another session keeps the
+ * newer pointer). The delete is version-guarded; a pointer rewritten in
+ * between survives. Best effort: readers also ignore a pointer to a
+ * closed session.
+ */
+export function clearActiveIndex(nk: INakama, session: RaceSession): number {
+  const humans = session.roster.filter((e) => !e.isBot).map((e) => e.userId);
+  if (humans.length === 0) return 0;
+  const objs = nk.storageRead(
+    humans.map((u) => ({ collection: RACE_ACTIVE_COLLECTION, key: u, userId: SYSTEM_USER_ID })),
+  );
+  const stale = objs.filter(
+    (o) => (o.value as { sessionId?: unknown }).sessionId === session.id,
+  );
+  if (stale.length === 0) return 0;
+  nk.storageDelete(
+    stale.map((o) => ({
+      collection: RACE_ACTIVE_COLLECTION,
+      key: o.key,
+      userId: SYSTEM_USER_ID,
+      ...(o.version !== undefined ? { version: o.version } : {}),
+    })) as IStorageKey[],
+  );
+  return stale.length;
 }
 
 /**
@@ -84,6 +173,8 @@ export function updateSession(
   nk: INakama,
   session: RaceSession,
   expectedVersion: string,
+  /** Extra objects written in the same transaction (indexes). */
+  extraWrites: readonly IStorageObject[] = [],
 ): { version: string } {
   const write: IStorageObject = {
     collection: RACE_SESSIONS_COLLECTION,
@@ -94,7 +185,7 @@ export function updateSession(
     permissionWrite: 0,
     version: expectedVersion,
   };
-  const ack = nk.multiUpdate(undefined, [write], undefined, undefined, undefined);
+  const ack = nk.multiUpdate(undefined, [write, ...extraWrites], undefined, undefined, undefined);
   const first = ack.storageWriteAcks[0];
   if (!first) {
     throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
@@ -124,6 +215,7 @@ export function appendRosterEntry(
   session: RaceSession,
   entry: RosterEntry,
   expectedVersion: string,
+  nowMs: number = Date.now(),
 ): { version: string } {
   const succession =
     entry.isBot
@@ -137,7 +229,13 @@ export function appendRosterEntry(
     hostSuccession: succession,
     version: session.version + 1,
   };
-  return updateSession(nk, next, expectedVersion);
+  // The joiner's active-session index moves here in the same write (T-08).
+  return updateSession(
+    nk,
+    next,
+    expectedVersion,
+    entry.isBot ? [] : [activeIndexWrite(entry.userId, session.id, nowMs)],
+  );
 }
 
 /**
@@ -473,6 +571,12 @@ export function tryCloseAndPublish(
   const sessionAck = ack.storageWriteAcks[0];
   if (!sessionAck) {
     throw new Error(`multiUpdate returned no session close ack for ${session.id}`);
+  }
+  // Release the players' active-session index (T-08).
+  try {
+    clearActiveIndex(nk, session);
+  } catch {
+    // Best effort: readers ignore a pointer to a closed session.
   }
 
   const event: RaceCompletedEvent = {

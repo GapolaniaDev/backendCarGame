@@ -472,7 +472,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(readEnv.ok).toBe(false);
       if (readEnv.ok) return;
       expect(readEnv.error.code).toBe('NOT_FOUND');
-      expect(readEnv.error.message).toMatch(/lastClosed/);
+      expect(readEnv.error.message).toMatch(/no active or closed race session/);
     });
 
     it('returns NOT_FOUND when sessionId is omitted (no caller — HTTP gateway)', () => {

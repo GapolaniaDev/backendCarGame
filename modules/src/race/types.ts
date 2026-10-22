@@ -109,6 +109,11 @@ export interface RaceSession {
    */
   hostSuccession: string[];
   state: RaceState;
+  /**
+   * Server epoch-ms at which the session was created (plan T-08). Absent
+   * on sessions written before F1.
+   */
+  createdAt?: number;
   /** Server epoch-ms at which `race_session_start` was accepted. */
   startedAt: number | null;
   /**
@@ -226,7 +231,11 @@ export interface RaceSessionStartOutput {
 }
 
 export interface RaceSessionGetInput {
-  /** If omitted, the RPC returns the live session the caller is currently in. */
+  /**
+   * If omitted, the RPC returns the caller's active session (the
+   * `race_active` index, plan T-08) or, when there is none, the last
+   * closed one.
+   */
   sessionId?: string;
   /**
    * userId of the caller. Required when calling via the HTTP gateway
