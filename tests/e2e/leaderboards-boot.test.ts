@@ -115,7 +115,7 @@ describe('leaderboards boot (Chunk 11)', () => {
       leaderboardId: 'tt_neon_blvd_B_all',
       record: { score: '120000', subscore: '0', metadata: '{"car":"coupe"}' },
     };
-    expect(() => hook(null, env.fakeLogger, env.nak, request)).toThrow(/server authority/);
+    expect(hook(null, env.fakeLogger, env.nak, request)).toBeNull();
   });
 
   it('before-hook rejects a client write even when it forges the server token', () => {
@@ -130,7 +130,7 @@ describe('leaderboards boot (Chunk 11)', () => {
         metadata: JSON.stringify(stampServerToken({ car: 'coupe' })),
       },
     };
-    expect(() => hook(null, env.fakeLogger, env.nak, request)).toThrow(/server authority/);
+    expect(hook(null, env.fakeLogger, env.nak, request)).toBeNull();
   });
 
   it('hasServerToken + stampServerToken are inverse functions', () => {

@@ -40,20 +40,22 @@ export function hasServerToken(metadata: unknown): boolean {
 /**
  * Before-hook for the client `WriteLeaderboardRecord` API. Rejects
  * every request: all authoritative writes come from the server via
- * `nk.leaderboardRecordWrite`, which bypasses hooks. Throwing makes
- * Nakama return the error to the client.
+ * `nk.leaderboardRecordWrite`, which bypasses hooks. Returning `null`
+ * is Nakama's way to disable an API: the client gets
+ * NotFound "Requested resource was not found." and no runtime error is
+ * logged (a thrown error would be logged as a runtime failure).
  */
 export function beforeWriteLeaderboardRecordGuard(
   ctx: IContext,
   logger: ILogger,
   _nk: INakama,
   data: unknown,
-): unknown {
+): null {
   const req = (data ?? {}) as { leaderboardId?: unknown };
   logger.warn(
-    'rejecting client leaderboard write [lb=%s user=%s]',
+    'rejecting client leaderboard write [lb=%s user=%s]: leaderboard writes require server authority',
     String(req.leaderboardId ?? '?'),
     String(ctx?.userId ?? '?'),
   );
-  throw new Error('leaderboard writes require server authority');
+  return null;
 }
