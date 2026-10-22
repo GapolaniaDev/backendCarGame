@@ -140,6 +140,11 @@ function checkLogs(bin) {
   const errors = msgs.filter((m) => m.level === 'error' || m.level === 'fatal');
   const regFail = msgs.filter((m) => /rpc registration failed|could not be extracted/i.test(String(m.msg)));
   record('logs: no "rpc registration failed"', regFail.length === 0, regFail.map((m) => m.msg).slice(0, 3).join(' | '));
+  // The subscription scanner reports its failures at warn level.
+  const scannerErrors = msgs.filter((m) => (m.level === 'error' || m.level === 'warn')
+    && /scanner|ticker/i.test(String(m.msg)) && /fail|could not/i.test(String(m.msg)));
+  record('logs: no scanner / service-ticker errors', scannerErrors.length === 0,
+    scannerErrors.map((m) => String(m.msg).slice(0, 120)).slice(0, 3).join(' | '));
   record('logs: no error-level lines since boot', errors.length === 0,
     errors.length ? `${errors.length}: ${[...new Set(errors.map((m) => String(m.msg).slice(0, 120)))].slice(0, 4).join(' | ')}` : `since ${started}`);
   const registered = msgs.filter((m) => m.msg === 'Registered JavaScript runtime RPC function invocation').length;
