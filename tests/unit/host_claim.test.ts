@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { validateHostClaim } from '../../modules/src/race/validation';
-import { HOST_CLAIM_GRACE_SECONDS, HOST_CLAIM_GRACE_TOLERANCE_MS } from '../../modules/src/race/constants';
+import { HOST_CLAIM_GRACE_SECONDS, HOST_CLAIM_GRACE_TOLERANCE_MS, HOST_STALE_MS } from '../../modules/src/race/constants';
 import type { RaceSession } from '../../modules/src/race/types';
 
 const NOW = 1_700_000_000_000;
@@ -99,15 +99,40 @@ describe('validateHostClaim (Phase 4 Chunk 4)', () => {
     expect(r.claimedAt).toBe(NOW - 1000);
   });
 
-  // ─── Missing disconnect report ──────────────────────────────────────────
-  it('BAD_REQUEST when host has no disconnectReportedAt', () => {
+  // ─── Host alive / silent (plan T-07: last contact, no disconnect stamp) ──
+  it('FORBIDDEN NOT_HOST while the host was seen within HOST_STALE_MS', () => {
     const s = buildSession();
-    // host 'a' has no disconnectReportedAt
+    // host 'a' took over 1 s ago and has no disconnectReportedAt
     const r = validateHostClaim({ session: s, callerUserId: 'b', nowMs: NOW });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.code).toBe('BAD_REQUEST');
-    expect(r.reason).toMatch(/disconnectReportedAt/);
+    expect(r.code).toBe('FORBIDDEN');
+    expect(r.details?.['reason']).toBe('NOT_HOST');
+  });
+
+  it('a recent recorded contact keeps an old host alive', () => {
+    const s = buildSession({ startedAt: NOW - 60_000, claimedAt: NOW - 60_000 });
+    const seen = new Map([['a', NOW - HOST_STALE_MS + 1]]);
+    const r = validateHostClaim({ session: s, callerUserId: 'b', nowMs: NOW, lastSeenMs: seen });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.details?.['reason']).toBe('NOT_HOST');
+  });
+
+  it('OK for succession[1] once the host has been silent for HOST_STALE_MS', () => {
+    const s = buildSession({ startedAt: NOW - 60_000, claimedAt: NOW - 60_000 });
+    const seen = new Map([['a', NOW - HOST_STALE_MS - 1], ['b', NOW - 500]]);
+    const r = validateHostClaim({ session: s, callerUserId: 'b', nowMs: NOW, lastSeenMs: seen });
+    expect(r).toEqual({ ok: true, idempotent: false, claimedAt: NOW });
+  });
+
+  it('succession[2] may claim when succession[1] is silent too, not when it is live', () => {
+    const s = buildSession({ startedAt: NOW - 60_000, claimedAt: NOW - 60_000 });
+    const bothGone = new Map([['a', NOW - 30_000], ['b', NOW - 30_000]]);
+    expect(validateHostClaim({ session: s, callerUserId: 'c', nowMs: NOW, lastSeenMs: bothGone }).ok).toBe(true);
+    const bLive = new Map([['a', NOW - 30_000], ['b', NOW - 1_000]]);
+    const r = validateHostClaim({ session: s, callerUserId: 'c', nowMs: NOW, lastSeenMs: bLive });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('BAD_REQUEST');
   });
 
   // ─── Grace window edge cases ────────────────────────────────────────────

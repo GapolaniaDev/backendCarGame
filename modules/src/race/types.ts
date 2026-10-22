@@ -59,6 +59,13 @@ export interface RosterEntry {
   /** True if grace expired with no report. Set at close-time. */
   abandoned?: boolean;
   /**
+   * Plan T-07: server epoch-ms of this player's last contact
+   * (`race_session_get`, `race_submit_result`, `race_host_claim`). Only in
+   * `race_session_get` responses of running sessions; never stored on
+   * the session (it lives in `race_presence`).
+   */
+  lastSeenMs?: number;
+  /**
    * Server epoch-ms at which the host reported this player as
    * disconnected. Phase 4 Chunk 4 — used to gate `race_host_claim`.
    * The field is server-managed (set by `reportDisconnect`, never by

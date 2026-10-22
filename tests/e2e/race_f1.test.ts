@@ -224,6 +224,60 @@ describe('F1 races (plan T-06…T-10)', () => {
     });
   });
 
+  describe('T-07 host claim by last contact', () => {
+    function runningRace(): string {
+      const sid = createPrivate(env, A, 4);
+      expect(join(env, sid, B).ok).toBe(true);
+      expect(join(env, sid, C).ok).toBe(true);
+      start(env, sid, A);
+      backdate(env, sid, 60_000);
+      return sid;
+    }
+
+    function claim(user: string, sid: string) {
+      return call<{ newHost: string }>(env, 'race_host_claim', user, { sessionId: sid });
+    }
+
+    it('race_session_get records the caller and returns lastSeenMs per player', () => {
+      const sid = runningRace();
+      expect(getById(env, B, sid).ok).toBe(true);
+      const got = getById(env, C, sid);
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      const seen = new Map(got.data.session.roster.map((e) => [e.userId, e.lastSeenMs]));
+      expect(typeof seen.get(B)).toBe('number');
+      expect(typeof seen.get(C)).toBe('number');
+      expect(seen.get(A)).toBeUndefined();
+      // Never written into the stored session (it would race the CAS).
+      expect(storedSession(env, sid).roster.some((e) => e.lastSeenMs !== undefined)).toBe(false);
+    });
+
+    it('with the host still polling the claim is FORBIDDEN NOT_HOST', () => {
+      const sid = runningRace();
+      expect(getById(env, A, sid).ok).toBe(true);
+      const r = claim(B, sid);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code).toBe('FORBIDDEN');
+        expect(r.error.details?.['reason']).toBe('NOT_HOST');
+      }
+    });
+
+    it('a host silent for HOST_STALE_MS is claimed by the next live player', () => {
+      const sid = runningRace();
+      expect(getById(env, B, sid).ok).toBe(true);
+      // C is behind B in the succession and B is live: C may not jump it.
+      const early = claim(C, sid);
+      expect(early.ok).toBe(false);
+      if (!early.ok) expect(early.error.code).toBe('BAD_REQUEST');
+
+      const r = claim(B, sid);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      if (r.ok) expect(r.data.newHost).toBe(B);
+      expect(storedSession(env, sid).host).toBe(B);
+    });
+  });
+
   describe('T-10 loadout from the garage', () => {
     it('a declared car the player does not own is replaced by the garage car', () => {
       const r = call<{ sessionId: string }>(env, 'race_session_create', A, {

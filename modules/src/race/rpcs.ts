@@ -43,8 +43,10 @@ import {
   lookupLastClosed,
   markStarted,
   readActiveIndex,
+  readPresence,
   readSession,
   submitReport,
+  touchPresence,
 } from './session_repo';
 import { CloseConflictError, closeIfDue, closeRace, type ClosedRace } from './close';
 import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
@@ -388,7 +390,7 @@ function race_session_get_impl(
       logger.debug('race_session_get caller=%s via active index sid=%s', callerId, current.session.id);
       const out: RaceSessionGetOutput = current.session.state === 'closed'
         ? { session: current.session, lastClosed: current.session }
-        : { session: current.session };
+        : { session: withContact(nk, logger, current.session, callerId) };
       return toJson(ok(out));
     }
     const last = lookupLastClosed(nk, callerId);
@@ -426,8 +428,49 @@ function race_session_get_impl(
   // Lazy close (T-06): a session past its grace closes on read.
   const result = closeIfDue(nk, logger, found, serverNowMs(), 'race_session_get').current;
   logger.debug('race_session_get sid=%s caller=%s', sessionId, callerId);
-  const out: RaceSessionGetOutput = { session: result.session };
+  const out: RaceSessionGetOutput = { session: withContact(nk, logger, result.session, callerId) };
   return toJson(ok(out));
+}
+
+/**
+ * Record the caller's contact with a running session (T-07, audit PC-07:
+ * the host claim needs to know who is still there) and return the session
+ * with each player's `lastSeenMs` for the response. Closed sessions are
+ * returned as stored. A failed contact write never fails the read.
+ */
+function withContact(nk: INakama, logger: ILogger, session: RaceSession, callerId: string): RaceSession {
+  if (session.state === 'closed') return session;
+  const nowMs = serverNowMs();
+  recordContact(nk, logger, session, callerId, nowMs);
+  const seen = readPresence(nk, session);
+  seen.set(callerId, nowMs);
+  return {
+    ...session,
+    roster: session.roster.map((e) => {
+      const lastSeenMs = seen.get(e.userId);
+      return lastSeenMs === undefined ? e : { ...e, lastSeenMs };
+    }),
+  };
+}
+
+function recordContact(
+  nk: INakama,
+  logger: ILogger,
+  session: RaceSession,
+  userId: string,
+  nowMs: number,
+): void {
+  if (session.state === 'closed' || !session.roster.some((e) => e.userId === userId)) return;
+  try {
+    touchPresence(nk, session.id, userId, nowMs);
+  } catch (e) {
+    logger.warn(
+      'race contact sid=%s user=%s not recorded: %s',
+      session.id,
+      userId,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
 }
 
 /**
@@ -783,6 +826,8 @@ function race_submit_result_impl(
   // A session past its grace closes first (T-06), so a late report meets
   // a closed session and gets CONFLICT from step-1.
   const cur = closeIfDue(nk, logger, found, serverNowMs(), 'race_submit_result').current;
+  // Any submit is a sign of life for the host claim (T-07).
+  recordContact(nk, logger, cur.session, callerId, serverNowMs());
 
   // Bot-auth gate (Chunk 8): only the host may submit reports on
   // behalf of bots. Bots are relay-pure so the host is the only auth'd
@@ -1217,8 +1262,10 @@ function race_session_quick_bots_impl(
  * later) when the current host has disconnected. Validates:
  *   - session exists and is in state 'started'
  *   - caller is in the roster (FORBIDDEN otherwise)
- *   - current host has `disconnectReportedAt` within the grace window
- *   - caller is the entry immediately after the current host in
+ *   - the current host is gone: no contact for `HOST_STALE_MS` (plan
+ *     T-07, audit PC-07); otherwise FORBIDDEN with
+ *     `details.reason = 'NOT_HOST'`
+ *   - caller is the first live entry after the current host in
  *     `hostSuccession`
  *
  * On success: CAS-writes the new `host`, stamps `claimedAt = nowMs`,
@@ -1271,10 +1318,13 @@ function race_host_claim_impl(
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
+  // The claimant is alive; the host is judged by its last contact (T-07).
   const nowMs = serverNowMs();
-  const v = validateHostClaim({ session: cur.session, callerUserId: callerId, nowMs });
+  recordContact(nk, logger, cur.session, callerId, nowMs);
+  const lastSeenMs = readPresence(nk, cur.session);
+  const v = validateHostClaim({ session: cur.session, callerUserId: callerId, nowMs, lastSeenMs });
   if (!v.ok) {
-    return toJson(err(v.code, v.reason));
+    return toJson(err(v.code, v.reason, v.details));
   }
 
   // Idempotent re-claim — no storage write needed.

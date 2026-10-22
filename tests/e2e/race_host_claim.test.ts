@@ -218,14 +218,14 @@ describe('race_host_claim (Phase 4 Chunk 4)', () => {
     expect(r.error.code).toBe('NOT_FOUND');
   });
 
-  it('host has no disconnectReportedAt → BAD_REQUEST', () => {
+  it('host alive (no disconnect stamp, just started) → FORBIDDEN NOT_HOST (T-07)', () => {
     const sid = seedStartedSession(env);
-    // No disconnect reported.
+    // No disconnect reported; the host took over a moment ago.
     const r = claim(env, NEXT_ID, { sessionId: sid });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.code).toBe('BAD_REQUEST');
-    expect(r.error.message).toMatch(/disconnectReportedAt/);
+    expect(r.error.code).toBe('FORBIDDEN');
+    expect((r.error as { details?: { reason?: string } }).details?.reason).toBe('NOT_HOST');
   });
 
   it('idempotent re-claim by the same caller returns the same claimedAt', () => {

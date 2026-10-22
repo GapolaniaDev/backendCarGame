@@ -17,7 +17,12 @@
 
 import { err } from '../core/response';
 import type { Resp } from '../core/response';
-import { CLOCK_SKEW_TOLERANCE_MS, HOST_CLAIM_GRACE_SECONDS, HOST_CLAIM_GRACE_TOLERANCE_MS } from './constants';
+import {
+  CLOCK_SKEW_TOLERANCE_MS,
+  HOST_CLAIM_GRACE_SECONDS,
+  HOST_CLAIM_GRACE_TOLERANCE_MS,
+  HOST_STALE_MS,
+} from './constants';
 import type { RaceReport, RaceSession, RosterEntry } from './types';
 import type { TrackEntry } from '../core/catalog';
 
@@ -187,13 +192,34 @@ export interface HostClaimInput {
   callerUserId: string;
   /** Server `serverNowMs()` at validation time. */
   nowMs: number;
+  /** Last contact per participant (`readPresence`, plan T-07). */
+  lastSeenMs?: ReadonlyMap<string, number>;
+  /** Silence after which the host counts as gone; default `HOST_STALE_MS`. */
+  staleMs?: number;
 }
 
 export type HostClaimResult =
   | { ok: true; /** True when the caller's re-claim is a no-op (already host). */
       idempotent: boolean;
       claimedAt: number }
-  | { ok: false; code: HostClaimErrorCode; reason: string };
+  | { ok: false; code: HostClaimErrorCode; reason: string; details?: Record<string, unknown> };
+
+/**
+ * Last time the server heard from `userId` in `session`: the newest of its
+ * recorded contact, its report and the start of the race (for the host,
+ * the moment it took over).
+ */
+export function lastContactMs(
+  session: RaceSession,
+  userId: string,
+  lastSeenMs: ReadonlyMap<string, number> | undefined,
+): number {
+  const entry = session.roster.find((e) => e.userId === userId);
+  const baseline = userId === session.host
+    ? session.claimedAt ?? session.startedAt ?? 0
+    : session.startedAt ?? 0;
+  return Math.max(baseline, entry?.reportedAt ?? 0, lastSeenMs?.get(userId) ?? 0);
+}
 
 /**
  * Validate a `race_host_claim` request without performing any storage
@@ -203,16 +229,20 @@ export type HostClaimResult =
  * returns `{ ok: true, idempotent: false, claimedAt: nowMs }`.
  *
  * Rejections (mapped to envelope codes by the handler):
- *   - `FORBIDDEN`  — caller not in roster
- *   - `BAD_REQUEST` — session.state != 'started', no host disconnect
- *                     recorded, or caller isn't the next succession slot
+ *   - `FORBIDDEN`  — caller not in roster; or the host is alive
+ *                    (`details.reason = 'NOT_HOST'`, plan T-07)
+ *   - `BAD_REQUEST` — session.state != 'started', or caller isn't the
+ *                     next live succession slot
  *
- * Race / grace checks:
- *   - Host's `disconnectReportedAt` must exist
- *   - `nowMs - disconnectReportedAt <= graceMs + toleranceMs` (otherwise
- *     the host is treated as abandoned — Chunk 9 will close the session)
- *   - Caller must be the entry immediately after the current host in
- *     `hostSuccession` (or an `idempotent` re-claim when caller == host)
+ * Host checks:
+ *   - Without a `disconnectReportedAt` stamp (the production case), the
+ *     host is gone when its last contact (`lastContactMs`) is older than
+ *     `staleMs` (plan T-07, audit PC-07).
+ *   - With the legacy stamp, `nowMs - disconnectReportedAt <= graceMs +
+ *     toleranceMs`.
+ *   - Caller must be the first entry after the current host in
+ *     `hostSuccession` that is not itself silent for `staleMs` (or an
+ *     `idempotent` re-claim when caller == host)
  */
 export function validateHostClaim(input: HostClaimInput): HostClaimResult {
   const { session, callerUserId, nowMs } = input;
@@ -253,26 +283,34 @@ export function validateHostClaim(input: HostClaimInput): HostClaimResult {
       reason: `current host ${session.host} not found in roster (data corruption)`,
     };
   }
-  if (hostEntry.disconnectReportedAt === undefined) {
-    return {
-      ok: false,
-      code: 'BAD_REQUEST',
-      reason: `current host ${session.host} has no disconnectReportedAt; nothing to claim`,
-    };
+  const staleMs = input.staleMs ?? HOST_STALE_MS;
+  if (hostEntry.disconnectReportedAt !== undefined) {
+    // Legacy stamp (Phase 4 Chunk 4). Nothing writes it in production
+    // (audit 06 f1); kept, with its grace, for a future relay callback.
+    const elapsedMs = nowMs - hostEntry.disconnectReportedAt;
+    const graceMs = HOST_CLAIM_GRACE_SECONDS * 1000 + HOST_CLAIM_GRACE_TOLERANCE_MS;
+    if (elapsedMs > graceMs) {
+      return {
+        ok: false,
+        code: 'BAD_REQUEST',
+        reason: `host disconnect reported ${elapsedMs}ms ago exceeds grace ${graceMs}ms`,
+      };
+    }
+  } else {
+    // T-07: the host is gone once it has been silent for `staleMs`.
+    const hostSilentMs = nowMs - lastContactMs(session, session.host, input.lastSeenMs);
+    if (hostSilentMs <= staleMs) {
+      return {
+        ok: false,
+        code: 'FORBIDDEN',
+        reason: `host ${session.host} is alive (last contact ${hostSilentMs}ms ago, stale after ${staleMs}ms)`,
+        details: { reason: 'NOT_HOST', host: session.host, hostSilentMs, staleMs },
+      };
+    }
   }
 
-  // Grace window — claim must land before grace expires (with skew tolerance).
-  const elapsedMs = nowMs - hostEntry.disconnectReportedAt;
-  const graceMs = HOST_CLAIM_GRACE_SECONDS * 1000 + HOST_CLAIM_GRACE_TOLERANCE_MS;
-  if (elapsedMs > graceMs) {
-    return {
-      ok: false,
-      code: 'BAD_REQUEST',
-      reason: `host disconnect reported ${elapsedMs}ms ago exceeds grace ${graceMs}ms`,
-    };
-  }
-
-  // Succession order — caller must be the entry immediately after host.
+  // Succession order — the caller must be the first live entry after the
+  // host; entries silent for `staleMs` are skipped (T-07).
   const succession = session.hostSuccession;
   const hostIdx = succession.indexOf(session.host);
   const callerIdx = succession.indexOf(callerUserId);
@@ -283,12 +321,22 @@ export function validateHostClaim(input: HostClaimInput): HostClaimResult {
       reason: `caller ${callerUserId} is not in the host succession list`,
     };
   }
-  if (callerIdx !== hostIdx + 1) {
+  if (callerIdx <= hostIdx) {
     return {
       ok: false,
       code: 'BAD_REQUEST',
-      reason: `caller ${callerUserId} is succession[${callerIdx}] but must be succession[${hostIdx + 1}]`,
+      reason: `caller ${callerUserId} is succession[${callerIdx}] but must come after the host at succession[${hostIdx}]`,
     };
+  }
+  for (let i = hostIdx + 1; i < callerIdx; i += 1) {
+    const candidate = succession[i]!;
+    if (nowMs - lastContactMs(session, candidate, input.lastSeenMs) <= staleMs) {
+      return {
+        ok: false,
+        code: 'BAD_REQUEST',
+        reason: `caller ${callerUserId} is succession[${callerIdx}] but must be succession[${i}], which is live`,
+      };
+    }
   }
 
   return { ok: true, idempotent: false, claimedAt: nowMs };

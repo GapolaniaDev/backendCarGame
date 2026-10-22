@@ -12,6 +12,7 @@ import type { EventBus } from '../core/event_bus';
 import {
   RACE_ACTIVE_COLLECTION,
   RACE_OPEN_COLLECTION,
+  RACE_PRESENCE_COLLECTION,
   RACE_SESSIONS_COLLECTION,
   RACE_EVENT_RACE_COMPLETED,
   SYSTEM_USER_ID,
@@ -102,6 +103,52 @@ export function createSession(
     throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
   }
   return { version: first.version };
+}
+
+// ─── Last contact per participant (plan T-07, audit PC-07) ──────────────────
+
+function presenceKey(sessionId: string, userId: string): string {
+  return `${sessionId}/${userId}`;
+}
+
+/** Record that `userId` contacted the server about `sessionId` now. */
+export function touchPresence(nk: INakama, sessionId: string, userId: string, nowMs: number): void {
+  nk.storageWrite([{
+    collection: RACE_PRESENCE_COLLECTION,
+    key: presenceKey(sessionId, userId),
+    userId: SYSTEM_USER_ID,
+    value: { lastSeenMs: nowMs },
+    permissionRead: 0,
+    permissionWrite: 0,
+  }]);
+}
+
+/** Last contact (epoch ms) of each roster human that has one. */
+export function readPresence(nk: INakama, session: RaceSession): Map<string, number> {
+  const out = new Map<string, number>();
+  const keys = presenceKeys(session);
+  if (keys.length === 0) return out;
+  for (const o of nk.storageRead(keys)) {
+    const v = (o.value as { lastSeenMs?: unknown }).lastSeenMs;
+    if (typeof v === 'number') out.set(o.key.slice(session.id.length + 1), v);
+  }
+  return out;
+}
+
+/** Drop the last-contact objects of a closed session. */
+export function deletePresence(nk: INakama, session: RaceSession): void {
+  const keys = presenceKeys(session);
+  if (keys.length > 0) nk.storageDelete(keys);
+}
+
+function presenceKeys(session: RaceSession): IStorageKey[] {
+  return session.roster
+    .filter((e) => !e.isBot)
+    .map((e) => ({
+      collection: RACE_PRESENCE_COLLECTION,
+      key: presenceKey(session.id, e.userId),
+      userId: SYSTEM_USER_ID,
+    }));
 }
 
 // ─── Open-session index (plan T-06, audit PC-06) ────────────────────────────
@@ -604,11 +651,12 @@ export function tryCloseAndPublish(
   if (!sessionAck) {
     throw new Error(`multiUpdate returned no session close ack for ${session.id}`);
   }
-  // Release the players' active-session index (T-08) and the open-session
-  // index (T-06).
+  // Release the players' active-session index (T-08), the open-session
+  // index (T-06) and the last-contact objects (T-07).
   try {
     clearActiveIndex(nk, session);
     deleteOpenIndex(nk, session.id);
+    deletePresence(nk, session);
   } catch {
     // Best effort: readers ignore a pointer to a closed session, and the
     // ticker drops a closed session from the open index.

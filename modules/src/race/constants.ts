@@ -74,6 +74,22 @@ export const RACE_OPEN_COLLECTION = 'race_open';
 export const HOST_CLAIM_GRACE_SECONDS = 20;
 export const HOST_CLAIM_GRACE_TOLERANCE_MS = 5_000;
 
+/**
+ * Plan T-07 (audit PC-07): the host counts as gone, and the next live
+ * player in `hostSuccession` may claim it, when the server has had no
+ * contact from the host (`race_session_get`, `race_submit_result`) for
+ * longer than this. The client polls every 2 s
+ * (`RaceBackendConfig.pollSeconds`), so 10 s is five missed polls.
+ */
+export const HOST_STALE_MS = 10_000;
+
+/**
+ * Last-contact index (plan T-07): one system-owned object per participant,
+ * key `{sessionId}/{userId}`, value `{ lastSeenMs }`. Kept apart from the
+ * session document so a poll never races a submit on the session CAS.
+ */
+export const RACE_PRESENCE_COLLECTION = 'race_presence';
+
 /** Per-client RPC rate-limit windows (calls per window per user). */
 export const RATE_LIMITS = {
   config_get: { maxPerWindow: 60, windowSec: 60 },
