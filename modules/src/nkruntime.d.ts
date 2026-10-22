@@ -160,62 +160,43 @@ export type MatchmakerMatchedFn = (
   envelope: IMatchmakerMatchedEnvelope,
 ) => { matched: boolean } | null;
 
+/**
+ * Authoritative match handler (v3.27.0 `runtime_javascript_match_core.go`).
+ * Every handler after `matchInit` receives
+ * `(ctx, logger, nk, dispatcher, tick, state, ...)`; `state` must be an
+ * object. Returning `null` from `matchLoop` ends the match.
+ */
 export interface IMatchHandler {
-  matchInit?: (
+  matchInit: (
     ctx: IContext,
     logger: ILogger,
     nk: INakama,
-    params: { matchId: string },
+    params: Record<string, unknown>,
   ) => { state: unknown; tickRate: number; label: string };
-  matchJoinAttempt?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    message: unknown,
-    userId: string,
-    sessionId: string,
-    sessionVars: Record<string, string>,
-  ) => { accept: boolean; reason?: string } | { state: unknown };
-  matchJoin?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    state: unknown,
-    userId: string,
-    sessionId: string,
-    sessionVars: Record<string, string>,
-  ) => { state: unknown; accepts: unknown[] };
-  matchLeave?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    state: unknown,
-    userId: string,
-    sessionId: string,
-    sessionVars: Record<string, string>,
-  ) => { state: unknown; accepts: unknown[] };
-  matchLoop?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    state: unknown,
-    messageSenders: unknown[],
-    tickDispatchSec: number,
-  ) => { state: unknown };
-  matchTerminate?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    state: unknown,
-    graceSec: number,
-  ) => { state: unknown };
-  matchSignal?: (
-    ctx: IContext,
-    logger: ILogger,
-    nk: INakama,
-    state: unknown,
-    data: string,
-  ) => { state: unknown; data: string | null };
+  matchJoinAttempt: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, presence: unknown, metadata: unknown,
+  ) => { state: unknown; accept: boolean; rejectMessage?: string } | null;
+  matchJoin: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, presences: unknown[],
+  ) => { state: unknown } | null;
+  matchLeave: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, presences: unknown[],
+  ) => { state: unknown } | null;
+  matchLoop: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, messages: unknown[],
+  ) => { state: unknown } | null;
+  matchTerminate: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, graceSeconds: number,
+  ) => { state: unknown } | null;
+  matchSignal: (
+    ctx: IContext, logger: ILogger, nk: INakama, dispatcher: unknown, tick: number,
+    state: any, data: string,
+  ) => { state: unknown; data?: string } | null;
 }
 
 export type ShutdownFn = () => void;
@@ -319,13 +300,15 @@ export interface INakama {
     params: Record<string, unknown>,
   ): string;
   matchGet(matchId: string): IMatch | null;
+  /** v3.27.0: returns an array of `{matchId, authoritative, size, label}`. */
   matchList(
     limit: number,
-    authoritative: boolean,
-    label: string,
-    minSize: number,
-    maxSize: number,
-  ): { matches: IMatch[] };
+    authoritative?: boolean | null,
+    label?: string | null,
+    minSize?: number | null,
+    maxSize?: number | null,
+    query?: string | null,
+  ): Array<{ matchId: string; authoritative: boolean; size: number; label: string | null }>;
 
   // ── Wallet ──
   walletUpdate(userId: string, changeset: Record<string, number>): Record<string, number>;

@@ -35,9 +35,7 @@ import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
 import { subscribeClubWeek } from './clubs/club_week_subscriber';
 import { subscribeAntiCheat } from './anti_cheat/subscriber';
 import { subscribeTournaments } from './tournaments/subscriber';
-import { startTournamentScanner } from './tournaments/scanner';
 import { subscribeEvents } from './events/subscriber';
-import { startEventScanner } from './events/scanner';
 import { event_list } from './events/rpcs';
 import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
@@ -120,7 +118,6 @@ import {
 import { loadIapPacksCatalog } from './iap/catalog';
 import { iap_purchase } from './iap/rpcs';
 import { iap_subscription_status, iap_subscription_cancel } from './iap/subscription_rpcs';
-import { startSubscriptionScanner } from './iap/subscription_scanner';
 import { loadAdRewardsCatalog } from './ads/catalog';
 import { ad_watched } from './ads/rpcs';
 import {
@@ -207,6 +204,16 @@ import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
 import { subscribeRankedRewards } from './ranked/subscriber';
 import { wallet_get } from './economy/rpcs';
+import {
+  ensureServiceTicker,
+  serviceTickerInit,
+  serviceTickerJoinAttempt,
+  serviceTickerJoin,
+  serviceTickerLeave,
+  serviceTickerLoop,
+  serviceTickerTerminate,
+  serviceTickerSignal,
+} from './scheduler/service_ticker';
 
 function InitModule(
   _ctx: IContext,
@@ -432,19 +439,10 @@ function InitModule(
   // Phase 8 Chunk 6: tournament subscriber. Runs AFTER anti-cheat so
   // a hidden cheater's race is never paired with a tournament entry.
   subscribeTournaments({ logger, nk, bus });
-  // Phase 8 Chunk 6: state-machine scanner — transitions open/closing/closed
-  // and distributes prizes on close. 60s tick.
-  startTournamentScanner({ logger, nk });
   // Phase 8 Chunk 8: events subscriber. Runs AFTER tournaments (last in
   // the chain) so the XP bonus is computed on the final shape of the
   // race and never delays an earlier subscriber.
   subscribeEvents({ logger, nk, bus });
-  // Phase 8 Chunk 8: events scanner — reconciles profile.activeSpecialOffers
-  // with the catalog. 5min tick.
-  startEventScanner({ logger, nk });
-  // Phase 9 Chunk 4: subscription scanner — expiring-soon / expired
-  // inbox notifications + monthly grant catch-up. 5min tick.
-  startSubscriptionScanner(nk, logger);
   setRaceBus(bus);
 
   // Every registration is a top-level statement of this `try` — no
@@ -467,6 +465,17 @@ function InitModule(
     initializer.registerAfterAuthenticateEmail(afterAuthenticateAutoCreate);
     initializer.registerAfterAuthenticateApple(afterAuthenticateAutoCreate);
     initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecordGuard);
+    // Periodic jobs (tournaments, events, subscriptions) run in this
+    // service match: the runtime has no setInterval (audit PC-09).
+    initializer.registerMatch('service_ticker', {
+      matchInit: serviceTickerInit,
+      matchJoinAttempt: serviceTickerJoinAttempt,
+      matchJoin: serviceTickerJoin,
+      matchLeave: serviceTickerLeave,
+      matchLoop: serviceTickerLoop,
+      matchTerminate: serviceTickerTerminate,
+      matchSignal: serviceTickerSignal,
+    });
     // ── RPCs ──
     initializer.registerRpc('race_session_get', race_session_get);
     initializer.registerRpc('race_submit_result', race_submit_result);
@@ -598,6 +607,9 @@ function InitModule(
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }
+
+  // Start the scheduler (one service match per process; plan D-06).
+  ensureServiceTicker(nk, logger);
 
   logger.info('core ready');
 }

@@ -259,6 +259,9 @@ describe('phase8 full flow e2e (Chunk 10)', () => {
   });
 
   it('T7: admin_tournament_list shows all instances including non-open', () => {
+    // Instances materialise lazily (player RPCs) or on the service
+    // ticker's first loop, which the vm harness does not run.
+    call(env, 'tournament_list', 'u-t7', {});
     const r = call<{ tournaments: Array<{ state: string; id: string }> }>(
       env, 'admin_tournament_list', null, { adminKey: ADMIN_KEY, state: 'all' },
     );

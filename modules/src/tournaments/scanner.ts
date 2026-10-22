@@ -1,7 +1,8 @@
 // Phase 8 Chunk 6 — Tournament state machine + close-on-tick.
 //
-// A setInterval-driven scanner (default 60s) walks every tournament
-// instance and advances the lifecycle:
+// `runScannerTick` walks every tournament instance and advances the
+// lifecycle. The service ticker (scheduler/service_ticker.ts) calls it
+// every 60 s — Nakama 3.27 has no setInterval (audit PC-09):
 //
 //   open ──(now+1h >= endsAt)──► closing
 //   closing ──(now >= endsAt)──► closed
@@ -35,91 +36,15 @@ import {
 } from './leaderboard';
 import { readTournamentInstance, writeTournamentInstance } from './repo';
 import { ensureTournamentsForWindow } from './catalog';
-import { rememberTournamentScannerHandle } from './_reset_for_tests';
 import type { Tournament } from './types';
 import { listStorage } from '../core/storage';
-
-/** Default interval — 60s. Lifted to a constant for tests. */
-export const TOURNAMENT_SCANNER_INTERVAL_MS = 60_000;
 
 /** Retention window after close before GC deletes the row. */
 export const TOURNAMENT_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-export interface TournamentScannerHandle {
-  stop(): void;
-}
-
 export interface TournamentScannerDeps {
   logger: ILogger;
   nk: INakama;
-  intervalMs?: number;
-}
-
-interface ScannerState {
-  intervalId: ReturnType<typeof setInterval> | null;
-  running: boolean;
-}
-
-let SCANNER_STATE: ScannerState = { intervalId: null, running: false };
-
-/**
- * Start the scanner. Idempotent: a second call while one is running
- * is a no-op. Returns a handle whose `.stop()` clears the interval.
- */
-export function startTournamentScanner(deps: TournamentScannerDeps): TournamentScannerHandle {
-  if (SCANNER_STATE.running) {
-    deps.logger.info('tournament scanner already running — skipping duplicate start');
-    return makeHandle();
-  }
-  const intervalMs = deps.intervalMs ?? TOURNAMENT_SCANNER_INTERVAL_MS;
-  // Run one tick immediately so a freshly-booted server catches up
-  // on any tournaments that should have closed during downtime.
-  try {
-    runScannerTick(deps);
-  } catch (e) {
-    deps.logger.error(
-      'tournament scanner initial tick failed: %s',
-      e instanceof Error ? e.message : String(e),
-    );
-  }
-  // Nakama 3.27's JS runtime does not expose `setInterval` (the
-  // global is `undefined` in the goja VM). We skip the periodic tick
-  // when the global is missing — the initial tick above still
-  // catches up on downtime, and downstream RPCs can call
-  // `runScannerTick` directly for on-demand updates.
-  if (typeof setInterval !== 'function') {
-    deps.logger.warn(
-      'tournament scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
-    );
-    SCANNER_STATE = { intervalId: null, running: true };
-    return makeHandle();
-  }
-  const intervalId = setInterval(() => {
-    try {
-      runScannerTick(deps);
-    } catch (e) {
-      deps.logger.error(
-        'tournament scanner tick failed: %s',
-        e instanceof Error ? e.message : String(e),
-      );
-    }
-  }, intervalMs);
-  SCANNER_STATE = { intervalId, running: true };
-  deps.logger.info('tournament scanner started intervalMs=%d', intervalMs);
-  const handle = makeHandle();
-  rememberTournamentScannerHandle(handle);
-  return handle;
-}
-
-function makeHandle(): TournamentScannerHandle {
-  return {
-    stop(): void {
-      if (SCANNER_STATE.intervalId !== null) {
-        clearInterval(SCANNER_STATE.intervalId);
-      }
-      SCANNER_STATE = { intervalId: null, running: false };
-    },
-  };
 }
 
 /**

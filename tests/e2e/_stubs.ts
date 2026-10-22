@@ -24,7 +24,6 @@ import type {
   IMultiUpdateResult,
   INakama,
   IStorageKey,
-  IStorageListRequest,
   IStorageObject,
   IStorageObjectAck,
   IUser,
@@ -419,6 +418,26 @@ class FakeNakamaCore {
     | ((ctx: unknown, logger: ILogger, nk: INakama, envelope: LeaderboardWriteRequest) => void)
     | null = null;
 
+  /** Matches created via `matchCreate` (module name + params). */
+  readonly createdMatches: Array<{ matchId: string; module: string; params: Record<string, unknown> }> = [];
+
+  matchCreate(module: string, params?: Record<string, unknown>): string {
+    const matchId = `fake-match-${this.createdMatches.length + 1}.nakama`;
+    this.createdMatches.push({ matchId, module, params: params ?? {} });
+    return matchId;
+  }
+
+  /** v3.27 shape: an array; `label` filters on the exact label. */
+  matchList(
+    _limit: number,
+    _authoritative?: boolean | null,
+    label?: string | null,
+  ): Array<{ matchId: string; authoritative: boolean; size: number; label: string | null }> {
+    return this.createdMatches
+      .filter((m) => label === undefined || label === null || m.module === label)
+      .map((m) => ({ matchId: m.matchId, authoritative: true, size: 0, label: m.module }));
+  }
+
   leaderboardCreate(
     id: string,
     authoritative: boolean,
@@ -766,6 +785,8 @@ export class FakeNakama {
   readonly groups: Map<string, IGroup>;
   /** Group id → set of member userIds. */
   readonly groupMembers: Map<string, Set<string>>;
+  /** Matches created via `matchCreate`. */
+  readonly createdMatches: Array<{ matchId: string; module: string; params: Record<string, unknown> }>;
   /** Installed before-hook for `leaderboardRecordWrite`. Tests can replace. */
   beforeLeaderboardRecordWrite:
     | ((
@@ -797,6 +818,7 @@ export class FakeNakama {
     this.wallets = core.wallets;
     this.ledger = core.ledger;
     this.links = core.links;
+    this.createdMatches = core.createdMatches;
     this.leaderboards = core.leaderboards;
     this.leaderboardRecords = core.leaderboardRecords;
     this.deletedLeaderboards = core.deletedLeaderboards;
@@ -929,6 +951,13 @@ class FakeInitializerCore {
     ) => void,
   ): void {
     this.afterLeaderboardRecordWrites.push(fn);
+  }
+
+  /** Match handlers by module name (`registerMatch`). */
+  readonly matches = new Map<string, Record<string, unknown>>();
+
+  registerMatch(name: string, handlers: Record<string, unknown>): void {
+    this.matches.set(name, handlers);
   }
 
   registerMatchmakerMatched(

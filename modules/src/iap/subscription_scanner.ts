@@ -1,6 +1,7 @@
 // Phase 9 Chunk 4 — Subscription scanner.
 //
-// Best-effort 5min tick that walks every iap_subscriptions row and:
+// `scanOnce` walks every iap_subscriptions row (the service ticker in
+// scheduler/service_ticker.ts calls it every 5 min) and:
 //
 //   1. Sends `subscription_expiring_soon` to active subs within 7d of
 //      their term end. Idempotent via `warnedExpiring` flag.
@@ -183,52 +184,4 @@ export function scanOnce(nk: INakama, logger: ILogger, nowUtc: number): Subscrip
     }
   }
   return stats;
-}
-
-let SCAN_HANDLE: ReturnType<typeof setInterval> | null = null;
-
-export function startSubscriptionScanner(
-  nk: INakama,
-  logger: ILogger,
-  intervalMs: number = 5 * 60_000,
-): void {
-  if (SCAN_HANDLE !== null) return; // idempotent
-  // See tournaments/scanner.ts for the 3.27 setInterval gap note.
-  if (typeof setInterval !== 'function') {
-    logger.warn(
-      'subscription_scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
-    );
-    try {
-      const nowUtc = Date.now();
-      const stats = scanOnce(nk, logger, nowUtc);
-      logger.info(
-        'subscription_scanner initial tick: scanned=%d warned=%d expired=%d grants=%d deleted=%d errors=%d',
-        stats.scanned, stats.warned, stats.expiredNotified, stats.monthlyGrants, stats.deleted, stats.errors,
-      );
-    } catch (e) {
-      logger.warn('subscription_scanner: initial tick failed: %s', e instanceof Error ? e.message : String(e));
-    }
-    return;
-  }
-  SCAN_HANDLE = setInterval(() => {
-    try {
-      const nowUtc = Date.now();
-      const stats = scanOnce(nk, logger, nowUtc);
-      if (stats.scanned > 0) {
-        logger.info(
-          'subscription_scanner: scanned=%d warned=%d expired=%d grants=%d deleted=%d errors=%d',
-          stats.scanned, stats.warned, stats.expiredNotified, stats.monthlyGrants, stats.deleted, stats.errors,
-        );
-      }
-    } catch (e) {
-      logger.warn('subscription_scanner: tick failed: %s', e instanceof Error ? e.message : String(e));
-    }
-  }, intervalMs);
-}
-
-export function stopSubscriptionScanner(): void {
-  if (SCAN_HANDLE !== null) {
-    clearInterval(SCAN_HANDLE);
-    SCAN_HANDLE = null;
-  }
 }

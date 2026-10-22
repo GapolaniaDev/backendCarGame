@@ -5,7 +5,6 @@ import { loadBundleForTest, FakeNakama, FakeContext } from './_stubs';
 import type { LoadedBundle } from './_stubs';
 import {
   _resetVerifyCacheForTests,
-  stopSubscriptionScanner,
 } from '../../modules/src/iap/_reset_for_tests';
 import {
   loadIapPacksCatalog,
@@ -70,7 +69,6 @@ describe('iap subscription e2e (Phase 9 Chunk 4)', () => {
     _resetIapPacksCatalogForTests();
     loadIapPacksCatalog(mkLogger(), iapPacksJson);
     _resetVerifyCacheForTests();
-    stopSubscriptionScanner();
     nak = new FakeNakama();
     // Confirm the catalog has the subscription pack.
     expect(findIapPackByProductId('apple', 'com.cvg.monthlypass')).toBeDefined();

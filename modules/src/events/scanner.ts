@@ -1,7 +1,8 @@
 // Phase 8 Chunk 8 — Events scanner.
 //
-// A setInterval-driven scanner (default 5min) walks every profile and
-// reconciles `profile.activeSpecialOffers` with the events catalog.
+// `runEventScannerTick` walks every profile and reconciles
+// `profile.activeSpecialOffers` with the events catalog. The service
+// ticker (scheduler/service_ticker.ts) calls it every 5 min.
 // The field is a derived cache the `store_get` pricing layer reads to
 // decide whether a `special_offer` discount applies.
 //
@@ -22,86 +23,16 @@ import {
   writeProfileUpdate,
   type ProfileRecord,
 } from '../profiles/storage';
-import { rememberEventScannerHandle } from './_reset_for_tests';
 import { listStorage } from '../core/storage';
-
-/** Default interval — 5min. Lifted to a constant for tests. */
-export const EVENT_SCANNER_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Maximum number of `activeSpecialOffers` IDs we store on a profile. */
 export const ACTIVE_SPECIAL_OFFERS_CAP = 10;
 
-export interface EventScannerHandle {
-  stop(): void;
-}
-
 export interface EventScannerDeps {
   logger: ILogger;
   nk: INakama;
-  intervalMs?: number;
   /** Override `Date.now()` for deterministic tests. */
   nowFn?: () => number;
-}
-
-interface ScannerState {
-  intervalId: ReturnType<typeof setInterval> | null;
-  running: boolean;
-}
-
-let SCANNER_STATE: ScannerState = { intervalId: null, running: false };
-
-/**
- * Start the scanner. Idempotent: a second call while one is running
- * is a no-op. Returns a handle whose `.stop()` clears the interval.
- */
-export function startEventScanner(deps: EventScannerDeps): EventScannerHandle {
-  if (SCANNER_STATE.running) {
-    deps.logger.info('event scanner already running — skipping duplicate start');
-    return makeHandle();
-  }
-  const intervalMs = deps.intervalMs ?? EVENT_SCANNER_INTERVAL_MS;
-  try {
-    runEventScannerTick(deps);
-  } catch (e) {
-    deps.logger.error(
-      'event scanner initial tick failed: %s',
-      e instanceof Error ? e.message : String(e),
-    );
-  }
-  // See tournaments/scanner.ts for the 3.27 setInterval gap note.
-  if (typeof setInterval !== 'function') {
-    deps.logger.warn(
-      'event scanner: setInterval not available in this runtime (Nakama 3.27 JS gap); running once at boot only.',
-    );
-    SCANNER_STATE = { intervalId: null, running: true };
-    return makeHandle();
-  }
-  const intervalId = setInterval(() => {
-    try {
-      runEventScannerTick(deps);
-    } catch (e) {
-      deps.logger.error(
-        'event scanner tick failed: %s',
-        e instanceof Error ? e.message : String(e),
-      );
-    }
-  }, intervalMs);
-  SCANNER_STATE = { intervalId, running: true };
-  deps.logger.info('event scanner started intervalMs=%d', intervalMs);
-  const handle = makeHandle();
-  rememberEventScannerHandle(handle);
-  return handle;
-}
-
-function makeHandle(): EventScannerHandle {
-  return {
-    stop(): void {
-      if (SCANNER_STATE.intervalId !== null) {
-        clearInterval(SCANNER_STATE.intervalId);
-      }
-      SCANNER_STATE = { intervalId: null, running: false };
-    },
-  };
 }
 
 /**

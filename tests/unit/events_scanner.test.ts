@@ -1,15 +1,12 @@
 // Phase 8 Chunk 8 — Unit tests for the events scanner.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
-  startEventScanner,
   runEventScannerTick,
   resolveActiveSpecialOfferIds,
   ACTIVE_SPECIAL_OFFERS_CAP,
-  EVENT_SCANNER_INTERVAL_MS,
 } from '../../modules/src/events/scanner';
-import { stopEventScannerForTests } from '../../modules/src/events/_reset_for_tests';
 import {
   loadEventsCatalog,
   _resetActiveEventsCatalogForTests,
@@ -99,10 +96,6 @@ describe('events scanner (Phase 8 Chunk 8)', () => {
   beforeEach(() => {
     fake = new FakeNakama();
     nk = fake.nakama;
-  });
-
-  afterEach(() => {
-    stopEventScannerForTests();
   });
 
   // ─── resolveActiveSpecialOfferIds (pure) ──────────────────────────────
@@ -239,18 +232,6 @@ describe('events scanner (Phase 8 Chunk 8)', () => {
     expect(r.updated).toBe(0);
   });
 
-  it('startEventScanner is idempotent — second call returns no-op handle', () => {
-    setupCatalogs(EVENTS_ONE_OFFER);
-    const h1 = startEventScanner({ logger: SILENT_LOGGER, nk, intervalMs: 60_000 });
-    const h2 = startEventScanner({ logger: SILENT_LOGGER, nk, intervalMs: 60_000 });
-    expect(h1).toBeDefined();
-    expect(h2).toBeDefined();
-    h1.stop();
-  });
-
-  it('scanner interval constant is 5 minutes', () => {
-    expect(EVENT_SCANNER_INTERVAL_MS).toBe(5 * 60 * 1000);
-  });
 });
 
 // Helper to build a RawEventsFile from a list of events.

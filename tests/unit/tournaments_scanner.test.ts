@@ -4,9 +4,8 @@
 // seed a fake store, drive `runScannerTick`, and assert the side
 // effects (state transitions, prize grants, deletes).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { runScannerTick, startTournamentScanner, TOURNAMENT_RETENTION_MS } from '../../modules/src/tournaments/scanner';
-import { stopTournamentScannerForTests } from '../../modules/src/tournaments/_reset_for_tests';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { runScannerTick, TOURNAMENT_RETENTION_MS } from '../../modules/src/tournaments/scanner';
 import { loadTournamentsCatalog, _resetTournamentsCatalogForTests } from '../../modules/src/tournaments/catalog';
 import { upsertBestTime } from '../../modules/src/tournaments/leaderboard';
 import { FakeNakama } from '../e2e/_stubs';
@@ -49,10 +48,6 @@ describe('tournament scanner (Phase 8 Chunk 6)', () => {
     } as RawTournamentsFile);
     fake = new FakeNakama();
     nk = fake.nakama;
-  });
-
-  afterEach(() => {
-    stopTournamentScannerForTests();
   });
 
   it('no instances → empty tick', () => {
@@ -147,11 +142,4 @@ describe('tournament scanner (Phase 8 Chunk 6)', () => {
     expect(fake.store.has(`tournament_leaderboard/${t.id}/00000000-0000-0000-0000-000000000000`)).toBe(false);
   });
 
-  it('startTournamentScanner handle.stop() clears the interval', () => {
-    const handle = startTournamentScanner({ logger: SILENT_LOGGER, nk, intervalMs: 1_000_000 });
-    handle.stop();
-    // After stop, a fresh start should be permitted.
-    const handle2 = startTournamentScanner({ logger: SILENT_LOGGER, nk, intervalMs: 1_000_000 });
-    handle2.stop();
-  });
 });
