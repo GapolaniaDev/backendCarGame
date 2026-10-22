@@ -16,6 +16,7 @@
 import type { IStorageObject, INakama } from '../nkruntime';
 import { MAX_CAS_RETRIES } from '../anti_cheat/_reset_for_tests';
 import type { Tournament, TournamentEntry } from './types';
+import { listStorage } from '../core/storage';
 
 /** Tournament instance collection — server-owned, one row per template id. */
 export const TOURNAMENT_INSTANCES_COLLECTION = 'tournament_instances';
@@ -268,7 +269,7 @@ export function createEntry(
 }
 
 /**
- * Count participants in a tournament via `nk.storageList`. Returns the
+ * Count participants in a tournament via `listStorage`. Returns the
  * number of entries (storage list counts each `tournament_entries/{tid}/{userId}`
  * row once). Limited to `limit` (server-clamped to 5000 to avoid hot-path
  * stalls on big tournaments).
@@ -277,7 +278,7 @@ export function countParticipants(
   nk: INakama,
   tournamentId: string,
 ): number {
-  const objs = nk.storageList({
+  const objs = listStorage(nk, {
     collection: TOURNAMENT_ENTRIES_COLLECTION,
     limit: 5000,
   });
@@ -300,7 +301,7 @@ export interface TournamentEntryRow extends TournamentEntry {
 }
 
 /**
- * List every entry for a given tournament. Uses `nk.storageList` 1-arg
+ * List every entry for a given tournament. Uses `listStorage`
  * (the userId variant would scope to a single user; we want ALL
  * participants) and filters by `key === tournamentId`. Returns the
  * storage row shape (with `paidEntryFee`) so the admin void-refund
@@ -310,7 +311,7 @@ export function listAllEntries(
   nk: INakama,
   tournamentId: string,
 ): TournamentEntryRow[] {
-  const objs = nk.storageList({
+  const objs = listStorage(nk, {
     collection: TOURNAMENT_ENTRIES_COLLECTION,
     limit: 5000,
   });

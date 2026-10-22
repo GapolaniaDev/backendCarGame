@@ -18,7 +18,7 @@ const SILENT_LOGGER: ILogger = {
 } as unknown as ILogger;
 
 interface FakeNk {
-  storageList: (req: { collection: string }) => { objects: IStorageObject[] };
+  storageList: (userId: string | null, collection: string) => { objects: IStorageObject[]; cursor: string | null };
   storageWrite: (writes: IStorageObject[]) => Array<{ version: string }>;
 }
 
@@ -38,9 +38,9 @@ function makeFakeNk(sessions: Record<string, { value: unknown }>): FakeNk {
     }),
   );
   return {
-    storageList: (req) => ({
-      objects: objs.filter((o) => o.collection === req.collection),
-      cursor: '',
+    storageList: (_userId, collection) => ({
+      objects: objs.filter((o) => o.collection === collection),
+      cursor: null,
     }),
     storageWrite: (writes) => writes.map((w, i) => ({
       version: `v${(writes.length + i + 100).toString().padStart(8, '0')}`,

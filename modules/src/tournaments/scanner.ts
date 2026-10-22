@@ -37,6 +37,7 @@ import { readTournamentInstance, writeTournamentInstance } from './repo';
 import { ensureTournamentsForWindow } from './catalog';
 import { rememberTournamentScannerHandle } from './_reset_for_tests';
 import type { Tournament } from './types';
+import { listStorage } from '../core/storage';
 
 /** Default interval — 60s. Lifted to a constant for tests. */
 export const TOURNAMENT_SCANNER_INTERVAL_MS = 60_000;
@@ -336,10 +337,10 @@ function safeDeleteInstance(nk: INakama, templateId: string, logger: ILogger): v
 }
 
 /**
- * Read every instance row. Uses `nk.storageList` 1-arg.
+ * Read every instance row. Uses `listStorage` (core/storage.ts).
  */
 export function listAllInstances(nk: INakama): Tournament[] {
-  const objs = nk.storageList({
+  const objs = listStorage(nk, {
     collection: TOURNAMENT_INSTANCES_COLLECTION,
     limit: 5000,
   });

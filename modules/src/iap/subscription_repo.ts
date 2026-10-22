@@ -15,6 +15,7 @@
 import type { IStorageObject, INakama } from '../nkruntime';
 import type { IapSubscription } from './subscription';
 import type { IapPlatform } from './types';
+import { listStorage } from '../core/storage';
 
 export const SUBSCRIPTIONS_COLLECTION = 'iap_subscriptions';
 
@@ -121,7 +122,7 @@ export function deleteSubscription(nk: INakama, userId: string, _expectedVersion
 
 /** Scan ALL subscriptions (any user). Used by the 5min scanner. */
 export function listAllSubscriptions(nk: INakama, limit = 1000): Array<{ userId: string; version: string; value: IapSubscription }> {
-  const list = nk.storageList({ collection: SUBSCRIPTIONS_COLLECTION, limit });
+  const list = listStorage(nk, { collection: SUBSCRIPTIONS_COLLECTION, limit });
   const out: Array<{ userId: string; version: string; value: IapSubscription }> = [];
   for (const o of list.objects) {
     const v = asSubscription(o.value, o.userId);

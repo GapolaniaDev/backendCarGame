@@ -52,6 +52,7 @@ import {
 import { ANALYTICS_COLLECTION, type AnalyticsEvent } from '../core/admin/analytics';
 import { getTournamentTemplates } from '../tournaments/catalog';
 import type { Tournament, TournamentType } from '../tournaments/types';
+import { listStorage } from '../core/storage';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -224,7 +225,7 @@ export const admin_overview_get_impl: RpcHandler = (_ctx, logger, nk, body) => {
   let totalMarks = 0;
   // Sample the marks collection once to count all marks.
   try {
-    const objs = nk.storageList({
+    const objs = listStorage(nk, {
       collection: 'anti_cheat_marks',
       userId: '00000000-0000-0000-0000-000000000000',
       limit: 5000,
@@ -241,7 +242,7 @@ export const admin_overview_get_impl: RpcHandler = (_ctx, logger, nk, body) => {
   // most users have a profile; the per-user ownership is the index.
   let playerCount = 0;
   try {
-    const objs = nk.storageList({ collection: 'profiles', limit: 5000 });
+    const objs = listStorage(nk, { collection: 'profiles', limit: 5000 });
     playerCount = objs.objects.length;
   } catch (e) {
     logger.error('admin_overview_get: profiles list failed: %s', e instanceof Error ? e.message : String(e));
@@ -301,7 +302,7 @@ export const admin_overview_get: RpcHandler = admin_overview_get_impl;
  */
 function computeUptimeMs(nk: INakama, nowUtc: number): number {
   try {
-    const objs = nk.storageList({
+    const objs = listStorage(nk, {
       collection: ANALYTICS_COLLECTION,
       limit: 5000,
     });
@@ -458,7 +459,7 @@ export const admin_events_stats_get_impl: RpcHandler = (_ctx, logger, nk, body) 
   // walks those rows and tallies coins per UTC day.
   let totalCoinsGranted = 0;
   try {
-    const objs = nk.storageList({
+    const objs = listStorage(nk, {
       collection: ANALYTICS_COLLECTION,
       limit: 5000,
     });
@@ -558,7 +559,7 @@ export const admin_players_search_impl: RpcHandler = (_ctx, logger, nk, body) =>
   // Walk every profile. The dashboard tool is expected to be sparse —
   // production installs see <100k profiles. The 60s cache keeps the
   // walk off the hot path; pagination is on the input side.
-  const objs = nk.storageList({ collection: 'profiles', limit: 5000 });
+  const objs = listStorage(nk, { collection: 'profiles', limit: 5000 });
   const results: AdminPlayersSearchRow[] = [];
   for (const o of objs.objects) {
     const v = o.value as Record<string, unknown>;
@@ -737,7 +738,7 @@ export const admin_anti_cheat_dashboard_get_impl: RpcHandler = (_ctx, logger, nk
   let usersWithMarks = 0;
   const markCounts: Array<{ userId: string; count: number }> = [];
   try {
-    const objs = nk.storageList({
+    const objs = listStorage(nk, {
       collection: 'anti_cheat_marks',
       userId: ANTI_CHEAT_STATS_SYSTEM_USER,
       limit: 5000,

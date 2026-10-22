@@ -23,6 +23,7 @@
 //      same `messageId` is silently ignored (idempotent insert).
 
 import type { IStorageObject, INakama } from '../nkruntime';
+import { listStorage } from '../core/storage';
 
 export const INBOX_COLLECTION = 'inbox';
 export const INBOX_OWNER_READ = 1;
@@ -145,7 +146,7 @@ export function listInbox(
   nowMs: number,
 ): ListInboxResult {
   const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
-  const result = nk.storageList({
+  const result = listStorage(nk, {
     collection: INBOX_COLLECTION,
     userId,
     limit,
@@ -260,7 +261,7 @@ export function purgeExpiredInbox(
   olderThanMs: number,
   nowMs: number,
 ): number {
-  const result = nk.storageList({
+  const result = listStorage(nk, {
     collection: INBOX_COLLECTION,
     userId,
     limit: 100,

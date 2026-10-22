@@ -15,6 +15,7 @@
 
 import type { IGroup, IMultiUpdateResult, INakama, IStorageObject } from '../nkruntime';
 import { type Role, type MemberRecord } from './types';
+import { listStorage } from '../core/storage';
 
 export const CLUBS_MEMBERS_COLLECTION = 'clubs_members';
 
@@ -67,7 +68,7 @@ export function readClubMembers(
   nk: INakama,
   clubId: string,
 ): MemberReadResult[] {
-  const list = nk.storageList({
+  const list = listStorage(nk, {
     collection: CLUBS_MEMBERS_COLLECTION,
     limit: 1000,
   });

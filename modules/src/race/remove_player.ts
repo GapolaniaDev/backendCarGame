@@ -17,7 +17,7 @@
 // drives it at runtime lands in a later chunk (Phase 4 disconnects).
 
 import type { ILogger, INakama } from '../nkruntime';
-import { writeJson } from '../core/storage';
+import { writeJson, listStorage } from '../core/storage';
 import type { RaceSession, RosterEntry } from './types';
 import { RACE_SESSIONS_COLLECTION } from './constants';
 import { SYSTEM_USER_ID } from './constants';
@@ -37,7 +37,7 @@ export function removePlayerFromAll(
 ): RemovePlayerResult {
   const result: RemovePlayerResult = { abandonedFrom: [], closedSessions: [] };
 
-  const list = nk.storageList({ collection: RACE_SESSIONS_COLLECTION });
+  const list = listStorage(nk, { collection: RACE_SESSIONS_COLLECTION });
   for (const obj of list.objects) {
     const session = obj.value as unknown as RaceSession;
     if (session.state === 'closed') {

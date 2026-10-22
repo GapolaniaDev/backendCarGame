@@ -42,6 +42,7 @@ import {
   pointsForRace,
   pointsForRaceResult,
 } from './club_week';
+import { listStorage } from '../core/storage';
 
 export interface ClubWeekSubscriberDeps {
   logger: ILogger;
@@ -234,7 +235,7 @@ export function handleRaceCompletedForClubWeek(
  * reads. Pure-ish: no leaderboard writes.
  */
 function scanUserToClubMap(nk: INakama): Map<string, string> {
-  const list = nk.storageList({
+  const list = listStorage(nk, {
     collection: CLUBS_MEMBERS_COLLECTION,
     limit: 5000,
   });

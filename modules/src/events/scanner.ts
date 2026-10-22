@@ -23,6 +23,7 @@ import {
   type ProfileRecord,
 } from '../profiles/storage';
 import { rememberEventScannerHandle } from './_reset_for_tests';
+import { listStorage } from '../core/storage';
 
 /** Default interval — 5min. Lifted to a constant for tests. */
 export const EVENT_SCANNER_INTERVAL_MS = 5 * 60 * 1000;
@@ -125,7 +126,7 @@ export function resolveActiveSpecialOfferIds(nowUtc: number): string[] {
 /**
  * One pass: list every profile row, reconcile `activeSpecialOffers`
  * with the catalog, CAS-write when the value changes. Exposed for unit
- * tests. Uses `nk.storageList` 1-arg (Phase 7 D36) to walk the
+ * tests. Uses `listStorage` (core/storage.ts) to walk the
  * collection.
  */
 export function runEventScannerTick(deps: EventScannerDeps): {
@@ -139,7 +140,7 @@ export function runEventScannerTick(deps: EventScannerDeps): {
 
   // 1-arg storageList walks the whole collection; profiles live in
   // their own collection so this stays bounded by player count.
-  const objs = nk.storageList({ collection: 'profiles', limit: 5000 });
+  const objs = listStorage(nk, { collection: 'profiles', limit: 5000 });
   let updated = 0;
   for (const o of objs.objects) {
     if (updated % 50 === 0) {

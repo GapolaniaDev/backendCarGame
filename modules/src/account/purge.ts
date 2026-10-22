@@ -24,6 +24,7 @@
 
 import type { IStorageKey, INakama } from '../nkruntime';
 import type { ILogger } from '../nkruntime';
+import { listStorage } from '../core/storage';
 
 /**
  * Collections that are NOT owned by a single user and that the
@@ -68,7 +69,7 @@ export function purgeUserStorage(nk: INakama, userId: string): PurgeResult {
     let cursor = '';
     let page = 0;
     do {
-      const result = nk.storageList({
+      const result = listStorage(nk, {
         collection,
         userId,
         limit: PAGE_LIMIT,

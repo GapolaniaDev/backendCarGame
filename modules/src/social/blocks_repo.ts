@@ -15,6 +15,7 @@ import {
   type BlockRecord,
   BLOCKS_COLLECTION,
 } from './types';
+import { listStorage } from '../core/storage';
 
 export const MAX_CAS_RETRIES = 3;
 
@@ -98,7 +99,7 @@ export function listBlocks(
   nk: INakama,
   userId: string,
 ): BlockRecord[] {
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: BLOCKS_COLLECTION,
     userId,
     limit: 200,

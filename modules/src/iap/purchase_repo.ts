@@ -15,6 +15,7 @@
 import type { IStorageObject, INakama } from '../nkruntime';
 import type { IapPlatform } from './types';
 import type { IapGrantPlan } from './grant';
+import { listStorage } from '../core/storage';
 
 export const PURCHASES_COLLECTION = 'iap_purchases';
 export const FIRST_PURCHASE_COLLECTION = 'iap_first_purchase';
@@ -101,7 +102,7 @@ export function findPurchaseAcrossUsers(
   nk: INakama,
   transactionId: string,
 ): { userId: string; record: PurchaseRecord } | null {
-  const list = nk.storageList({ collection: PURCHASES_COLLECTION, limit: 10_000 });
+  const list = listStorage(nk, { collection: PURCHASES_COLLECTION, limit: 10_000 });
   for (const r of list.objects) {
     if (r.key !== transactionId) continue;
     const rec = asPurchase(r.value, r.userId, transactionId);
@@ -167,7 +168,7 @@ export function listAllPurchases(
   nk: INakama,
   limit: number = 10_000,
 ): Array<{ userId: string; transactionId: string; version: string; record: PurchaseRecord }> {
-  const list = nk.storageList({ collection: PURCHASES_COLLECTION, limit });
+  const list = listStorage(nk, { collection: PURCHASES_COLLECTION, limit });
   const out: Array<{ userId: string; transactionId: string; version: string; record: PurchaseRecord }> = [];
   for (const o of list.objects) {
     const rec = asPurchase(o.value, o.userId, o.key);

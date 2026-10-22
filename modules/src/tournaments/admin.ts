@@ -36,6 +36,7 @@ import {
 } from './repo';
 import { grantTournamentPrize } from './scanner';
 import type { Tournament, TournamentType } from './types';
+import { listStorage } from '../core/storage';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -174,7 +175,7 @@ export const admin_tournament_list_impl: RpcHandler = (_ctx, logger, nk, body) =
 
   // Admin sees ALL tournaments (no 7d window filter). Use the
   // instance collection directly via storageList 1-arg.
-  const list = nk.storageList({
+  const list = listStorage(nk, {
     collection: 'tournament_instances',
     limit,
     cursor,
@@ -192,7 +193,7 @@ export const admin_tournament_list_impl: RpcHandler = (_ctx, logger, nk, body) =
     // collection). Use storageList 1-arg to count; if too expensive
     // for big catalogs, drop the field from the list view. The
     // admin_get RPC always returns the full count.
-    const participants = nk.storageList({
+    const participants = listStorage(nk, {
       collection: 'tournament_entries',
       limit: 5000,
     });

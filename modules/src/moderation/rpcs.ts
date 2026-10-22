@@ -43,6 +43,7 @@ import { addReportAndCheckSilence } from './auto_silence';
 import { silenceUser, writeSilencedUpdate } from '../chat/silenced';
 import { readSilenced } from '../chat/silenced';
 import { requireCallerId } from '../core/caller';
+import { listStorage } from '../core/storage';
 
 const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
@@ -297,7 +298,7 @@ export const admin_view_reports_impl: RpcHandler = (_ctx, logger, nk, body) => {
 
   // List reports. Reports are system-owned (SYSTEM_USER), so we list
   // with no userId filter.
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: REPORTS_COLLECTION,
     limit: 1000,
     cursor,

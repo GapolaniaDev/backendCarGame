@@ -12,6 +12,7 @@ import type { IStorageObject, INakama } from '../nkruntime';
 import type { IapPlatform } from './types';
 import type { PurchaseRecord } from './purchase_repo';
 import { asPurchase } from './purchase_repo';
+import { listStorage } from '../core/storage';
 
 export const FRAUD_FLAGS_COLLECTION = 'iap_fraud_flags';
 
@@ -128,7 +129,7 @@ export function listAllFraudFlags(
   nk: INakama,
   limit: number = 10_000,
 ): Array<{ transactionId: string; version: string; flag: FraudFlag }> {
-  const list = nk.storageList({ collection: FRAUD_FLAGS_COLLECTION, limit });
+  const list = listStorage(nk, { collection: FRAUD_FLAGS_COLLECTION, limit });
   const out: Array<{ transactionId: string; version: string; flag: FraudFlag }> = [];
   for (const o of list.objects) {
     const f = asFraudFlag(o.value, o.key);
@@ -160,7 +161,7 @@ export function listAndFilterPurchases(
   nk: INakama,
   filter: PurchaseFilter,
 ): FilteredPurchase[] {
-  const list = nk.storageList({ collection: 'iap_purchases', limit: 10_000 });
+  const list = listStorage(nk, { collection: 'iap_purchases', limit: 10_000 });
   const rows: FilteredPurchase[] = [];
   for (const o of list.objects) {
     const rec = asPurchase(o.value, o.userId, o.key);
@@ -298,7 +299,7 @@ export function computeRevenueStats(
   const from = Date.parse(`${fromDate}T00:00:00Z`);
   const to = Date.parse(`${toDate}T23:59:59Z`);
   const rows: PurchaseRecord[] = [];
-  const list = nk.storageList({ collection: 'iap_purchases', limit: 10_000 });
+  const list = listStorage(nk, { collection: 'iap_purchases', limit: 10_000 });
   for (const o of list.objects) {
     const rec = asPurchase(o.value, o.userId, o.key);
     if (!rec) continue;

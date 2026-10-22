@@ -38,6 +38,7 @@ import {
   type DailyAntiCheatStats,
 } from './stats';
 import { invalidateDashboardCache } from '../admin/cache';
+import { listStorage } from '../core/storage';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -150,7 +151,7 @@ export const admin_marks_list_impl: RpcHandler = (_ctx, logger, nk, body) => {
   // List server-side rows for the collection. permissionRead=1 / write=0
   // — server-side code can still iterate via storageList. Cursor +
   // limit are passed through verbatim.
-  const list = nk.storageList({
+  const list = listStorage(nk, {
     collection: ANTI_CHEAT_MARKS_COLLECTION,
     userId: ANTI_CHEAT_MARKS_SYSTEM_USER,
     ...(cursor !== '' ? { cursor } : {}),

@@ -21,6 +21,7 @@ import {
   type ChatMessageCard,
   type ChatMessageRecord,
 } from './types';
+import { listStorage } from '../core/storage';
 
 // ─── Write ──────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ export interface ListChatMessagesResult {
  * messages (belt-and-braces — the storage layer's TTL is eventually
  * consistent). Capped at `limit` (default 50, max 100).
  *
- * Cursor is passed through to `nk.storageList`. The stub returns
+ * Cursor is passed through to `listStorage`. The stub returns
  * `cursor: ''` regardless; in production it round-trips for true
  * pagination.
  */
@@ -133,7 +134,7 @@ export function listChatMessages(
   // List with a generous page limit — we filter in JS. Production
   // storageList has its own pagination; we pass `limit` through so the
   // round-trip stays bounded.
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: CHAT_HISTORY_COLLECTION,
     limit: 1000,
     cursor,

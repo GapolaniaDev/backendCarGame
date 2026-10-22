@@ -19,6 +19,7 @@ import type {
   AdminCleanupRaceSessionsInput,
   AdminCleanupRaceSessionsOutput,
 } from './types';
+import { listStorage } from '../core/storage';
 
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 50; // 100 × 50 = 5000 entries per collection per call.
@@ -41,7 +42,7 @@ export function cleanupRaceSessions(
   let cursor = '';
   let page = 0;
   do {
-    const res = nk.storageList({
+    const res = listStorage(nk, {
       collection: RACE_SESSIONS_COLLECTION,
       limit: PAGE_LIMIT,
       cursor,
@@ -67,7 +68,7 @@ export function cleanupRaceSessions(
   page = 0;
   const nowMs = Date.now();
   do {
-    const res = nk.storageList({ collection: INBOX_COLLECTION, limit: PAGE_LIMIT, cursor });
+    const res = listStorage(nk, { collection: INBOX_COLLECTION, limit: PAGE_LIMIT, cursor });
     for (const o of res.objects as IStorageObject[]) {
       const v = o.value as { expiresAt?: number; userId?: string };
       if (typeof v.expiresAt === 'number' && v.expiresAt <= nowMs && typeof v.userId === 'string') {

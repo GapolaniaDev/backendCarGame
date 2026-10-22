@@ -16,6 +16,7 @@
 
 import type { INakama } from '../nkruntime';
 import type { InboxEntry, InboxRewardPayload, InboxRewardType } from '../ranked/types';
+import { listStorage } from '../core/storage';
 
 export const INBOX_COLLECTION = 'liveops_inbox';
 export const INBOX_OWNER_READ = 1; // owner-only read
@@ -80,7 +81,7 @@ export function sendReward(
  * `createdAt` descending (newest on top, like a feed).
  */
 export function listInbox(nk: INakama, userId: string): InboxEntry[] {
-  const objects = nk.storageList({
+  const objects = listStorage(nk, {
     collection: INBOX_COLLECTION,
     userId,
   });

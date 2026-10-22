@@ -8,7 +8,7 @@
 // and `permissionWrite = 0` — the storage layer refuses client reads
 // and writes regardless of the userID on the key.
 
-import type { INakama } from '../nkruntime';
+import type { INakama, IStorageListRequest, IStorageObject } from '../nkruntime';
 
 export const SCHEMA_VERSION = 1;
 
@@ -114,4 +114,29 @@ export function writeJson<V extends VersionedValue>(
     throw new Error(`storageWrite returned empty ack for ${opts.collection}/${opts.key}`);
   }
   return { version: first.version };
+}
+
+/**
+ * List storage objects with a request object.
+ *
+ * Nakama 3.27's JS binding is positional —
+ * `nk.storageList(userId, collection, limit, cursor)` — and throws
+ * "expects string" when handed an object (audit N7: it broke the
+ * tournament / event / subscription scanners and every RPC that lists).
+ * All listings go through here so the call shape lives in one place.
+ *
+ * `userId` absent → objects of every owner (runtime listing).
+ * The returned `cursor` is '' when there are no more pages.
+ */
+export function listStorage(
+  nk: INakama,
+  req: IStorageListRequest,
+): { objects: IStorageObject[]; cursor: string } {
+  const res = nk.storageList(
+    req.userId !== undefined && req.userId.length > 0 ? req.userId : null,
+    req.collection,
+    req.limit,
+    req.cursor !== undefined && req.cursor.length > 0 ? req.cursor : null,
+  );
+  return { objects: res?.objects ?? [], cursor: res?.cursor ?? '' };
 }

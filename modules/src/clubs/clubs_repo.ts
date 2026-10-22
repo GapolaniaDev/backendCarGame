@@ -28,6 +28,7 @@ import {
 import { readProfile } from '../profiles/storage';
 import { getRankedConfig, divisionForRating } from '../ranked/config';
 import { readRankedRecord } from '../ranked/ranked_repo';
+import { listStorage } from '../core/storage';
 
 export const MAX_CAS_RETRIES = 3;
 
@@ -54,7 +55,7 @@ export function readClubMetadata(
     // Fallback: scan public rows. Cheap enough at our scale (catalog
     // tens of thousands) and correct because clubs_metadata is
     // public-read.
-    const list = nk.storageList({
+    const list = listStorage(nk, {
       collection: CLUBS_METADATA_COLLECTION,
       limit: 200,
     });

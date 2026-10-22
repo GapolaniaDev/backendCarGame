@@ -207,16 +207,28 @@ class FakeNakamaCore {
     }
   }
 
+  /**
+   * Positional, like the v3.27.0 JS binding. Rejects the object form the
+   * real runtime rejects ("expects string", audit N7), so a regression to
+   * `nk.storageList({...})` fails the e2e suite instead of production.
+   */
   storageList(
-    req: IStorageListRequest,
-  ): { objects: IStorageObject[]; cursor: string } {
+    userId: string | null | undefined,
+    collection: string,
+    _limit?: number,
+    _cursor?: string | null,
+  ): { objects: IStorageObject[]; cursor: string | null } {
+    if (userId !== null && userId !== undefined && typeof userId !== 'string') {
+      throw new TypeError('expects string');
+    }
+    if (typeof collection !== 'string') throw new TypeError('expects string');
     const objs: IStorageObject[] = [];
     for (const obj of this.store.values()) {
-      if (obj.collection !== req.collection) continue;
-      if (req.userId !== undefined && obj.userId !== req.userId) continue;
+      if (obj.collection !== collection) continue;
+      if (userId !== null && userId !== undefined && obj.userId !== userId) continue;
       objs.push(obj);
     }
-    return { objects: objs, cursor: '' };
+    return { objects: objs, cursor: null };
   }
 
   localcacheGet<T>(key: string): T | null {

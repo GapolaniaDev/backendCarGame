@@ -24,6 +24,7 @@ import { asIapAdEvent, type IapAdAnalyticsRow } from './iap_events';
 import { computeLtv, type LtvResult, type LtvWindow } from './ltv';
 import { computeFunnel, type FunnelResult, type FunnelFilters } from './funnel';
 import { computeTopBuyers, type TopBuyer } from './top_buyers';
+import { listStorage } from '../core/storage';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -118,7 +119,7 @@ export function invalidateAllAnalyticsCaches(): void {
  *  IAP/ad event rows. Rows whose `name` isn't in the 11-event set are
  *  silently dropped. */
 export function readIapAdEvents(nk: INakama, limit: number = 10_000): IapAdAnalyticsRow[] {
-  const list = nk.storageList({ collection: ANALYTICS_COLLECTION, limit });
+  const list = listStorage(nk, { collection: ANALYTICS_COLLECTION, limit });
   const out: IapAdAnalyticsRow[] = [];
   for (const o of list.objects) {
     const rawName = (o.value as { name?: unknown })?.name;

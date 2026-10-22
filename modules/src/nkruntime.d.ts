@@ -224,9 +224,19 @@ export type ShutdownFn = () => void;
 
 export interface INakama {
   // ── Storage ──
+  /**
+   * v3.27.0 JS binding (positional): `userId` null/undefined lists every
+   * owner; `limit` defaults to 100; `cursor` null for the first page.
+   * Returns `cursor: null` on the last page. Use `listStorage` from
+   * core/storage.ts instead of calling this directly.
+   */
   storageList(
-    req: IStorageListRequest,
-  ): { objects: IStorageObject[]; cursor: string };
+    userId: string | null | undefined,
+    collection: string,
+    limit?: number,
+    cursor?: string | null,
+    callerId?: string | null,
+  ): { objects: IStorageObject[]; cursor: string | null };
   storageRead(keys: IStorageKey[]): IStorageObject[];
   storageWrite(objs: IStorageObject[]): IStorageObjectAck[];
   storageDelete(keys: IStorageKey[]): void;

@@ -35,6 +35,7 @@ import {
   FRIENDS_EDGE_COLLECTION,
   RECENT_RIVALS_COLLECTION,
 } from './types';
+import { listStorage } from '../core/storage';
 
 export const MAX_CAS_RETRIES = 3;
 
@@ -119,7 +120,7 @@ export function listFriendEdges(
   nk: INakama,
   userId: string,
 ): FriendEdgeRecord[] {
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: FRIENDS_EDGE_COLLECTION,
     userId,
     limit: 200,
@@ -241,7 +242,7 @@ export function lookupUserByCode(
   nk: INakama,
   code: string,
 ): { record: FriendCodeRecord } | null {
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: FRIENDS_CODE_COLLECTION,
     limit: 1000,
   });

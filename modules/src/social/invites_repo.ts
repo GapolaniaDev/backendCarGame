@@ -20,6 +20,7 @@ import {
   type InviteRecord,
   INVITES_COLLECTION,
 } from './types';
+import { listStorage } from '../core/storage';
 
 export const MAX_CAS_RETRIES = 3;
 
@@ -64,7 +65,7 @@ export function listInvitesFor(
   nk: INakama,
   targetUserId: string,
 ): InviteRecord[] {
-  const res = nk.storageList({
+  const res = listStorage(nk, {
     collection: INVITES_COLLECTION,
     userId: targetUserId,
     limit: 200,
