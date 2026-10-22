@@ -2,7 +2,7 @@
 
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { FakeContext, loadBundleForTest, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, sessionCtxFor } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }

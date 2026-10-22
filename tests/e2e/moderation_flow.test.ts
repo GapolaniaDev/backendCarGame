@@ -5,7 +5,7 @@
 // liveops_config (same pattern as admin_e2e).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 const ADMIN_KEY = 'moderation-admin-key-1234567890';
 

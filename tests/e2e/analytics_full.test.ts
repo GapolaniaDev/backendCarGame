@@ -5,7 +5,7 @@
 // appear ≥1x with the expected props shape.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 const ADMIN_KEY = 'p5c9-admin-key-1234567890';
 

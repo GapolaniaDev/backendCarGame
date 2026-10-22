@@ -1,7 +1,7 @@
 // Phase 7 Chunk 8 e2e — Party RPCs.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, sessionCtxFor } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }

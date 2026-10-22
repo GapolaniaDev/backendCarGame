@@ -7,7 +7,7 @@
 // clubs_flow, moderation_flow).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, sessionCtxFor } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }
