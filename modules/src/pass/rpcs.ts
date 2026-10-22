@@ -44,6 +44,7 @@ import { grantPassReward } from './reward_granter';
 import type { PassLevelReward } from './types';
 import { spend as walletSpend, walletGet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -63,29 +64,7 @@ const PASS_RATE_LIMITS = {
 
 // ─── Caller plumbing ───────────────────────────────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: string | undefined,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('pass RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseBody<T>(body: string): { ok: true; data: T } | { ok: false; error: string } {
   const parsed = parseInput(body);
@@ -157,7 +136,7 @@ export const pass_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<{ callerUserId?: string }>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -260,7 +239,7 @@ export const pass_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<PassClaimInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -400,7 +379,7 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<PassBuyPremiumInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 

@@ -18,7 +18,7 @@
 //     override when set.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 import type { RaceSession } from '../../modules/src/race/types';
 import type {
   IMatchmakerMatchedEnvelope,
@@ -35,7 +35,7 @@ function call<T>(
 ): T {
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
+  const ctx = caller === null ? sessionCtxFor(payload) : { ...FakeContext, userId: caller };
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }
@@ -44,7 +44,7 @@ function ticket(
   env: ReturnType<typeof loadBundleForTest>,
   payload: Record<string, unknown>,
 ): Resp<{ ticket: { query: Record<string, unknown>; metadata: Record<string, string> }; output: { mode: string; size: number; version: string; region: string; mm: { segmentBy: string } } }> {
-  return call(env, 'mm_ticket_params', null, payload);
+  return call(env, 'mm_ticket_params', 'mm-player', payload);
 }
 
 function mkMatchedEnvelope(

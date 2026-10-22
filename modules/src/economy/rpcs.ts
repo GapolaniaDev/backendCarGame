@@ -21,6 +21,7 @@ import { err, ok, type Resp } from '../core/response';
 import { walletGet } from './wallet';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
+import { requireCallerId } from '../core/caller';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -75,7 +76,7 @@ export const wallet_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);
@@ -164,34 +165,6 @@ function parseInput(body: string): ParseOk<WalletGetInput> | ParseErr {
   return { ok: true, value: out };
 }
 
-interface CallerOk {
-  ok: true;
-  id: string;
-}
-interface CallerErr {
-  ok: false;
-  error: string;
-}
-function resolveCaller(
-  ctx: IContext,
-  declared: string,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('wallet_get RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function toJson<T>(r: Resp<T>): string {
   return JSON.stringify(r);

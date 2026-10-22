@@ -3,7 +3,7 @@
 // reconciling profile.activeSpecialOffers.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }
@@ -17,7 +17,7 @@ function call<T>(
 ): Resp<T> {
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
+  const ctx = caller === null ? sessionCtxFor(payload) : { ...FakeContext, userId: caller };
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return JSON.parse(handler(ctx, env.logger, env.nak, body) as string) as Resp<T>;
 }
@@ -122,7 +122,7 @@ describe('events e2e (Phase 8 Chunk 8)', () => {
     expect(r.error.code).toBe('UNAUTHENTICATED');
   });
 
-  it('event_list accepts callerUserId for HTTP gateway', () => {
+  it('event_list accepts the client callerUserId when it matches the session', () => {
     const r = call<{ events: unknown[] }>(env, 'event_list', null, { callerUserId: 'u1' });
     expect(r.ok).toBe(true);
   });

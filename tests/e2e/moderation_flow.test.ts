@@ -5,7 +5,7 @@
 // liveops_config (same pattern as admin_e2e).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 const ADMIN_KEY = 'moderation-admin-key-1234567890';
 
@@ -21,7 +21,7 @@ function call<T>(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return JSON.parse(
-    handler(FakeContext, env.logger, env.nak, typeof payload === 'string' ? payload : JSON.stringify(payload)),
+    handler(sessionCtxFor(payload), env.logger, env.nak, typeof payload === 'string' ? payload : JSON.stringify(payload)),
   ) as T;
 }
 

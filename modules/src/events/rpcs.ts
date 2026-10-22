@@ -10,9 +10,10 @@ import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import { activeEvents, getEventsCatalog } from '../core/active_events';
 import { serverNowMs } from '../core/time';
+import { requireCaller } from '../core/caller';
 
 export interface EventListInput {
-  /** Required when calling via the HTTP gateway (where `ctx.userId` is null). */
+  /** Optional; must match the session user when present (D-03). */
   callerUserId?: string;
 }
 
@@ -35,9 +36,8 @@ export const event_list = (ctx: IContext, logger: ILogger, nk: INakama, body: st
   const parsed = parseInput(body);
   if (!parsed.ok) return toJson(parsed.value);
 
-  if (!ctx.userId && !parsed.value.callerUserId) {
-    return toJson(err('UNAUTHENTICATED', 'no caller identity'));
-  }
+  const caller = requireCaller(ctx, parsed.value);
+  if (!caller.ok) return toJson(caller.error);
 
   const nowUtc = serverNowMs();
   const all = getEventsCatalog();

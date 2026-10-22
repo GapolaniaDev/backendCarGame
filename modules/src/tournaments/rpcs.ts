@@ -44,6 +44,7 @@ import type {
   TournamentType,
   TournamentEntry,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -265,10 +266,10 @@ export const tournament_join_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!parsed.ok) return parsed.error;
   const raw = parsed.raw;
 
-  const userId = typeof ctx.userId === 'string' ? ctx.userId : '';
-  if (userId.length === 0) {
-    return JSON.stringify(err('UNAUTHENTICATED', 'authentication required'));
-  }
+  // Session identity only (D-03); a body callerUserId must match it.
+  const caller = requireCallerId(ctx, raw);
+  if (!caller.ok) return caller.error;
+  const userId = caller.id;
 
   const m = assertNotInMaintenance(logger, nk, userId);
   if (m !== null) return JSON.stringify(m);

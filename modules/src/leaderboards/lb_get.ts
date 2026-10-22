@@ -23,6 +23,7 @@ import {
 import { err, ok, type Resp } from '../core/response';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
+import { requireCaller } from '../core/caller';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -100,20 +101,10 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
     return toJson(err('BAD_REQUEST', 'payload is not valid JSON'));
   }
 
-  // Resolve caller.
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof payload.callerUserId === 'string' ? payload.callerUserId : null;
-  let callerId: string | null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user'));
-    }
-    callerId = socketCaller;
-  } else if (declaredCaller !== null) {
-    callerId = declaredCaller;
-  } else {
-    return toJson(err('UNAUTHENTICATED', 'no caller identity'));
-  }
+  // Resolve caller: session only; a body callerUserId must match (D-03).
+  const caller = requireCaller(ctx, payload);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
 
   // LiveOps gate (maintenance + min client version).
   const gate = liveopsGate(

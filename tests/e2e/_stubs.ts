@@ -45,6 +45,31 @@ export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 /** Constant IContext value — the `_brand` is the only required discriminator. */
 export const FakeContext: IContext = { _brand: 'NakamaContext' };
 
+/**
+ * Context of a Bearer-authenticated call whose session user is the identity
+ * the payload declares (`callerUserId`, else `hostUserId`, else `userId`) --
+ * what the Unity client sends (plan D-03 / D-05: identity comes from
+ * `ctx.userId`; body fields are only cross-checked). Returns `FakeContext`
+ * (no session) when the payload declares no identity.
+ */
+export function sessionCtxFor(payload: unknown): IContext {
+  let obj: unknown = payload;
+  if (typeof payload === 'string') {
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      return FakeContext;
+    }
+  }
+  if (obj === null || typeof obj !== 'object') return FakeContext;
+  const r = obj as Record<string, unknown>;
+  for (const field of ['callerUserId', 'hostUserId', 'userId']) {
+    const v = r[field];
+    if (typeof v === 'string' && v.length > 0) return { ...FakeContext, userId: v };
+  }
+  return FakeContext;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Composite key for the storage map. */

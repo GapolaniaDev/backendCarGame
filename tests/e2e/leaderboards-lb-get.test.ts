@@ -10,6 +10,7 @@ import {
   FakeContext,
   loadBundleForTest,
   SYSTEM_USER_ID,
+  sessionCtxFor,
 } from './_stubs';
 import type { RaceSessionCreateOutput } from '../../modules/src/race/types';
 
@@ -56,7 +57,7 @@ function call<T>(
 ): T {
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
+  const ctx = caller === null ? sessionCtxFor(payload) : { ...FakeContext, userId: caller };
   // Inject liveops gate bypass (clientVersion/platform) into object payloads
   // so the Phase 5 Chunk 2 UPGRADE_REQUIRED doesn't trip every legacy test.
   const body = typeof payload === 'string'

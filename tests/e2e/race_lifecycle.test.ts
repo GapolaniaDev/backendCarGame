@@ -9,6 +9,7 @@ import {
   loadBundleForTest,
   FakeContext,
   SYSTEM_USER_ID,
+  sessionCtxFor,
 } from './_stubs';
 import type { RpcFunction } from '../../modules/src/nkruntime';
 
@@ -56,7 +57,7 @@ function call<T>(
   const handler = env.resolver(key);
   expect(handler).toBeDefined();
   const ctx = userId === null
-    ? FakeContext
+    ? sessionCtxFor(payload)
     : { ...FakeContext, userId };
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   const result = handler!(ctx, env.logger, env.nak, body);
@@ -134,7 +135,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(env2.error.details).toMatchObject({ mode: 'ranked', size: 6, allowedSizes: [4] });
     });
 
-    it('rejects missing hostUserId in HTTP gateway mode with BAD_REQUEST', () => {
+    it('rejects a call without a session with UNAUTHENTICATED (D-03)', () => {
       const env2 = call<CreateData>(env, 'race_session_create', null, {
         matchId: 'm',
         mode: 'quick',
@@ -144,14 +145,32 @@ describe('race_lifecycle (Chunk 5)', () => {
       });
       expect(env2.ok).toBe(false);
       if (env2.ok) return;
-      expect(env2.error.code).toBe('BAD_REQUEST');
-      expect(env2.error.message).toMatch(/hostUserId/);
+      expect(env2.error.code).toBe('UNAUTHENTICATED');
     });
 
-    it('prefers ctx.userId over payload.hostUserId (socket call)', () => {
+    it('never trusts a body hostUserId without a session (UNAUTHENTICATED, PC-01)', () => {
+      const handler = env.resolver('race_session_create');
+      const raw = handler!(FakeContext, env.logger, env.nak, JSON.stringify(makeCreatePayload()));
+      const res = JSON.parse(raw) as Envelope<CreateData>;
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error.code).toBe('UNAUTHENTICATED');
+    });
+
+    it('rejects a hostUserId that is not the session user (FORBIDDEN, D-03)', () => {
       const env2 = call<CreateData>(env, 'race_session_create', HOST_ID, {
         ...makeCreatePayload(),
-        hostUserId: OTHER_ID, // would be ignored
+        hostUserId: OTHER_ID,
+      });
+      expect(env2.ok).toBe(false);
+      if (env2.ok) return;
+      expect(env2.error.code).toBe('FORBIDDEN');
+    });
+
+    it('accepts the client shape: hostUserId equal to the session user', () => {
+      const env2 = call<CreateData>(env, 'race_session_create', HOST_ID, {
+        ...makeCreatePayload(),
+        hostUserId: HOST_ID,
       });
       expect(env2.ok).toBe(true);
       if (!env2.ok) return;

@@ -10,7 +10,7 @@
 // Matrix: each gated RPC × {maintenance ON|OFF} × {adminKey set|not}.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 const ADMIN_KEY = 'p5c9-admin-key-1234567890';
 
@@ -22,7 +22,7 @@ function rawCall(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return handler(
-    FakeContext,
+    sessionCtxFor(payload),
     env.logger,
     env.nak,
     typeof payload === 'string' ? payload : JSON.stringify(payload),
@@ -175,7 +175,7 @@ describe('liveops_full (Phase 5 Chunk 9) — exhaustive gate matrix', () => {
   // ── 3: mm_ticket_params / ranked_get (gated by Chunk 9) ──
   it('mm_ticket_params blocked in maintenance', () => {
     setMaintenance(env, true);
-    const r = call<Resp<unknown>>(env, 'mm_ticket_params', { mode: 'quick', size: 2 });
+    const r = call<Resp<unknown>>(env, 'mm_ticket_params', { mode: 'quick', size: 2, callerUserId: 'u' });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('SERVICE_UNAVAILABLE');

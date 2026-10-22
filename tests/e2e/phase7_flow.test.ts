@@ -7,7 +7,7 @@
 // clubs_flow, moderation_flow).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest } from './_stubs';
+import { FakeContext, loadBundleForTest, sessionCtxFor } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }
@@ -21,7 +21,7 @@ function call<T>(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return JSON.parse(
-    handler(FakeContext, env.logger, env.nak, typeof payload === 'string' ? payload : JSON.stringify(payload)),
+    handler(sessionCtxFor(payload), env.logger, env.nak, typeof payload === 'string' ? payload : JSON.stringify(payload)),
   ) as T;
 }
 

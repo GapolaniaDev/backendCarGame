@@ -5,7 +5,7 @@
 // appear ≥1x with the expected props shape.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
 
 const ADMIN_KEY = 'p5c9-admin-key-1234567890';
 
@@ -21,7 +21,7 @@ function rawCall(
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return handler(
-    FakeContext, env.logger, env.nak,
+    sessionCtxFor(payload), env.logger, env.nak,
     typeof payload === 'string' ? payload : JSON.stringify(payload),
   );
 }
@@ -78,7 +78,7 @@ describe('analytics_full (Phase 5 Chunk 9) — every emit() site', () => {
   });
 
   it('mm_ticket_params_called fires with mode/segmentBy/version/region', () => {
-    const r = call<Resp<unknown>>(env, 'mm_ticket_params', { mode: 'quick', size: 2 });
+    const r = call<Resp<unknown>>(env, 'mm_ticket_params', { mode: 'quick', size: 2, callerUserId: 'u1' });
     expect(r.ok).toBe(true);
     const evs = readAnalytics(env);
     const match = evs.find((e) => e.name === 'mm_ticket_params_called');

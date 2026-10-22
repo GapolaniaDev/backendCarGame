@@ -46,6 +46,7 @@ import {
   type InviteSendOutput,
 } from './types';
 import { joinParty } from '../parties/parties_repo';
+import { requireCallerId } from '../core/caller';
 
 const INVITE_RATE_LIMITS = {
   invite_send: { maxPerWindow: INVITE_RATE_LIMIT_PER_MIN, windowSec: 60 },
@@ -58,30 +59,7 @@ const VALID_KINDS: ReadonlySet<InviteKind> = new Set<InviteKind>([
   'private_room',
 ]);
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('invite RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseBody(body: string): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const parsed = parseInput(body);
@@ -125,7 +103,7 @@ export function invite_send(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'invite_send', caller.id);
@@ -224,7 +202,7 @@ export function invite_list(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'invite_list', caller.id);
@@ -277,7 +255,7 @@ export function invite_respond(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'invite_respond', caller.id);

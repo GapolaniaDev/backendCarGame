@@ -37,6 +37,7 @@ import type {
 import { COSMETIC_SLOTS, UPGRADE_LINES } from './types';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
+import { requireCallerId } from '../core/caller';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -90,7 +91,7 @@ export const garage_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<GarageGetInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);
@@ -150,39 +151,6 @@ function parseInput<T>(body: string): ParseOk<T> | ParseErr {
   return { ok: true, value: raw as T };
 }
 
-interface CallerOk {
-  ok: true;
-  id: string;
-}
-interface CallerErr {
-  ok: false;
-  error: string;
-}
-function resolveCaller(
-  ctx: IContext,
-  declared: string | undefined,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof declared === 'string' ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(
-          err('FORBIDDEN', 'callerUserId does not match authenticated user'),
-        ),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('garage_get RPC called with no caller identity');
-  return {
-    ok: false,
-    error: toJson(err('UNAUTHENTICATED', 'no caller identity')),
-  };
-}
 
 function toView(g: GarageRecord): GarageView {
   return {
@@ -253,7 +221,7 @@ export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<CarBuyInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);
@@ -364,7 +332,7 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<CarUpgradeInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);
@@ -480,7 +448,7 @@ export const cosmetic_equip_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<CosmeticEquipInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);
@@ -564,7 +532,7 @@ export const loadout_set_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<LoadoutSetInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const gate = liveopsGate(logger, nk, callerId.id, parsed.value.clientVersion, parsed.value.platform ?? PLATFORM_DEFAULT);
   if (gate !== null) return toJson(gate);

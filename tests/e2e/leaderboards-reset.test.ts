@@ -18,6 +18,7 @@ import {
   FakeContext,
   loadBundleForTest,
   SYSTEM_USER_ID,
+  sessionCtxFor,
 } from './_stubs';
 import type {
   RaceSubmitResultOutput,
@@ -35,7 +36,7 @@ function call<T>(
 ): { ok: true; data: T } | { ok: false; error: { code: string; message: string } } {
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
+  const ctx = caller === null ? sessionCtxFor(payload) : { ...FakeContext, userId: caller };
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   const raw = handler(ctx, env.logger, env.nak, body);
   return JSON.parse(raw as string) as

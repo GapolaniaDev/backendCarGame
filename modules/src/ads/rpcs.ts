@@ -30,6 +30,7 @@ import {
   writeAdWatchLog,
 } from './repo';
 import type { AdProvider, AdTier, AdWatchLog } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -110,10 +111,12 @@ function verifyErrorToCode(e: AdVerifyError | undefined): ErrorCode {
 }
 
 export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
-  if (!ctx.userId) return fail('UNAUTHENTICATED', 'missing userId');
-  const userId: string = ctx.userId;
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
+  // Session identity only (D-03); a body callerUserId must match it.
+  const caller = requireCallerId(ctx, parsed.raw);
+  if (!caller.ok) return caller.error;
+  const userId: string = caller.id;
   const inputOrErr = asInput(parsed.raw);
   if ('error' in inputOrErr) {
     emit(nk, logger, 'ad_watch_failed', {

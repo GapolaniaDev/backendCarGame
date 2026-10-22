@@ -134,9 +134,18 @@ describe('event_list RPC (Phase 8 Chunk 8)', () => {
     expect(r.error.code).toBe('UNAUTHENTICATED');
   });
 
-  it('accepts a callerUserId when ctx.userId is null (HTTP gateway)', () => {
+  it('rejects a body callerUserId without a session (UNAUTHENTICATED, D-03)', () => {
     const r = callRpc(nk, FakeContext, { callerUserId: 'u1' });
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('UNAUTHENTICATED');
+  });
+
+  it('rejects a callerUserId of another account (FORBIDDEN, D-03)', () => {
+    const r = callRpc(nk, { ...FakeContext, userId: 'u1' }, { callerUserId: 'u2' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('FORBIDDEN');
   });
 
   it('BAD_REQUEST on malformed JSON', () => {

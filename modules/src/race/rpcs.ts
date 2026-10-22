@@ -32,7 +32,7 @@ import {
 import { serverNowMs } from '../core/time';
 import type { EventBus } from '../core/event_bus';
 import type { IContext, ILogger, INakama } from '../nkruntime';
-import { SYSTEM_USER_ID, RATE_LIMITS } from './constants';
+import { RATE_LIMITS } from './constants';
 import { canTransition } from './state';
 import {
   allSubmitted,
@@ -88,6 +88,7 @@ import {
   type RaceCompletedProgressionSummary,
 } from '../progression/subscriber';
 import { readEntry as readTournamentEntry, readTournamentInstance } from '../tournaments/repo';
+import { requireCaller } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -248,42 +249,23 @@ function race_session_create_impl(
   nk: INakama,
   payload: string,
 ): string {
-  // Parse the JSON body once. We need it both for `hostUserId` (when ctx
-  // doesn't carry userId) and for the rest of the input validation.
   const parsed = parsePayload<RaceSessionCreateInput>(payload);
   if (parsed === null) {
     return toJson(err('BAD_REQUEST', 'payload is required'));
   }
   if (!parsed.ok) return toJson(parsed);
 
+  // The host is the session user (D-03). The client still sends
+  // `hostUserId`; when present it must be the session user.
+  const caller = requireCaller(ctx, parsed.data, ['hostUserId', 'callerUserId']);
+  if (!caller.ok) return toJson(caller.error);
+  const hostId = caller.userId;
+
   // Maintenance gate (Phase 5 Chunk 9 — exhaustive LiveOps coverage).
   // Race RPCs don't carry clientVersion/platform, so we only check
   // maintenance (no min-version).
-  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.hostUserId ?? '');
+  const m = assertNotInMaintenance(logger, nk, hostId);
   if (m !== null) return toJson(m);
-
-  // Resolve hostId:
-  //   1. ctx.userId when set (authenticated socket call — trusted)
-  //   2. otherwise payload.hostUserId (HTTP gateway / scripts)
-  // The HTTP gateway in v3.27.0 always leaves `ctx.userId` null even
-  // when the client sent a Bearer session token, so we fall back to
-  // the explicit field. Authenticity is enforced via the rate limit being
-  // scoped to whatever was claimed.
-  let hostId: string;
-  if (ctx.userId) {
-    hostId = ctx.userId;
-  } else {
-    const candidate = parsed.data.hostUserId;
-    if (typeof candidate !== 'string' || candidate.length === 0) {
-      return toJson(
-        err(
-          'BAD_REQUEST',
-          'hostUserId is required when ctx.userId is null (HTTP gateway call)',
-        ),
-      );
-    }
-    hostId = candidate;
-  }
 
   const rl = checkRateLimit(nk, {
     rpcName: 'race_session_create',
@@ -371,8 +353,8 @@ function race_session_get_impl(
   nk: INakama,
   payload: string,
 ): string {
-  let callerId: string;
   let sessionId: string | undefined;
+  let body: unknown;
   logger.debug(
     'race_session_get ctx.userId=%s payloadBytes=%d',
     String(ctx.userId),
@@ -388,25 +370,15 @@ function race_session_get_impl(
         return toJson(err('BAD_REQUEST', 'sessionId must be a non-empty string'));
       }
       sessionId = sidField;
-      const callerField = parsed.data.callerUserId;
-      if (typeof callerField !== 'string' || callerField.length === 0) {
-        return toJson(
-          err(
-            'BAD_REQUEST',
-            'callerUserId is required when ctx.userId is null (HTTP gateway call)',
-          ),
-        );
-      }
-      callerId = callerField;
-    } else {
-      callerId = ctx.userId ?? SYSTEM_USER_ID;
+      body = parsed.data;
     }
-  } else {
-    callerId = ctx.userId ?? SYSTEM_USER_ID;
   }
 
-  // Override with ctx.userId if set (authenticated socket — trusted).
-  if (ctx.userId) callerId = ctx.userId;
+  // Caller identity from the session only (D-03; audit N2, N6). A body
+  // `callerUserId` of another account is rejected instead of trusted.
+  const caller = requireCaller(ctx, body);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
 
   const rl = checkRateLimit(nk, {
     rpcName: 'race_session_get',
@@ -493,38 +465,15 @@ function race_session_join_impl(
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
 
+  // The joiner is the session user (D-03): nobody joins on behalf of
+  // another player. Body `userId` / `callerUserId` must match when sent.
+  const caller = requireCaller(ctx, parsed.data, ['userId', 'callerUserId']);
+  if (!caller.ok) return toJson(caller.error);
+  const joinerId = caller.userId;
+
   // Maintenance gate (Chunk 9).
-  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.userId ?? '');
+  const m = assertNotInMaintenance(logger, nk, joinerId);
   if (m !== null) return toJson(m);
-
-  // Resolve the joiner (the player being added to the roster).
-  //   - ctx.userId (socket) wins over payload.userId
-  //   - HTTP gateway falls back to payload.userId
-  let joinerId: string;
-  if (ctx.userId) {
-    joinerId = ctx.userId;
-  } else {
-    if (typeof parsed.data.userId !== 'string' || parsed.data.userId.length === 0) {
-      return toJson(
-        err('BAD_REQUEST', 'userId is required when ctx.userId is null (HTTP gateway call)'),
-      );
-    }
-    joinerId = parsed.data.userId;
-  }
-
-  // Caller authz: the RPC caller must be the joiner themselves (or
-  // the system for admin tooling). Defense against a malicious client
-  // joining on behalf of another player via HTTP.
-  if (typeof parsed.data.callerUserId !== 'string' || parsed.data.callerUserId.length === 0) {
-    return toJson(err('BAD_REQUEST', 'callerUserId is required'));
-  }
-  const declaredCaller = parsed.data.callerUserId;
-  if (ctx.userId && declaredCaller !== ctx.userId) {
-    return toJson(err('FORBIDDEN', 'callerUserId does not match ctx.userId'));
-  }
-  if (!ctx.userId && declaredCaller !== joinerId) {
-    return toJson(err('FORBIDDEN', 'callerUserId must match userId'));
-  }
 
   const loadoutV = validateLoadout(parsed.data.loadout);
   if (!loadoutV.ok) return toJson(loadoutV);
@@ -630,24 +579,14 @@ function race_session_start_impl(
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
 
-  // Maintenance gate (Chunk 9).
-  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? parsed.data.callerUserId ?? '');
-  if (m !== null) return toJson(m);
+  // Caller identity from the session only (D-03).
+  const caller = requireCaller(ctx, parsed.data);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
 
-  let callerId: string;
-  if (ctx.userId) {
-    callerId = ctx.userId;
-  } else {
-    if (
-      typeof parsed.data.callerUserId !== 'string' ||
-      parsed.data.callerUserId.length === 0
-    ) {
-      return toJson(
-        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
-      );
-    }
-    callerId = parsed.data.callerUserId;
-  }
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, callerId);
+  if (m !== null) return toJson(m);
 
   const sessionId =
     typeof parsed.data.sessionId === 'string' && parsed.data.sessionId.length > 0
@@ -762,25 +701,21 @@ function race_submit_result_impl(
   if (parsed === null) return toJson(err('BAD_REQUEST', 'payload is required'));
   if (!parsed.ok) return toJson(parsed);
 
-  const reportV = validateReport(parsed.data.report);
-  if (!reportV.ok) return toJson(reportV);
-  const report = reportV.data;
-
   // Caller authz:
-  //   1. Socket ctx.userId (when set) MUST equal declaredCaller
-  //   2. For HUMAN reports, caller (ctx.userId ?? declaredCaller) must
-  //      equal report.userId — clients can't impersonate.
+  //   1. The caller is the session user (D-03); a body callerUserId
+  //      must match it. Checked before anything else.
+  //   2. For HUMAN reports, the caller must equal report.userId —
+  //      clients can't impersonate.
   //   3. For BOT reports, the host is the actual submitter; we defer
   //      the host-check until after the session read because we need
   //      session.host.
-  if (typeof parsed.data.callerUserId !== 'string' || parsed.data.callerUserId.length === 0) {
-    return toJson(err('BAD_REQUEST', 'callerUserId is required'));
-  }
-  const declaredCaller = parsed.data.callerUserId;
-  const callerId = ctx.userId ?? declaredCaller;
-  if (ctx.userId && declaredCaller !== ctx.userId) {
-    return toJson(err('FORBIDDEN', 'callerUserId does not match ctx.userId'));
-  }
+  const caller = requireCaller(ctx, parsed.data);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
+
+  const reportV = validateReport(parsed.data.report);
+  if (!reportV.ok) return toJson(reportV);
+  const report = reportV.data;
   if (!report.isBotReport && callerId !== report.userId) {
     return toJson(err('FORBIDDEN', 'reporterId must match report.userId'));
   }
@@ -1125,26 +1060,14 @@ function race_session_quick_bots_impl(
   if (!parsed.ok) return toJson(parsed);
   const input = parsed.data;
 
-  // Maintenance gate (Chunk 9).
-  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? input.callerUserId ?? '');
-  if (m !== null) return toJson(m);
+  // Caller identity from the session only (D-03).
+  const caller = requireCaller(ctx, input);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
 
-  // Resolve caller. Same authz convention as the other race RPCs:
-  // ctx.userId (socket) wins; HTTP gateway falls back to callerUserId.
-  let callerId: string;
-  if (ctx.userId) {
-    callerId = ctx.userId;
-  } else {
-    if (
-      typeof input.callerUserId !== 'string' ||
-      input.callerUserId.length === 0
-    ) {
-      return toJson(
-        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
-      );
-    }
-    callerId = input.callerUserId;
-  }
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, callerId);
+  if (m !== null) return toJson(m);
 
   // size validation
   if (input.size !== 2 && input.size !== 4 && input.size !== 6) {
@@ -1395,25 +1318,14 @@ function race_host_claim_impl(
   if (!parsed.ok) return toJson(parsed);
   const input = parsed.data;
 
-  // Maintenance gate (Chunk 9).
-  const m = assertNotInMaintenance(logger, nk, ctx.userId ?? input.callerUserId ?? '');
-  if (m !== null) return toJson(m);
+  // Caller identity from the session only (D-03).
+  const caller = requireCaller(ctx, input);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
 
-  // Caller resolution — same convention as the other race RPCs.
-  let callerId: string;
-  if (ctx.userId) {
-    callerId = ctx.userId;
-  } else {
-    if (
-      typeof input.callerUserId !== 'string' ||
-      input.callerUserId.length === 0
-    ) {
-      return toJson(
-        err('BAD_REQUEST', 'callerUserId is required when ctx.userId is null (HTTP gateway call)'),
-      );
-    }
-    callerId = input.callerUserId;
-  }
+  // Maintenance gate (Chunk 9).
+  const m = assertNotInMaintenance(logger, nk, callerId);
+  if (m !== null) return toJson(m);
 
   const sessionId =
     typeof input.sessionId === 'string' && input.sessionId.length > 0

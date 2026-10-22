@@ -29,6 +29,7 @@ import {
   type BlockRecord,
   type BlockRemoveOutput,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 const BLOCK_RATE_LIMITS = {
   block_add: { maxPerWindow: 30, windowSec: 60 },
@@ -36,30 +37,7 @@ const BLOCK_RATE_LIMITS = {
   block_list: { maxPerWindow: 30, windowSec: 60 },
 } as const;
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('block RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseBody(body: string): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const parsed = parseInput(body);
@@ -110,7 +88,7 @@ export function block_add(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'block_add', caller.id);
@@ -170,7 +148,7 @@ export function block_remove(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'block_remove', caller.id);
@@ -216,7 +194,7 @@ export function block_list(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'block_list', caller.id);

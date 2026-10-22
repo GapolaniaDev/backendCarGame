@@ -10,6 +10,7 @@ import {
   FakeContext,
   loadBundleForTest,
   SYSTEM_USER_ID,
+  sessionCtxFor,
 } from './_stubs';
 import type { RankedGetOutput } from '../../modules/src/ranked/types';
 import type { RaceSession } from '../../modules/src/race/types';
@@ -24,7 +25,7 @@ function call<T>(
 ): T {
   const handler = env.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
+  const ctx = caller === null ? sessionCtxFor(payload) : { ...FakeContext, userId: caller };
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }

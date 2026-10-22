@@ -42,6 +42,7 @@ import { checkReportsRateLimit } from './reports_repo';
 import { addReportAndCheckSilence } from './auto_silence';
 import { silenceUser, writeSilencedUpdate } from '../chat/silenced';
 import { readSilenced } from '../chat/silenced';
+import { requireCallerId } from '../core/caller';
 
 const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
@@ -63,33 +64,7 @@ export type RpcHandler = (
 
 // ─── Caller plumbing (report_player only) ──────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('moderation RPC called with no caller identity');
-  return {
-    ok: false,
-    error: toJson(err('UNAUTHENTICATED', 'no caller identity')),
-  };
-}
 
 // ─── Admin preamble ────────────────────────────────────────────────────────
 
@@ -193,7 +168,7 @@ export interface ReportPlayerRpcOutput {
 export const report_player_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const rl = checkRateLimit(nk, {

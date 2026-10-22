@@ -46,6 +46,7 @@ import type {
 } from './types';
 import { getEventsCatalog } from '../core/active_events';
 import { readProfile } from '../profiles/storage';
+import { requireCallerId } from '../core/caller';
 
 export interface StoreGetInput {
   /** Optional client-supplied "now" for deterministic tests. */
@@ -92,7 +93,7 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<StoreGetInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -183,7 +184,7 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<StoreBuyInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.value.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -484,34 +485,6 @@ function parseInput<T>(body: string): ParseOk<T> | ParseErr {
   return { ok: true, value: raw as T };
 }
 
-interface CallerOk {
-  ok: true;
-  id: string;
-}
-interface CallerErr {
-  ok: false;
-  error: string;
-}
-function resolveCaller(
-  ctx: IContext,
-  declared: string | undefined,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof declared === 'string' ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('store RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function toJson<T>(r: Resp<T>): string {
   return JSON.stringify(r);

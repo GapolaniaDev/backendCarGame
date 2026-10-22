@@ -6,9 +6,8 @@
 //
 // All three are gated by maintenance + min client version via
 // `assertNotInMaintenance` and `assertMinClientVersion` (Phase 5
-// Chunk 2/9). The caller is resolved through `resolveCaller` so the
-// HTTP gateway path requires `callerUserId` to match the body's
-// `userId` claim (defense-in-depth).
+// Chunk 2/9). The caller comes from the session via `requireCallerId`
+// (core/caller.ts); a body `callerUserId` must match it.
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
@@ -37,6 +36,7 @@ import {
   rerollDailyMission,
   PAID_REROLL_COST_GEMS,
 } from './missions_repo';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -105,29 +105,7 @@ export interface MissionsGetOutput {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCallerInternal(
-  ctx: IContext,
-  declared: string | undefined,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('missions RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseInput<T>(body: string): Resp<T> {
   if (body === '' || body === undefined || body === null) {
@@ -202,7 +180,7 @@ export const missions_get: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionsGetInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
-  const callerId = resolveCallerInternal(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -274,7 +252,7 @@ export const mission_claim: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionClaimInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
-  const callerId = resolveCallerInternal(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -369,7 +347,7 @@ export const mission_reroll: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionRerollInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
-  const callerId = resolveCallerInternal(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -424,5 +402,4 @@ export const _testInternals = {
   resolveLevel,
   buildMissionCard,
   parseInput,
-  resolveCallerInternal,
 };

@@ -19,6 +19,7 @@ import {
   type IapSubscription,
 } from './subscription';
 import { emit } from '../core/admin/analytics';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -59,9 +60,13 @@ export interface IapSubscriptionStatusOutput {
   };
 }
 
-export const iap_subscription_status_impl: RpcHandler = (ctx, _logger, _nk, _body) => {
-  if (!ctx.userId) return fail('UNAUTHENTICATED', 'missing userId');
-  const userId: string = ctx.userId;
+export const iap_subscription_status_impl: RpcHandler = (ctx, _logger, _nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  // Session identity only (D-03); a body callerUserId must match it.
+  const caller = requireCallerId(ctx, parsed.raw);
+  if (!caller.ok) return caller.error;
+  const userId: string = caller.id;
   const sub = readSubscriptionWithVersion(_nk, userId)?.value ?? null;
   if (sub === null) {
     return JSON.stringify(ok({ hasSubscription: false }));
@@ -103,10 +108,12 @@ export interface IapSubscriptionCancelOutput {
 }
 
 export const iap_subscription_cancel_impl: RpcHandler = (ctx, logger, nk, body) => {
-  if (!ctx.userId) return fail('UNAUTHENTICATED', 'missing userId');
-  const userId: string = ctx.userId;
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
+  // Session identity only (D-03); a body callerUserId must match it.
+  const caller = requireCallerId(ctx, parsed.raw);
+  if (!caller.ok) return caller.error;
+  const userId: string = caller.id;
   const raw = parsed.raw;
   if (typeof raw['platform'] !== 'string' || (raw['platform'] !== 'apple' && raw['platform'] !== 'google')) {
     return fail('BAD_REQUEST', 'platform must be apple|google');

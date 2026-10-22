@@ -48,6 +48,7 @@ import {
   type ChatLanguage,
   type ChatMessageCard,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -65,33 +66,7 @@ const CHAT_RPC_RATE_LIMITS = {
 
 // ─── Caller plumbing ────────────────────────────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('chat RPC called with no caller identity');
-  return {
-    ok: false,
-    error: toJson(err('UNAUTHENTICATED', 'no caller identity')),
-  };
-}
 
 function parseBody(body: string):
   | { ok: true; data: Record<string, unknown> }
@@ -310,7 +285,7 @@ export function chat_send(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRateLimit(nk, logger, 'chat_send', caller.id);
@@ -410,7 +385,7 @@ export function chat_list(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRateLimit(nk, logger, 'chat_list', caller.id);

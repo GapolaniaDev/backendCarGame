@@ -54,6 +54,7 @@ import {
   writePartyCreate,
   writePartyUpdate,
 } from './parties_repo';
+import { requireCallerId } from '../core/caller';
 
 const PARTY_RPC_RATE = { maxPerWindow: 30, windowSec: 60 };
 
@@ -66,33 +67,7 @@ export type RpcHandler = (
 
 // ─── Caller plumbing ────────────────────────────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('party RPC called with no caller identity');
-  return {
-    ok: false,
-    error: toJson(err('UNAUTHENTICATED', 'no caller identity')),
-  };
-}
 
 function checkRpcRate(
   nk: INakama,
@@ -143,7 +118,7 @@ export function party_create_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_create', caller.id);
@@ -246,7 +221,7 @@ export function party_invite_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_invite', caller.id);
@@ -359,7 +334,7 @@ export function party_join_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_join', caller.id);
@@ -433,7 +408,7 @@ export function party_leave_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_leave', caller.id);
@@ -537,7 +512,7 @@ export function party_kick_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_kick', caller.id);
@@ -627,7 +602,7 @@ export function party_get_impl(
 ): string {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.raw['callerUserId'], logger);
+  const caller = requireCallerId(ctx, parsed.raw);
   if (!caller.ok) return caller.error;
 
   const limit = checkRpcRate(nk, logger, 'party_get', caller.id);

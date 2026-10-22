@@ -34,6 +34,7 @@ import type {
 import { pickCandidate } from './matched_hook';
 import { readParty } from '../parties/parties_repo';
 import type { PartyRecord } from '../parties/types';
+import { requireCaller } from '../core/caller';
 
 export interface ResolvedTicketOptions {
   version: string;
@@ -58,6 +59,12 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
+  // Caller identity from the session only (D-03); a body callerUserId
+  // must match it.
+  const caller = requireCaller(ctx, parsed.value);
+  if (!caller.ok) return toJson(caller.error);
+  const callerId = caller.userId;
+
   const v = validateTicketInput(parsed.value);
   if (!v.ok) {
     return toJson(err('BAD_REQUEST', 'invalid ticket params', { errors: v.errors }));
@@ -65,15 +72,13 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   // LiveOps gate (Chunk 9) — maintenance only (mm_ticket_params doesn't
   // carry ClientPlatform-shaped fields; MmPlatform is "mobile|console|pc").
-  const m = assertNotInMaintenance(
-    logger, nk, ctx.userId ?? parsed.value.callerUserId ?? 'anon',
-  );
+  const m = assertNotInMaintenance(logger, nk, callerId);
   if (m !== null) return toJson(m);
 
   // Phase 7 Chunk 8: party path. When `partyId` is provided, validate
   // caller is the leader and pull party metadata into the ticket.
   const partyId = parsed.value.partyId;
-  const partyResult = resolveParty(nk, logger, parsed.value, partyId);
+  const partyResult = resolveParty(nk, logger, callerId, partyId);
   if (!partyResult.ok) return toJson(err(partyResult.code, partyResult.message));
 
   const options = resolveOptions(nk, ctx, parsed.value, partyResult.party);
@@ -83,7 +88,7 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   logger.info(
     'mm_ticket_params user=%s mode=%s size=%d version=%s region=%s segmentBy=%s ratingBand=%s party=%s',
-    ctx.userId ?? 'anon',
+    callerId,
     output.mode,
     output.size,
     output.version,
@@ -108,8 +113,7 @@ export const mm_ticket_params_impl: RpcHandler = (ctx, logger, nk, body) => {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Pull server-stamped options from the request. The HTTP gateway
- * supplies `callerUserId`; the socket path reads it from `ctx.userId`.
+ * Pull server-stamped options from the request.
  * Region defaults to 'eu-west-1' when neither side provides one.
  *
  * Phase 7 Chunk 8: when `party` is non-null, the rating/party metadata
@@ -157,16 +161,12 @@ function resolveOptions(
 function resolveParty(
   nk: INakama,
   logger: ILogger,
-  input: MmTicketParamsInput,
+  callerId: string,
   partyId: string | undefined,
 ):
   | { ok: true; party: PartyRecord | null }
   | { ok: false; code: 'BAD_REQUEST' | 'FORBIDDEN' | 'NOT_FOUND'; message: string } {
   if (partyId === undefined) return { ok: true, party: null };
-  const callerId = input.callerUserId;
-  if (typeof callerId !== 'string' || callerId.length === 0) {
-    return { ok: false, code: 'FORBIDDEN', message: 'partyId requires callerUserId' };
-  }
   const partyRow = readParty(nk, partyId);
   if (partyRow === null) {
     return { ok: false, code: 'NOT_FOUND', message: 'party not found' };

@@ -23,6 +23,7 @@ import { grant } from '../economy/wallet';
 import { addCarToGarage, addCosmeticToBag, readGarage, readGarageObject, writeGarageCreate, writeGarageUpdate, defaultGarage } from '../garage/storage';
 import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
 import { liveopsGate } from '../core/liveops';
+import { requireCallerId } from '../core/caller';
 
 export interface LiveopsConfigGetInput {
   /** Required when called via HTTP gateway; the socket path reads it from ctx.userId. */
@@ -51,7 +52,7 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
+  const callerId = requireCallerId(ctx, parsed.raw);
   if (!callerId.ok) return callerId.error;
 
   const cfg = loadLiveopsConfig(nk, logger);
@@ -94,34 +95,6 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-interface CallerOk {
-  ok: true;
-  id: string;
-}
-interface CallerErr {
-  ok: false;
-  error: string;
-}
-function resolveCaller(
-  ctx: IContext,
-  declared: string,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('liveops_config_get RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function stripHash<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   // Remove the `configHash` key if present (defensive — currently we never
@@ -157,7 +130,7 @@ export const inbox_list_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
+  const callerId = requireCallerId(ctx, parsed.raw);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -198,7 +171,7 @@ export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, typeof parsed.raw['callerUserId'] === 'string' ? parsed.raw['callerUserId'] : '', logger);
+  const callerId = requireCallerId(ctx, parsed.raw);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
   const rawP = parsed.raw;

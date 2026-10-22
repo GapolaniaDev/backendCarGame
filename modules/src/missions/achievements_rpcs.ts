@@ -29,6 +29,7 @@ import type {
   AchievementDefinition,
   MissionReward,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -133,29 +134,7 @@ function parseBody<T>(body: string): { ok: true; data: T } | { ok: false; error:
   return { ok: true, data: parsed.value as T };
 }
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: string | undefined,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('achievements RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function checkRateOrLimit(
   nk: INakama,
@@ -189,7 +168,7 @@ export const achievements_get: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<AchievementsGetInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -230,7 +209,7 @@ export const achievement_claim: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<AchievementClaimInput>(body);
   if (!parsed.ok) return parsed.error;
 
-  const callerId = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const callerId = requireCallerId(ctx, parsed.data);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 

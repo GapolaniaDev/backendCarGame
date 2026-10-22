@@ -33,6 +33,7 @@ import {
   type AccountLinkResolveConflictInput,
   type AccountLinkResolveConflictOutput,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -41,21 +42,6 @@ export type RpcHandler = (
   body: string,
 ) => string;
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
-function resolveCaller(ctx: IContext, declared: string, logger: ILogger): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller = declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return { ok: false, error: JSON.stringify(err('FORBIDDEN', 'callerUserId does not match authenticated user')) };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('account_link RPC called with no caller identity');
-  return { ok: false, error: JSON.stringify(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 // ─── account_link ───────────────────────────────────────────────────────────
 
@@ -64,8 +50,7 @@ export const account_link_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!parsed.ok) return parsed.error;
   const raw = parsed.raw;
 
-  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
-  const callerId = resolveCaller(ctx, caller, logger);
+  const callerId = requireCallerId(ctx, raw);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -131,8 +116,7 @@ export const account_link_resolve_conflict_impl: RpcHandler = (ctx, logger, nk, 
   if (!parsed.ok) return parsed.error;
   const raw = parsed.raw;
 
-  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
-  const callerId = resolveCaller(ctx, caller, logger);
+  const callerId = requireCallerId(ctx, raw);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 
@@ -200,8 +184,7 @@ export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!parsed.ok) return parsed.error;
   const raw = parsed.raw;
 
-  const caller = typeof raw['callerUserId'] === 'string' ? raw['callerUserId'] as string : '';
-  const callerId = resolveCaller(ctx, caller, logger);
+  const callerId = requireCallerId(ctx, raw);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
 

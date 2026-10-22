@@ -45,6 +45,7 @@ import {
   type RecentRivalCard,
   type RecentRivalsGetOutput,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -65,30 +66,7 @@ const FRIEND_RATE_LIMITS = {
 
 // ─── Caller plumbing ───────────────────────────────────────────────────────────
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('friend RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseBody(body: string): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const parsed = parseInput(body);
@@ -138,7 +116,7 @@ export function friend_code_get(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'friend_code_get', caller.id);
@@ -209,7 +187,7 @@ export function friend_add_by_code(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'friend_add_by_code', caller.id);
@@ -315,7 +293,7 @@ export function friend_list_get(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'friend_list_get', caller.id);
@@ -347,7 +325,7 @@ export function friend_remove(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'friend_remove', caller.id);
@@ -393,7 +371,7 @@ export function recent_rivals_get(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'recent_rivals_get', caller.id);

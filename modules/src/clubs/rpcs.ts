@@ -82,6 +82,7 @@ import {
   type MemberRecord,
   type Role,
 } from './types';
+import { requireCallerId } from '../core/caller';
 
 const CLUB_RATE_LIMITS = {
   club_create: { maxPerWindow: 5, windowSec: 60 },
@@ -101,30 +102,7 @@ const BLOCKED_WORDS: ReadonlySet<string> = new Set<string>([
   'admin', 'moderator', 'support', 'system',
 ]);
 
-interface CallerOk { ok: true; id: string; }
-interface CallerErr { ok: false; error: string; }
 
-function resolveCaller(
-  ctx: IContext,
-  declared: unknown,
-  logger: ILogger,
-): CallerOk | CallerErr {
-  const socketCaller = ctx.userId ?? null;
-  const declaredCaller =
-    typeof declared === 'string' && declared.length > 0 ? declared : null;
-  if (socketCaller !== null) {
-    if (declaredCaller !== null && declaredCaller !== socketCaller) {
-      return {
-        ok: false,
-        error: toJson(err('FORBIDDEN', 'callerUserId does not match authenticated user')),
-      };
-    }
-    return { ok: true, id: socketCaller };
-  }
-  if (declaredCaller !== null) return { ok: true, id: declaredCaller };
-  logger.warn('club RPC called with no caller identity');
-  return { ok: false, error: toJson(err('UNAUTHENTICATED', 'no caller identity')) };
-}
 
 function parseBody(body: string): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const parsed = parseInput(body);
@@ -230,7 +208,7 @@ export function club_create(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_create', caller.id);
@@ -411,7 +389,7 @@ export function club_get(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_get', caller.id);
@@ -502,7 +480,7 @@ export function club_search(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_search', caller.id);
@@ -614,7 +592,7 @@ export function club_update(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_update', caller.id);
@@ -689,7 +667,7 @@ export function club_members_list(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_members_list', caller.id);
@@ -772,7 +750,7 @@ export function club_kick(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_kick', caller.id);
@@ -828,7 +806,7 @@ export function club_promote(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_promote', caller.id);
@@ -953,7 +931,7 @@ export function club_demote(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_demote', caller.id);
@@ -1016,7 +994,7 @@ export function club_leave(
 ): string {
   const parsed = parseBody(body);
   if (!parsed.ok) return parsed.error;
-  const caller = resolveCaller(ctx, parsed.data.callerUserId, logger);
+  const caller = requireCallerId(ctx, parsed.data);
   if (!caller.ok) return caller.error;
 
   const limit = checkRateOrLimit(nk, logger, 'club_leave', caller.id);
