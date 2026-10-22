@@ -86,6 +86,16 @@ function submit(env: LoadedBundle, sid: string, user: string, laps = D_LAPS, ext
   );
 }
 
+/** Move every report (and the start) back so the close grace has expired. */
+function expireGrace(env: LoadedBundle, sid: string): void {
+  const s = storedSession(env, sid);
+  for (const e of s.roster) if (e.reportedAt !== undefined) e.reportedAt -= 31_000;
+}
+
+function getById(env: LoadedBundle, user: string, sid: string) {
+  return call<{ session: RaceSession }>(env, 'race_session_get', user, { sessionId: sid });
+}
+
 function getActive(env: LoadedBundle, user: string) {
   return call<{ session: RaceSession; lastClosed?: RaceSession }>(env, 'race_session_get', user, {});
 }
@@ -144,6 +154,73 @@ describe('F1 races (plan T-06…T-10)', () => {
 
       const got = getActive(env, A);
       expect(got.ok && got.data.session.id).toBe(newer);
+    });
+  });
+
+  describe('T-06 close with absent players', () => {
+    function threePlayerRace(): string {
+      const sid = createPrivate(env, A, 4);
+      expect(join(env, sid, B).ok).toBe(true);
+      expect(join(env, sid, C).ok).toBe(true);
+      start(env, sid, A);
+      backdate(env, sid, 200_000);
+      return sid;
+    }
+
+    it('stays open while the grace runs, then closes on read with the absent player DNF', () => {
+      const sid = threePlayerRace();
+      expect(submit(env, sid, A).ok).toBe(true);
+      expect(submit(env, sid, B, [48_200, 48_200, 48_200]).ok).toBe(true);
+
+      const during = getById(env, A, sid);
+      expect(during.ok && during.data.session.state).toBe('started');
+
+      expireGrace(env, sid);
+      const after = getById(env, B, sid);
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      const session = after.data.session;
+      expect(session.state).toBe('closed');
+      const byUser = new Map(session.results.map((r) => [r.userId, r]));
+      expect(byUser.get(A)?.rank).toBe(1);
+      expect(byUser.get(B)?.rank).toBe(2);
+      expect(byUser.get(C)?.abandoned).toBe(true);
+      expect(session.roster.find((e) => e.userId === C)?.abandoned).toBe(true);
+      // The lazy close paid the two finishers.
+      expect(env.fakeLogger.lines.some((l) => l.includes(`economy payouts sid=${sid} paid=2`))).toBe(true);
+      expect(env.fakeNakama.store.has(`race_open/${sid}/${SYSTEM_USER_ID}`)).toBe(false);
+    });
+
+    it('a late report after the grace gets CONFLICT and the session closes first', () => {
+      const sid = threePlayerRace();
+      expect(submit(env, sid, A).ok).toBe(true);
+      expireGrace(env, sid);
+
+      const late = submit(env, sid, C);
+      expect(late.ok).toBe(false);
+      if (!late.ok) {
+        expect(late.error.code).toBe('CONFLICT');
+        expect(late.error.details?.['reason']).toBe('BAD_STATE');
+      }
+      expect(storedSession(env, sid).state).toBe('closed');
+    });
+
+    it('a report inside the grace is still accepted and the last one closes the race', () => {
+      const sid = threePlayerRace();
+      expect(submit(env, sid, A).ok).toBe(true);
+      expect(submit(env, sid, B).ok).toBe(true);
+      const last = submit(env, sid, C);
+      expect(last.ok).toBe(true);
+      if (last.ok) expect(last.data.officialResults).toHaveLength(3);
+    });
+
+    it('a started session with no human report closes after ABANDONED_SESSION_MS', () => {
+      const sid = createPrivate(env, A, 2);
+      start(env, sid, A);
+      backdate(env, sid, 31 * 60_000);
+      const got = getById(env, A, sid);
+      expect(got.ok && got.data.session.state).toBe('closed');
+      if (got.ok) expect(got.data.session.results.every((r) => r.abandoned)).toBe(true);
     });
   });
 

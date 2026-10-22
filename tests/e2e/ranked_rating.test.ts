@@ -135,7 +135,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — full race lifecycle', () => {
     // Backdate startedAt so the clock check tolerates our 120_000 ms totalMs.
     const storeKey = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
     const obj = env.fakeNakama.store.get(storeKey);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
     return { sid };
   }
 
@@ -266,7 +266,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — full race lifecycle', () => {
     if (!startEnv.ok) throw new Error('start failed');
     const storeKey = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
     const obj = env.fakeNakama.store.get(storeKey);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
     submitReport(sid, HOST_ID, 220_000);
     submitReport(sid, P1, 240_000);

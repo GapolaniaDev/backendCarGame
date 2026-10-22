@@ -10,6 +10,7 @@
 //   - tournaments: lifecycle + prize payout       every 60 s
 //   - events: special-offer reconciliation        every 5 min
 //   - subscriptions: expiry notices + grants      every 5 min
+//   - races: close sessions past their grace       every 15 s (plan T-06)
 // A storage lease (`tick_lock.ts`) makes sure only one tick runs at a
 // time even with several matches or nodes.
 //
@@ -25,6 +26,7 @@ import { ensureRuntimeState } from '../core/runtime_state';
 import { runScannerTick as runTournamentTick } from '../tournaments/scanner';
 import { runEventScannerTick } from '../events/scanner';
 import { scanOnce as runSubscriptionTick } from '../iap/subscription_scanner';
+import { runRaceCloseTick } from '../race/close';
 import { tryAcquireTickLock, releaseTickLock } from './tick_lock';
 
 export const SERVICE_TICKER_MODULE = 'service_ticker';
@@ -33,6 +35,8 @@ export const SERVICE_TICKER_LABEL = 'service_ticker';
 export const TOURNAMENT_TICK_MS = 60_000;
 export const EVENT_TICK_MS = 5 * 60_000;
 export const SUBSCRIPTION_TICK_MS = 5 * 60_000;
+/** Race sessions past their grace (`CLOSE_GRACE_MS`, 30 s) close within this. */
+export const RACE_CLOSE_TICK_MS = 15_000;
 /** Lease length: shorter than the fastest job interval. */
 export const SERVICE_TICK_LOCK_TTL_MS = 55_000;
 export const SERVICE_TICK_LOCK_NAME = 'service_tick';
@@ -44,6 +48,7 @@ export interface ServiceTickerState {
   lastTournamentMs: number;
   lastEventMs: number;
   lastSubscriptionMs: number;
+  lastRaceCloseMs: number;
   /** Number of loops that ran at least one job. */
   runs: number;
   /** After a lost lease race, no attempt before this epoch ms. */
@@ -55,6 +60,7 @@ export interface ServiceTickResult {
   tournaments: string;
   events: string;
   subscriptions: string;
+  races: string;
 }
 
 function runJob(logger: ILogger, name: string, job: () => string): string {
@@ -80,13 +86,14 @@ export function runServiceTick(
   const dueTournament = nowMs - state.lastTournamentMs >= TOURNAMENT_TICK_MS;
   const dueEvent = nowMs - state.lastEventMs >= EVENT_TICK_MS;
   const dueSubscription = nowMs - state.lastSubscriptionMs >= SUBSCRIPTION_TICK_MS;
-  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-' };
-  if (!dueTournament && !dueEvent && !dueSubscription) return idle;
+  const dueRaces = nowMs - (state.lastRaceCloseMs ?? 0) >= RACE_CLOSE_TICK_MS;
+  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-', races: '-' };
+  if (!dueTournament && !dueEvent && !dueSubscription && !dueRaces) return idle;
   if (nowMs < state.nextAttemptMs) return idle;
   if (!tryAcquireTickLock(nk, SERVICE_TICK_LOCK_NAME, holder, nowMs, SERVICE_TICK_LOCK_TTL_MS)) {
     // Another ticker holds the lease; back off instead of retrying every loop.
     state.nextAttemptMs = nowMs + LOCK_RETRY_MS;
-    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked' };
+    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked', races: 'locked' };
   }
   const result: ServiceTickResult = { ...idle, ran: true };
   try {
@@ -111,14 +118,27 @@ export function runServiceTick(
         return `scanned=${r.scanned}/grants=${r.monthlyGrants}/errors=${r.errors}`;
       });
     }
+    if (dueRaces) {
+      state.lastRaceCloseMs = nowMs;
+      result.races = runJob(logger, 'races', () => {
+        const r = runRaceCloseTick(nk, logger, nowMs);
+        return `open=${r.scanned}/closed=${r.closed}`;
+      });
+    }
   } finally {
     releaseTickLock(nk, SERVICE_TICK_LOCK_NAME, holder);
   }
   state.runs += 1;
-  logger.info(
-    'service ticker tick n=%d tournaments=%s events=%s subscriptions=%s',
-    state.runs, result.tournaments, result.events, result.subscriptions,
-  );
+  // A races-only pass (every 15 s) logs at debug unless it closed something.
+  const racesOnly = !dueTournament && !dueEvent && !dueSubscription;
+  if (!racesOnly || !/\/closed=0$/.test(result.races)) {
+    logger.info(
+      'service ticker tick n=%d tournaments=%s events=%s subscriptions=%s races=%s',
+      state.runs, result.tournaments, result.events, result.subscriptions, result.races,
+    );
+  } else {
+    logger.debug('service ticker races n=%d %s', state.runs, result.races);
+  }
   return result;
 }
 
@@ -156,6 +176,7 @@ export function serviceTickerInit(
     lastTournamentMs: 0,
     lastEventMs: 0,
     lastSubscriptionMs: 0,
+    lastRaceCloseMs: 0,
     runs: 0,
     nextAttemptMs: 0,
   };

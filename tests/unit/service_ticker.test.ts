@@ -18,8 +18,11 @@ import {
   serviceTickerJoinAttempt,
   serviceTickerLoop,
   type ServiceTickerState,
+  RACE_CLOSE_TICK_MS,
 } from '../../modules/src/scheduler/service_ticker';
 import { ensureRuntimeState } from '../../modules/src/core/runtime_state';
+import { createSession, readSession } from '../../modules/src/race/session_repo';
+import type { RaceSession } from '../../modules/src/race/types';
 import {
   TICK_LOCK_COLLECTION,
   TICK_LOCK_OWNER_ID,
@@ -112,6 +115,8 @@ describe('tick lock (storage lease)', () => {
   });
 });
 
+const SYSTEM = '00000000-0000-0000-0000-000000000000';
+
 describe('service ticker scheduling', () => {
   const NOW = Date.UTC(2026, 9, 22, 12, 0, 0);
   let fake: FakeNakama;
@@ -124,7 +129,7 @@ describe('service ticker scheduling', () => {
     nk = fake.nakama;
     logger = makeLogger();
     ensureRuntimeState(nk, logger);
-    state = { lastTournamentMs: 0, lastEventMs: 0, lastSubscriptionMs: 0, runs: 0, nextAttemptMs: 0 };
+    state = { lastTournamentMs: 0, lastEventMs: 0, lastSubscriptionMs: 0, lastRaceCloseMs: 0, runs: 0, nextAttemptMs: 0 };
   });
 
   it('runs every job on the first loop and logs one tick line', () => {
@@ -158,6 +163,47 @@ describe('service ticker scheduling', () => {
     expect(state.nextAttemptMs).toBe(NOW + 1 + LOCK_RETRY_MS);
     expect(runServiceTick(nk, logger, state, NOW + 2, 'match:t').tournaments).toBe('-');
     expect(state.runs).toBe(0);
+  });
+
+  it('closes a race whose grace expired every RACE_CLOSE_TICK_MS (T-06)', () => {
+    const now = Date.now();
+    const session: RaceSession = {
+      schemaVersion: 1,
+      id: 'ticker-race',
+      matchId: 'ticker-race',
+      mode: 'private',
+      trackId: 'neon_blvd',
+      size: 2,
+      roster: [
+        {
+          userId: 'p1',
+          loadout: { classId: 'D', bodyId: 'starter_viper' },
+          isBot: false,
+          reportedAt: now - 31_000,
+          totalMs: 144_300,
+          laps: [48_100, 48_100, 48_100],
+        },
+        { userId: 'p2', loadout: { classId: 'D', bodyId: 'starter_viper' }, isBot: false },
+      ],
+      host: 'p1',
+      hostSuccession: ['p1', 'p2'],
+      state: 'started',
+      startedAt: now - 200_000,
+      results: [],
+      flags: { needsReview: false },
+      version: 2,
+    };
+    createSession(nk, session, ['p1', 'p2'], now);
+    expect(fake.store.has(`race_open/ticker-race/${SYSTEM}`)).toBe(true);
+
+    const first = runServiceTick(nk, logger, state, now, 'match:t');
+    expect(first.races).toBe('open=1/closed=1');
+    const closed = readSession(nk, 'ticker-race')!.session;
+    expect(closed.state).toBe('closed');
+    expect(closed.results.find((r) => r.userId === 'p2')?.abandoned).toBe(true);
+    expect(fake.store.has(`race_open/ticker-race/${SYSTEM}`)).toBe(false);
+    expect(runServiceTick(nk, logger, state, now + 1_000, 'match:t').ran).toBe(false);
+    expect(runServiceTick(nk, logger, state, now + RACE_CLOSE_TICK_MS, 'match:t').races).toBe('open=0/closed=0');
   });
 
   it('releases the lease after a tick', () => {

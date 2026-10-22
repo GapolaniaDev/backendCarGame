@@ -39,11 +39,27 @@ export const REPORTS_INDEX_KEY = '__reports_index';
 export const CLOCK_SKEW_TOLERANCE_MS = 500;
 
 /**
- * Grace period after the first report during which non-reporting
+ * Grace period after the first human report during which non-reporting
  * players are still considered in-flight. After this window, the
- * server marks them `abandoned: true` and closes the session.
+ * server marks them `abandoned: true` (DNF) and closes the session
+ * (plan T-06, audit PC-06): lazily in `race_session_get` /
+ * `race_submit_result`, and from the service ticker. Shorter than the
+ * client's close timeout (`RaceBackendConfig.closeTimeoutSeconds`, 45 s).
  */
 export const CLOSE_GRACE_MS = 30_000;
+
+/**
+ * A started session where no human ever reports closes this long after
+ * `startedAt`, with every player DNF, so it does not stay open forever.
+ */
+export const ABANDONED_SESSION_MS = 30 * 60_000;
+
+/**
+ * Open-session index (plan T-06): one system-owned object per started,
+ * not yet closed session (key = sessionId), so the service ticker can find
+ * the sessions whose grace expired without scanning every race object.
+ */
+export const RACE_OPEN_COLLECTION = 'race_open';
 
 /**
  * Phase 4 Chunk 4 — host-claim grace window. After this many seconds

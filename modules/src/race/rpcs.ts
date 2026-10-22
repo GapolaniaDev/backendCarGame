@@ -44,17 +44,15 @@ import {
   markStarted,
   readActiveIndex,
   readSession,
-  reportDisconnect,
   submitReport,
-  tryCloseAndPublish,
 } from './session_repo';
+import { CloseConflictError, closeIfDue, closeRace, type ClosedRace } from './close';
 import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
 import { resolveServerLoadout } from './loadout';
 import type {
   ConfigGetOutput,
   CarClassId,
   Loadout,
-  RaceCompletedEvent,
   RaceHostClaimInput,
   RaceHostClaimOutput,
   RaceReport,
@@ -73,7 +71,6 @@ import type {
   RaceSessionGetOutput,
   RaceSubmitResultInput,
   RaceSubmitResultOutput,
-  RaceSubmitResultRewardEntry,
 } from './types';
 import {
   averageRating,
@@ -81,14 +78,6 @@ import {
   pickBotDifficulty,
 } from '../matchmaking/quick_bots';
 import { pickTrack } from '../matchmaking/track_picker';
-import {
-  handleRaceCompletedForEconomy,
-  type RaceCompletedRewardSummary,
-} from '../economy/subscriber';
-import {
-  handleRaceCompletedForProgression,
-  type RaceCompletedProgressionSummary,
-} from '../progression/subscriber';
 import { readEntry as readTournamentEntry, readTournamentInstance } from '../tournaments/repo';
 import { requireCaller } from '../core/caller';
 
@@ -394,8 +383,12 @@ function race_session_get_impl(
   if (!sessionId) {
     const active = resolveActiveSession(nk, callerId, serverNowMs());
     if (active !== null) {
-      logger.debug('race_session_get caller=%s via active index sid=%s', callerId, active.id);
-      const out: RaceSessionGetOutput = { session: active };
+      // Lazy close (T-06): a session past its grace closes on read.
+      const { current } = closeIfDue(nk, logger, active, serverNowMs(), 'race_session_get');
+      logger.debug('race_session_get caller=%s via active index sid=%s', callerId, current.session.id);
+      const out: RaceSessionGetOutput = current.session.state === 'closed'
+        ? { session: current.session, lastClosed: current.session }
+        : { session: current.session };
       return toJson(ok(out));
     }
     const last = lookupLastClosed(nk, callerId);
@@ -414,13 +407,13 @@ function race_session_get_impl(
     return toJson(ok(out));
   }
 
-  const result = readSession(nk, sessionId);
-  if (!result) {
+  const found = readSession(nk, sessionId);
+  if (!found) {
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
   // Caller must be in the roster.
-  const inRoster = result.session.roster.some((e) => e.userId === callerId);
+  const inRoster = found.session.roster.some((e) => e.userId === callerId);
   if (!inRoster) {
     logger.warn(
       'race_session_get sid=%s callerId=%s not in roster — denying',
@@ -430,6 +423,8 @@ function race_session_get_impl(
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
+  // Lazy close (T-06): a session past its grace closes on read.
+  const result = closeIfDue(nk, logger, found, serverNowMs(), 'race_session_get').current;
   logger.debug('race_session_get sid=%s caller=%s', sessionId, callerId);
   const out: RaceSessionGetOutput = { session: result.session };
   return toJson(ok(out));
@@ -441,7 +436,11 @@ function race_session_get_impl(
  * left its roster, or it sat in `created` longer than
  * `CREATED_SESSION_TTL_MS` (an unused matchmaker session).
  */
-function resolveActiveSession(nk: INakama, callerId: string, nowMs: number): RaceSession | null {
+function resolveActiveSession(
+  nk: INakama,
+  callerId: string,
+  nowMs: number,
+): ReturnType<typeof readSession> {
   const pointer = readActiveIndex(nk, callerId);
   if (pointer === null) return null;
   const cur = readSession(nk, pointer.sessionId);
@@ -453,7 +452,7 @@ function resolveActiveSession(nk: INakama, callerId: string, nowMs: number): Rac
     const since = session.createdAt ?? pointer.since;
     if (nowMs - since > CREATED_SESSION_TTL_MS) return null;
   }
-  return session;
+  return cur;
 }
 
 // ─── race_session_join ───────────────────────────────────────────────────────
@@ -777,10 +776,13 @@ function race_submit_result_impl(
     return toJson(err('RATE_LIMITED', undefined, { limit: rl.limit, windowSec: rl.windowSec }));
   }
 
-  const cur = readSession(nk, sessionId);
-  if (!cur) {
+  const found = readSession(nk, sessionId);
+  if (!found) {
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
+  // A session past its grace closes first (T-06), so a late report meets
+  // a closed session and gets CONFLICT from step-1.
+  const cur = closeIfDue(nk, logger, found, serverNowMs(), 'race_submit_result').current;
 
   // Bot-auth gate (Chunk 8): only the host may submit reports on
   // behalf of bots. Bots are relay-pure so the host is the only auth'd
@@ -893,86 +895,23 @@ function race_submit_result_impl(
 
   // If every roster entry has now submitted, transition the session to
   // `closed` atomically. The CAS on `version` guards against a second
-  // concurrent submit racing us — only the winner closes, the loser
-  // sees `closed: false` from the idempotency check below on retry.
-  let closeOutcome: ReturnType<typeof tryCloseAndPublish> | null = null;
-  let closedEvent: RaceCompletedEvent | null = null;
-  const raceBus = getRaceBus(nk, logger);
+  // concurrent submit racing us — only the winner closes and pays; the
+  // loser leaves the close to the next submit, read or ticker pass.
+  let closed: ClosedRace | null = null;
   if (allSubmitted(updated.session.roster)) {
     try {
-      closeOutcome = tryCloseAndPublish(
-        nk,
-        raceBus,
-        updated.session,
-        newSessionVersion,
-        serverNowMs(),
-      );
-      logger.info(
-        'race_submit_result sid=%s closed confidence=%s needsReview=%s',
-        sessionId,
-        closeOutcome.confidence,
-        String(closeOutcome.needsReview),
-      );
-      // Synthesize the closed event so the RPC can synchronously
-      // compute the per-player reward summary (Decision 6) without
-      // waiting on the async subscribers. The async subscribers
-      // (economy, progression) also run; their grant() / XP updates
-      // are idempotent via the wallet helper's localcache keys.
-      closedEvent = {
-        schemaVersion: 1,
-        sessionId,
-        mode: updated.session.mode,
-        trackId: updated.session.trackId,
-        size: updated.session.size,
-        results: closeOutcome.results,
-        flags: {
-          needsReview: closeOutcome.needsReview,
-          ...(closeOutcome.reviewReason !== undefined
-            ? { reviewReason: closeOutcome.reviewReason }
-            : {}),
-        },
-        closedAt: serverNowMs(),
-      };
-      const startedAt = updated.session.startedAt;
-      const abandonedCount = closeOutcome.results.filter((r) => r.abandoned === true).length;
-      const finisherCount = closeOutcome.results.length - abandonedCount;
-      const durationMs = typeof startedAt === 'number' ? closedEvent.closedAt - startedAt : 0;
-      emit(nk, logger, 'race_completed', {
-        sessionId: closedEvent.sessionId,
-        mode: closedEvent.mode,
-        size: closedEvent.size,
-        durationMs,
-        finisherCount,
-        abandonedCount,
-        confidence: closeOutcome.confidence,
-      });
+      closed = closeRace(nk, logger, updated.session, newSessionVersion, serverNowMs(), 'all_reported', 'throw');
     } catch (e) {
+      if (!(e instanceof CloseConflictError)) throw e;
       logger.warn(
         'race_submit_result sid=%s close CAS conflict: %s',
         sessionId,
         e instanceof Error ? e.message : String(e),
       );
-      // Not fatal — the next submit (or the next-chance goroutine)
-      // will retry the close.
     }
   }
-
-  // Phase 3 (Decision 6): compute per-player rewards synchronously so
-  // the RPC client sees them in the response without waiting on the
-  // async event subscribers. The subscribers still run for redundancy
-  // and for sessions closed by other paths (admin, force-close).
-  let rewardsOut: Record<string, RaceSubmitResultRewardEntry> | undefined = undefined;
-  if (closedEvent !== null) {
-    const econSummary: RaceCompletedRewardSummary = handleRaceCompletedForEconomy(
-      { logger, nk, bus: raceBus },
-      closedEvent,
-    );
-    const progSummary: RaceCompletedProgressionSummary = handleRaceCompletedForProgression(
-      { logger, nk, bus: raceBus },
-      closedEvent,
-    );
-    rewardsOut = mergeRewardSummaries(econSummary, progSummary);
-  }
+  const closeOutcome = closed?.outcome ?? null;
+  const rewardsOut = closed?.rewards;
 
   const out: RaceSubmitResultOutput = {
     accepted: true,
@@ -997,47 +936,6 @@ function race_submit_result_impl(
   // to re-submit long after a transient error.
   nk.localcachePut(`submit_result:${idempKey}`, serialized, 60);
   return serialized;
-}
-
-// ─── Reward merging (Phase 3, Decision 6) ────────────────────────────────────
-
-function mergeRewardSummaries(
-  econ: RaceCompletedRewardSummary,
-  prog: RaceCompletedProgressionSummary,
-): Record<string, RaceSubmitResultRewardEntry> {
-  const out: Record<string, RaceSubmitResultRewardEntry> = {};
-  // Players with wallet movement come from the economy summary.
-  for (const [userId, e] of Object.entries(econ.perPlayer)) {
-    const p = prog.perPlayer[userId];
-    out[userId] = {
-      coins: e.rewards.filter((r) => r.kind === 'coins').reduce((s, r) => s + (r.amount ?? 0), 0),
-      gems: e.rewards.filter((r) => r.kind === 'gems').reduce((s, r) => s + (r.amount ?? 0), 0),
-      xp: p?.xpAwarded ?? 0,
-      isFirstWinOfDay: e.isFirstWinOfDay,
-      leveledUp: p?.leveledUp ?? false,
-      newLevel: p?.newLevel ?? 1,
-      newBalance: e.newBalance,
-      levelUpRewards: (p?.levelUpRewards ?? []).map((r) => ({
-        kind: (r.kind === 'coins' || r.kind === 'gems' ? r.kind : 'coins') as 'coins' | 'gems',
-        amount: r.amount ?? 0,
-      })),
-    };
-  }
-  // Players with XP but no wallet movement (e.g. below the XP floor).
-  for (const [userId, p] of Object.entries(prog.perPlayer)) {
-    if (out[userId] !== undefined) continue;
-    out[userId] = {
-      coins: 0,
-      gems: 0,
-      xp: p.xpAwarded,
-      isFirstWinOfDay: p.isFirstWinOfDay,
-      leveledUp: p.leveledUp,
-      newLevel: p.newLevel,
-      newBalance: { coins: 0, gems: 0 },
-      levelUpRewards: [],
-    };
-  }
-  return out;
 }
 
 // ─── race_session_quick_bots (Phase 4 Chunk 3) ────────────────────────────────

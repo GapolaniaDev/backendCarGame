@@ -118,7 +118,7 @@ describe('analytics_e2e (Phase 5 Chunk 7) — emit', () => {
 
     // Backdate so the submit-time clock check tolerates our short totalMs.
     const obj = env.fakeNakama.store.get(`race_sessions/${sid}/${SYSTEM_USER_ID}`);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
     const submit1 = call<RaceSubmitResultOutput>(env, 'race_submit_result', HOST_ID, {
       sessionId: sid, callerUserId: HOST_ID,

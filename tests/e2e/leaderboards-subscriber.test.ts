@@ -81,7 +81,7 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     // totalMs at default Date.now().
     const storeKey = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
     const obj = env.fakeNakama.store.get(storeKey);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
     return { sid };
   }
 
@@ -239,7 +239,7 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     if (!startEnv.ok) throw new Error('start failed');
     const storeKey = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
     const obj = env.fakeNakama.store.get(storeKey);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
     // time_trial mode on neon_blvd = 1 lap; totalMs=40_000.
     const ttResp = call<RaceSubmitResultOutput>(env, 'race_submit_result', HOST_ID, {
       sessionId: sid,

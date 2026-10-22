@@ -613,7 +613,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     }
 
     it('accepts a valid report from a roster member and bumps the session version', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const submitEnv = call<{ accepted: true; confidence: string }>(
         env,
         'race_submit_result',
@@ -637,7 +637,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('persists the report in the race_sessions/{sid}/reports/{userId} sub-key', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       call<{ accepted: true }>(
         env,
         'race_submit_result',
@@ -649,7 +649,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('replays the cached response on retry with the same (sessionId, userId)', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const first = call<{ accepted: true }>(
         env,
         'race_submit_result',
@@ -685,7 +685,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects an out-of-roster submission (INVALID_RESULT)', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const OUTSIDER = '99999999-9999-4999-8999-999999999999';
       const submitEnv = call<unknown>(env, 'race_submit_result', null, submitPayload(sid, makeReport(OUTSIDER), OUTSIDER));
       expect(submitEnv.ok).toBe(false);
@@ -694,7 +694,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a duplicate submission with CONFLICT / ALREADY_REPORTED', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       // First submission — clear the cache key after writing so the
       // duplicate test doesn't hit idempotency. Easiest: delete the
       // cache entry directly.
@@ -732,7 +732,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects mismatched callerUserId vs report.userId (FORBIDDEN)', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
         submitPayload(sid, makeReport('44444444-4444-4444-8444-444444444444'), PLAYER_A));
       expect(submitEnv.ok).toBe(false);
@@ -741,7 +741,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects ctx.userId != callerUserId on socket calls (FORBIDDEN)', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const submitEnv = call<unknown>(env, 'race_submit_result', HOST_ID,
         submitPayload(sid, makeReport(PLAYER_A), PLAYER_A));
       expect(submitEnv.ok).toBe(false);
@@ -750,7 +750,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects malformed reports (BAD_REQUEST)', () => {
-      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: 1_000_000_000_000 });
+      const sid = setupStartedSession(4, 'quick', { overrideStartedAtMs: Date.now() - 600_000 });
       const bad = {
         sessionId: sid,
         callerUserId: PLAYER_A,
@@ -814,7 +814,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     }
 
     it('accepts a well-formed report (within clock, at-or-above min-time, sum matches)', () => {
-      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: Date.now() - 600_000 });
       // quick/neon_blvd = 3 laps; B class min = 40_000/lap → min total 120_000.
       const submitEnv = call<{ accepted: true; confidence: string }>(
         env, 'race_submit_result', null,
@@ -841,7 +841,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a report below the per-class min-time (BELOW_MIN_TIME)', () => {
-      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: Date.now() - 600_000 });
       // B class min = 120_000. totalMs = 30_000 is well below; min-time
       // fires before lap-count.
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
@@ -853,7 +853,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a report with the wrong number of laps (LAP_COUNT_MISMATCH)', () => {
-      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: Date.now() - 600_000 });
       // quick/neon_blvd = 3 laps; submit 2 laps. totalMs ≥ min so
       // min-time passes; lap-count fires.
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
@@ -865,7 +865,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a report whose laps do not sum to totalMs (LAP_SUM_MISMATCH)', () => {
-      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: Date.now() - 600_000 });
       // Lap sum 120_000 but totalMs claims 130_000. Min-time and
       // lap-count pass; lap-sum fires.
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
@@ -877,7 +877,7 @@ describe('race_lifecycle (Chunk 5)', () => {
     });
 
     it('rejects a bot report submitted by a non-host caller (FORBIDDEN)', () => {
-      const { sid } = setupQuick3Lap({ overrideStartedAtMs: 1_000_000_000_000 });
+      const { sid } = setupQuick3Lap({ overrideStartedAtMs: Date.now() - 600_000 });
       // PLAYER_A is not the host. isBotReport=true requires the caller
       // to be the host.
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
@@ -905,7 +905,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       // tolerance for a 60s totalMs.
       const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
       const obj = env.fakeNakama.store.get(storeKey);
-      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+      if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
       const submitEnv = call<{ accepted: true }>(env, 'race_submit_result', HOST_ID,
         submitPayload(sid, { userId: HOST_ID, totalMs: 60_000, laps: [60_000], isBotReport: true }, HOST_ID));
@@ -979,7 +979,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       // tolerance for any 120_000+ totalMs.
       const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
       const obj = env.fakeNakama.store.get(storeKey);
-      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+      if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
       return { sid };
     }
 
@@ -1042,7 +1042,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       if (!startEnv.ok) throw new Error('start failed');
       const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
       const obj = env.fakeNakama.store.get(storeKey);
-      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+      if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
       // Add a bot to the roster directly.
       if (obj) {
@@ -1091,7 +1091,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       if (!startEnv.ok) throw new Error('start failed');
       const storeKey = `race_sessions/${sid}/00000000-0000-0000-0000-000000000000`;
       const obj = env.fakeNakama.store.get(storeKey);
-      if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+      if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
       // Host reports for itself (the only roster member) as a bot report
       // so computeQuorum sees zero humans. time_trial = 1 lap.

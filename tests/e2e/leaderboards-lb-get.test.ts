@@ -120,7 +120,7 @@ describe('lb_get RPC (Chunk 13)', () => {
     if (!('ok' in s) || !s.ok) throw new Error('start failed');
     const k = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
     const obj = env.fakeNakama.store.get(k);
-    if (obj) (obj.value as { startedAt: number }).startedAt = 1_000_000_000_000;
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
     for (const u of [HOST_ID, P1, P2, P3]) {
       const r = call<{ ok: true } | ErrResponse>(env, 'race_submit_result', u, {

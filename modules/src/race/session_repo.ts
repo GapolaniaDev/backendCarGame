@@ -7,10 +7,11 @@
 // module — they never touch `nk.storageRead` directly.
 
 import type { INakama, IStorageKey, IStorageObject } from '../nkruntime';
-import { readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
+import { listStorage, readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
 import type { EventBus } from '../core/event_bus';
 import {
   RACE_ACTIVE_COLLECTION,
+  RACE_OPEN_COLLECTION,
   RACE_SESSIONS_COLLECTION,
   RACE_EVENT_RACE_COMPLETED,
   SYSTEM_USER_ID,
@@ -71,7 +72,9 @@ export function createSession(
   activeFor: readonly string[] = [],
   nowMs: number = Date.now(),
 ): { version: string } {
-  if (activeFor.length === 0) {
+  const indexWrites = activeFor.map((u) => activeIndexWrite(u, session.id, nowMs));
+  if (session.state === 'started') indexWrites.push(openIndexWrite(session));
+  if (indexWrites.length === 0) {
     return writeJson<PersistedSession>(nk, {
       collection: RACE_SESSIONS_COLLECTION,
       key: session.id,
@@ -89,7 +92,7 @@ export function createSession(
   };
   const ack = nk.multiUpdate(
     undefined,
-    [sessionWrite, ...activeFor.map((u) => activeIndexWrite(u, session.id, nowMs))],
+    [sessionWrite, ...indexWrites],
     undefined,
     undefined,
     undefined,
@@ -99,6 +102,31 @@ export function createSession(
     throw new Error(`multiUpdate returned no storage ack for session ${session.id}`);
   }
   return { version: first.version };
+}
+
+// ─── Open-session index (plan T-06, audit PC-06) ────────────────────────────
+
+/** Storage write that lists a started session for the service ticker. */
+export function openIndexWrite(session: RaceSession): IStorageObject {
+  return {
+    collection: RACE_OPEN_COLLECTION,
+    key: session.id,
+    userId: SYSTEM_USER_ID,
+    value: { sessionId: session.id, startedAt: session.startedAt },
+    permissionRead: 0,
+    permissionWrite: 0,
+  };
+}
+
+/** Ids of the sessions listed as open (started, not yet closed). */
+export function listOpenSessionIds(nk: INakama, limit = 100): string[] {
+  const res = listStorage(nk, { collection: RACE_OPEN_COLLECTION, userId: SYSTEM_USER_ID, limit });
+  return res.objects.map((o) => o.key);
+}
+
+/** Drop a session from the open index (closed or missing). */
+export function deleteOpenIndex(nk: INakama, sessionId: string): void {
+  nk.storageDelete([{ collection: RACE_OPEN_COLLECTION, key: sessionId, userId: SYSTEM_USER_ID }]);
 }
 
 // ─── Active-session index (plan T-08, audit PC-08) ──────────────────────────
@@ -256,7 +284,7 @@ export function markStarted(
     claimedAt: startedAt,
     version: session.version + 1,
   };
-  return updateSession(nk, next, expectedVersion);
+  return updateSession(nk, next, expectedVersion, [openIndexWrite(next)]);
 }
 
 // ─── Phase 4 Chunk 4 — host claim + disconnect reporting ─────────────────────
@@ -530,6 +558,10 @@ export function tryCloseAndPublish(
   const agg = aggregateForClose({ roster: session.roster, reports });
   const closed: RaceSession = {
     ...session,
+    // Players without a report are DNF (T-06: the grace expired).
+    roster: session.roster.map((e) =>
+      e.reportedAt === undefined ? { ...e, abandoned: true } : e,
+    ),
     state: 'closed',
     results: agg.results,
     flags: {
@@ -572,11 +604,14 @@ export function tryCloseAndPublish(
   if (!sessionAck) {
     throw new Error(`multiUpdate returned no session close ack for ${session.id}`);
   }
-  // Release the players' active-session index (T-08).
+  // Release the players' active-session index (T-08) and the open-session
+  // index (T-06).
   try {
     clearActiveIndex(nk, session);
+    deleteOpenIndex(nk, session.id);
   } catch {
-    // Best effort: readers ignore a pointer to a closed session.
+    // Best effort: readers ignore a pointer to a closed session, and the
+    // ticker drops a closed session from the open index.
   }
 
   const event: RaceCompletedEvent = {
