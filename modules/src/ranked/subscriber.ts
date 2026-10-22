@@ -143,6 +143,11 @@ export function handleRaceCompletedForRanked(
     return { ...SKIP, reason: `mode=${event.mode} (not ranked)` };
   }
 
+  // P-01 (plan T-09): a humans-vs-bots race never moves the rating.
+  if (event.flags.botSession === true) {
+    return { ...SKIP, reason: 'bot session (P-01)' };
+  }
+
   // 2. Confidence gate — `client` means humans disagreed on ordering,
   // the entire race is discarded for ranking.
   if (deriveConfidence(event) === 'client') {
@@ -276,11 +281,12 @@ export function handleRaceCompletedForRanked(
 }
 
 /**
- * Mirror of the same routine used by `leaderboards/subscriber` —
- * derives the confidence outcome from `RaceCompletedEvent` since the
- * event payload itself doesn't carry it.
+ * Mirror of the same routine used by `leaderboards/subscriber`: the
+ * event's own confidence (plan T-09), or, for older events, the outcome
+ * derived from the results and `needsReview`.
  */
 function deriveConfidence(event: RaceCompletedEvent): 'quorum' | 'client' | 'server' {
+  if (event.confidence !== undefined) return event.confidence;
   const humanResults = event.results.filter((r) => !r.isBot);
   if (humanResults.length === 0) return 'server';
   if (!event.flags.needsReview) return 'quorum';

@@ -44,7 +44,9 @@ import {
   markStarted,
   readActiveIndex,
   readPresence,
+  readReport,
   readSession,
+  saveReportResponse,
   submitReport,
   touchPresence,
 } from './session_repo';
@@ -810,6 +812,27 @@ function race_submit_result_impl(
     return cached;
   }
 
+  // Durable retries (plan T-09, X5-a): a submission that carries a
+  // requestId is stored with its report, so a retry with the same id
+  // replays the accepted outcome at any later time instead of CONFLICT.
+  const rawRequestId = parsed.data.requestId;
+  if (
+    rawRequestId !== undefined &&
+    (typeof rawRequestId !== 'string' || rawRequestId.length === 0 || rawRequestId.length > 128)
+  ) {
+    return toJson(err('BAD_REQUEST', 'requestId must be a string of 1-128 characters'));
+  }
+  const requestId = rawRequestId;
+  if (requestId !== undefined) {
+    const stored = readReport(nk, sessionId, reporterId);
+    if (stored !== null && stored.requestId === requestId) {
+      logger.info('race_submit_result sid=%s reporter=%s replayed requestId', sessionId, reporterId);
+      return typeof stored.response === 'string' && stored.response.length > 0
+        ? stored.response
+        : replayedSubmitResponse(nk, sessionId);
+    }
+  }
+
   const rl = checkRateLimit(nk, {
     rpcName: 'race_submit_result',
     userId: callerId,
@@ -907,7 +930,7 @@ function race_submit_result_impl(
   try {
     const r = submitReport(
       nk, cur.session, reporterId, report, cur.version, serverNowMs(),
-      stampTournamentId,
+      stampTournamentId, requestId,
     );
     newSessionVersion = r.version;
   } catch (e) {
@@ -980,7 +1003,47 @@ function race_submit_result_impl(
   // 60 s is enough to absorb in-flight retries without forcing clients
   // to re-submit long after a transient error.
   nk.localcachePut(`submit_result:${idempKey}`, serialized, 60);
+  if (requestId !== undefined) {
+    const stored = readReport(nk, sessionId, reporterId);
+    if (stored !== null) {
+      try {
+        saveReportResponse(nk, sessionId, stored, serialized);
+      } catch (e) {
+        // The replay then rebuilds the response from the session.
+        logger.warn(
+          'race_submit_result sid=%s reporter=%s response not stored: %s',
+          sessionId,
+          reporterId,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+  }
   return serialized;
+}
+
+/**
+ * Response for a `requestId` retry whose original response was not stored
+ * (the RPC failed after the report was written, e.g. on the payout): the
+ * report was accepted; the session tells whether the race has closed.
+ */
+function replayedSubmitResponse(nk: INakama, sessionId: string): string {
+  const cur = readSession(nk, sessionId);
+  const session = cur?.session;
+  if (session === undefined || session.state !== 'closed') {
+    const pending: RaceSubmitResultOutput = { accepted: true, confidence: 'client', flags: { needsReview: false } };
+    return toJson(ok(pending));
+  }
+  const out: RaceSubmitResultOutput = {
+    accepted: true,
+    confidence: session.flags.needsReview ? 'client' : 'quorum',
+    officialResults: session.results,
+    flags: {
+      needsReview: session.flags.needsReview,
+      ...(session.flags.reviewReason !== undefined ? { reviewReason: session.flags.reviewReason } : {}),
+    },
+  };
+  return toJson(ok(out));
 }
 
 // ─── race_session_quick_bots (Phase 4 Chunk 3) ────────────────────────────────

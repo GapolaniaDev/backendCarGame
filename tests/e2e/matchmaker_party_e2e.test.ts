@@ -11,7 +11,7 @@
 //     carry different partyIds (party split).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { loadBundleForTest, sessionCtxFor } from './_stubs';
+import { loadBundleForTest, sessionCtxFor, runMatchedHook } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }
@@ -143,7 +143,7 @@ describe('matchmaker party e2e (Phase 7 Chunk 8)', () => {
           },
         ],
     };
-    const decision = hook(undefined, env.logger, env.nak, envelope);
+    const decision = { matched: runMatchedHook(env, envelope).matched };
     expect(decision).toEqual({ matched: false });
   });
 
@@ -167,7 +167,7 @@ describe('matchmaker party e2e (Phase 7 Chunk 8)', () => {
           },
         ],
     };
-    const decision = hook(undefined, env.logger, env.nak, envelope);
+    const decision = { matched: runMatchedHook(env, envelope).matched };
     expect(decision).toEqual({ matched: true });
   });
 
@@ -193,7 +193,7 @@ describe('matchmaker party e2e (Phase 7 Chunk 8)', () => {
           },
         ],
     };
-    const decision = hook(undefined, env.logger, env.nak, envelope);
+    const decision = { matched: runMatchedHook(env, envelope).matched };
     expect(decision).toEqual({ matched: false });
   });
 });

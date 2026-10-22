@@ -441,6 +441,30 @@ export interface PersistedReport
   extends RaceReport,
     Record<string, unknown> {
   schemaVersion: typeof SCHEMA_VERSION;
+  /** Client id of the submission (plan T-09); retries with it replay. */
+  requestId?: string;
+  /** Serialized RPC response of the accepted submission (plan T-09). */
+  response?: string;
+}
+
+/**
+ * Store the response of an accepted submission next to its report, so a
+ * retry with the same `requestId` replays it at any later time (T-09).
+ */
+export function saveReportResponse(
+  nk: INakama,
+  sessionId: string,
+  report: PersistedReport,
+  response: string,
+): void {
+  nk.storageWrite([{
+    collection: RACE_SESSIONS_COLLECTION,
+    key: reportKey(sessionId, report.userId),
+    userId: report.userId,
+    value: { ...report, response },
+    permissionRead: 0,
+    permissionWrite: 0,
+  }]);
 }
 
 /**
@@ -486,6 +510,8 @@ export function submitReport(
    * does not overwrite the stamp.
    */
   tournamentId?: string,
+  /** Plan T-09: client id of the submission, stored with the report. */
+  requestId?: string,
 ): { version: string } {
   const newRoster = session.roster.map((e) => {
     if (e.userId !== reporterId) return e;
@@ -512,6 +538,7 @@ export function submitReport(
     totalMs: report.totalMs,
     laps: report.laps.slice(),
     isBotReport: report.isBotReport,
+    ...(requestId !== undefined ? { requestId } : {}),
   };
 
   const writes: IStorageObject[] = [
@@ -563,6 +590,8 @@ export interface CloseOutcome {
   newVersion: string;
   /** True when this call actually transitioned the session to closed. */
   closed: boolean;
+  /** The `RaceCompleted` event published by this close (when `closed`). */
+  event?: RaceCompletedEvent;
 }
 
 /**
@@ -614,6 +643,8 @@ export function tryCloseAndPublish(
     flags: {
       needsReview: agg.needsReview,
       ...(agg.reviewReason !== undefined ? { reviewReason: agg.reviewReason } : {}),
+      // A humans-vs-bots race stays marked (P-01, plan T-09).
+      ...(session.flags.botSession === true ? { botSession: true } : {}),
     },
     version: session.version + 1,
   };
@@ -670,6 +701,7 @@ export function tryCloseAndPublish(
     size: session.size,
     results: agg.results,
     flags: closed.flags,
+    confidence: agg.confidence,
     closedAt: nowMs,
   };
   // Fire-and-forget: a subscriber crash must not roll back the close.
@@ -683,5 +715,6 @@ export function tryCloseAndPublish(
     ...(agg.reviewReason !== undefined ? { reviewReason: agg.reviewReason } : {}),
     newVersion: sessionAck.version,
     closed: true,
+    event,
   };
 }

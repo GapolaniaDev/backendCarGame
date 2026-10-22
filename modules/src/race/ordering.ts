@@ -41,15 +41,22 @@ export function findAbandoned(roster: readonly RosterEntry[]): RosterEntry[] {
 }
 
 /**
+ * Human reports needed for a `'quorum'` close: at least ⌈n/2⌉ of the
+ * roster's n humans (plan T-09, audit 05 f3). Reports carry no order, so
+ * "agree" means "attested": each report is its sender's own result.
+ */
+export function quorumThreshold(humansInRoster: number): number {
+  return Math.max(1, Math.ceil(humansInRoster / 2));
+}
+
+/**
  * Compute the quorum confidence outcome:
  *  - 0 humans reported → `'server'` (no humans attested anything; we
  *                          take the host's bot times as ground truth)
- *  - all humans reported (i.e. reported count === roster human count)
- *                          → `'quorum'` (no review needed)
- *  - some humans did not report
+ *  - at least ⌈n/2⌉ humans reported → `'quorum'` (no review needed)
+ *  - fewer (only reachable through a grace close, T-06)
  *                          → `'client'` + needsReview='incomplete_reports'
- *                          (their totalMs is unverified; humans must
- *                           resolve via the report UI)
+ *                          (ranked and the time tables skip it)
  */
 export function computeQuorum(
   reports: readonly RaceReport[],
@@ -59,7 +66,7 @@ export function computeQuorum(
   if (humanReports.length === 0) {
     return { confidence: 'server', needsReview: false };
   }
-  if (humanReports.length >= humansInRoster) {
+  if (humanReports.length >= quorumThreshold(humansInRoster)) {
     return { confidence: 'quorum', needsReview: false };
   }
   return {

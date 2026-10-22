@@ -18,12 +18,9 @@
 //     override when set.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor, runMatchedHook } from './_stubs';
 import type { RaceSession } from '../../modules/src/race/types';
-import type {
-  IMatchmakerMatchedEnvelope,
-  IContext,
-} from '../../modules/src/nkruntime';
+import type { IMatchmakerMatchedEnvelope } from '../../modules/src/nkruntime';
 
 type Resp<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
 
@@ -61,9 +58,8 @@ function invokeMatchedHook(
   env: ReturnType<typeof loadBundleForTest>,
   envelope: IMatchmakerMatchedEnvelope,
 ): { matched: boolean } {
-  const hook = env.matchmakerMatchedHook;
-  if (!hook) throw new Error('matchmakerMatchedHook not registered');
-  return hook({ _brand: 'NakamaContext' } as IContext, env.logger, env.nak, envelope);
+  // 3.27 hook: entries in, nothing out; "matched" = a race session exists (T-09).
+  return runMatchedHook(env, envelope);
 }
 
 describe('matchmaking + bot-fill (Phase 4 Chunk 10) — full integration', () => {

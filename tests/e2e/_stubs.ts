@@ -21,6 +21,7 @@ import type {
   ILeaderboardRecord,
   ILogger,
   IMatchmakerMatchedEnvelope,
+  IMatchmakerResult,
   IMultiUpdateResult,
   INakama,
   IStorageKey,
@@ -965,8 +966,8 @@ class FakeInitializerCore {
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: IMatchmakerMatchedEnvelope,
-    ) => { matched: boolean } | null,
+      matches: IMatchmakerResult[],
+    ) => string | void,
   ): void {
     // Captured by the FakeInitializer wrapper; tests can inspect
     // `.fakeInitializer.matchmakerMatchedHook` to assert behaviour.
@@ -1066,8 +1067,8 @@ export interface LoadedBundle {
     ctx: unknown,
     logger: ILogger,
     nk: INakama,
-    envelope: IMatchmakerMatchedEnvelope,
-  ) => { matched: boolean } | null;
+    matches: IMatchmakerResult[],
+  ) => string | void;
 }
 
 /**
@@ -1218,4 +1219,42 @@ export function autoSeedRaceGarages(env: LoadedBundle): void {
       return handler(ctx, logger, nk, payload);
     };
   };
+}
+
+// ─── Matchmaker hook (plan T-09) ────────────────────────────────────────────
+
+/**
+ * The 3.27 matchmakerMatched entries for the first candidate of a legacy
+ * fixture envelope (tickets[i].metadata + matched[i].vars become the
+ * entry's properties).
+ */
+export function matchesFromEnvelope(envelope: IMatchmakerMatchedEnvelope): IMatchmakerResult[] {
+  const c = envelope.matches[0];
+  if (!c) return [];
+  return c.matched.map((m, i) => ({
+    properties: { ...(c.tickets[i]?.metadata ?? {}), ...(m.vars ?? {}) },
+    presence: { userId: m.userId, sessionId: m.sessionId ?? `${m.userId}-socket`, username: m.username ?? m.userId, node: 'test' },
+    ...(m.vars?.['partyId'] !== undefined ? { partyId: m.vars['partyId'] } : {}),
+  }));
+}
+
+/**
+ * Run the registered hook on a legacy fixture envelope. `matched` is true
+ * when the hook created a race session (the first matched player's
+ * active-session index points at it).
+ */
+export function runMatchedHook(
+  env: LoadedBundle,
+  envelope: IMatchmakerMatchedEnvelope,
+): { matched: boolean; sessionId?: string; returned: string | void } {
+  const hook = env.matchmakerMatchedHook;
+  if (!hook) throw new Error('matchmakerMatchedHook not registered');
+  const matches = matchesFromEnvelope(envelope);
+  const returned = hook(FakeContext, env.logger, env.nak, matches);
+  const first = matches[0]?.presence.userId;
+  const pointer = first === undefined
+    ? undefined
+    : env.nak.storageRead([{ collection: 'race_active', key: first, userId: SYSTEM_USER_ID }])[0];
+  const sessionId = (pointer?.value as { sessionId?: string } | undefined)?.sessionId;
+  return sessionId === undefined ? { matched: false, returned } : { matched: true, sessionId, returned };
 }

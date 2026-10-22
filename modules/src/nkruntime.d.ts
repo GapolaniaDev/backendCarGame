@@ -137,6 +137,11 @@ export type AfterStorageFnEnvelope = (
   envelope: IStorageObjectEnvelope,
 ) => void;
 
+/**
+ * Candidate grouping used by the pure validator (`pickCandidate`,
+ * `validateCandidate`). NOT what the runtime passes to the hook: see
+ * `IMatchmakerResult`.
+ */
 export interface IMatchmakerMatchedEnvelope {
   matches: {
     sessionId: string;
@@ -153,12 +158,29 @@ export interface IMatchmakerMatchedEnvelope {
   }[];
 }
 
+/**
+ * One matched entry as the v3.27.0 JS runtime passes it to the
+ * matchmakerMatched hook (one per matched presence; a party ticket yields
+ * one entry per member). `properties` merges the ticket's string and
+ * numeric properties.
+ */
+export interface IMatchmakerResult {
+  properties: Record<string, unknown>;
+  presence: { userId: string; sessionId: string; username: string; node: string; status?: string };
+  partyId?: string;
+}
+
+/**
+ * v3.27.0 contract: the hook receives the matched entries of ONE group and
+ * returns an authoritative match id, or nothing for the default relayed
+ * match. It cannot reject the group (the tickets are already removed).
+ */
 export type MatchmakerMatchedFn = (
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
-  envelope: IMatchmakerMatchedEnvelope,
-) => { matched: boolean } | null;
+  matches: IMatchmakerResult[],
+) => string | void;
 
 /**
  * Authoritative match handler (v3.27.0 `runtime_javascript_match_core.go`).

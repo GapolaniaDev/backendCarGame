@@ -1,23 +1,22 @@
-// Phase 4 matchmakerMatched hook. Validates the matched candidate
-// groups, picks one that's large enough + mode/version/region-aligned,
-// and constructs a `RaceSession` for the relay. Returns
-// `{ matched: boolean }` per the runtime contract — returning
-// `matched: false` tells the matchmaker to drop the suggestion and
-// keep the tickets queued for a future match.
+// Phase 4 matchmakerMatched hook helpers. Validates a matched group
+// (mode/version/region aligned, size, party intact) and builds the
+// `RaceSession` for it. Since plan T-09 (audit 06 f3) the hook in
+// `rpcs.ts` converts the 3.27 entries with `candidateFromMatches` and
+// persists the session with `createMatchedRaceSession`; Nakama 3.27 gives
+// the hook no way to reject a group, so a group that does not qualify
+// simply gets no race session.
 //
 // Decision D1 (server stamps version/region); the client cannot
 // influence these. Decision D8 (mm.segmentBy default 'none') is
 // applied upstream by `ticket_params.ts`.
-//
-// The hook is pure-ish — it doesn't call Nakama, but it does construct
-// the new session id from the first ticket's metadata so the runtime
-// can stamp it into the relay. The actual storage write is done by
-// the RPC layer that subscribes to `RaceCreated` (lives in Chunk 4 —
-// this chunk only validates + builds the payload).
 
-import type { IMatchmakerMatchedEnvelope, INakama } from '../nkruntime';
+import type { ILogger, IMatchmakerMatchedEnvelope, IMatchmakerResult, INakama } from '../nkruntime';
 import type { Loadout, RaceSession } from '../race/types';
 import { loadoutStatsFor } from '../race/stats_equalization';
+import { resolveServerLoadout } from '../race/loadout';
+import { createSession } from '../race/session_repo';
+import { getTracks } from '../core/catalog';
+import { pickTrack } from './track_picker';
 
 export interface MatchedCandidate {
   sessionId: string;
@@ -174,6 +173,69 @@ export function buildRaceSessionFromCandidate(candidate: MatchedCandidate): Race
     flags: { needsReview: false },
     version: 1,
   };
+}
+
+/**
+ * Plan T-09: turn the 3.27 hook entries (one per matched presence, with
+ * the ticket properties) into the candidate shape the validator speaks.
+ * Every property is stringified (numeric ticket properties such as `size`
+ * arrive as numbers).
+ */
+export function candidateFromMatches(
+  sessionId: string,
+  matches: ReadonlyArray<IMatchmakerResult>,
+): MatchedCandidate {
+  const props = (m: IMatchmakerResult): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(m.properties ?? {})) out[k] = String(v);
+    if (typeof m.partyId === 'string' && m.partyId.length > 0 && out['partyId'] === undefined) {
+      out['partyId'] = m.partyId;
+    }
+    return out;
+  };
+  return {
+    sessionId,
+    tickets: matches.map((m) => ({ ticket: '', metadata: props(m) })),
+    matched: matches.map((m) => ({
+      sessionId: m.presence?.sessionId ?? '',
+      userId: m.presence?.userId ?? '',
+      username: m.presence?.username ?? '',
+      vars: props(m),
+    })),
+  };
+}
+
+/**
+ * Plan T-09 (audit 06 f3): create and persist the race session of a
+ * validated candidate. The roster is the matched players (host = lowest
+ * `rtt`), the track is picked for the mode, each loadout comes from the
+ * player's garage (T-10), and every player's active-session index points
+ * at the new session (T-08) so each client finds the same race with
+ * `race_session_get` without an id. The session waits in `created` for
+ * the host's `race_session_start`.
+ */
+export function createMatchedRaceSession(
+  nk: INakama,
+  logger: ILogger,
+  candidate: MatchedCandidate,
+  nowMs: number,
+): RaceSession {
+  const session = buildRaceSessionFromCandidate(candidate);
+  const allowed = getTracks(nk)
+    .filter((t) => {
+      const laps = (t as { modes?: Record<string, number | undefined> }).modes?.[session.mode];
+      return typeof laps === 'number' && laps > 0;
+    })
+    .map((t) => (t as { id: string }).id);
+  session.trackId = pickTrack(allowed, [], session.id);
+  if (session.trackId === '') throw new Error(`no track allows mode ${session.mode}`);
+  const statsMode = session.mode === 'ranked' ? 'ranked' : 'normal';
+  for (const entry of session.roster) {
+    entry.loadout = resolveServerLoadout(nk, logger, entry.userId, null, statsMode, 'matchmakerMatched');
+  }
+  session.createdAt = nowMs;
+  createSession(nk, session, session.roster.map((e) => e.userId), nowMs);
+  return session;
 }
 
 /**

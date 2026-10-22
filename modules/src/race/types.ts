@@ -171,7 +171,14 @@ export interface RaceCompletedEvent {
   trackId: string;
   size: 2 | 4 | 6 | 1;
   results: RaceResult[];
-  flags: { needsReview: boolean; reviewReason?: string };
+  /**
+   * `botSession` marks a humans-vs-bots race (`race_session_quick_bots`):
+   * per P-01 it counts for missions and XP, not for ranked or `wins_week`
+   * (plan T-09).
+   */
+  flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
+  /** Close confidence (plan T-09, audit 05 f4). Absent on older events. */
+  confidence?: Confidence;
   closedAt: number;
 }
 
@@ -277,6 +284,13 @@ export interface RaceSubmitResultInput {
    * non-tournament races.
    */
   tournamentId?: string;
+  /**
+   * Plan T-09 (X5-a): optional client id of this submission (1-128
+   * chars). Stored with the report; a retry with the same id, at any
+   * later time, returns the response of the accepted submission instead
+   * of CONFLICT. Additive (D-05).
+   */
+  requestId?: string;
 }
 
 export type ConfidenceOutcome = 'quorum' | 'client' | 'server';

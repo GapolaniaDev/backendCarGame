@@ -102,9 +102,9 @@ export function closeRace(
     String(outcome.needsReview),
     outcome.results.filter((r) => r.abandoned).length,
   );
-  // The event the subscribers received, rebuilt so the RPC can compute
-  // the per-player reward summary synchronously (Phase 3 Decision 6).
-  const event: RaceCompletedEvent = {
+  // The event the subscribers received; the RPC computes the per-player
+  // reward summary from it synchronously (Phase 3 Decision 6).
+  const event: RaceCompletedEvent = outcome.event ?? {
     schemaVersion: 1,
     sessionId: session.id,
     mode: session.mode,
@@ -115,6 +115,7 @@ export function closeRace(
       needsReview: outcome.needsReview,
       ...(outcome.reviewReason !== undefined ? { reviewReason: outcome.reviewReason } : {}),
     },
+    confidence: outcome.confidence,
     closedAt: nowMs,
   };
   const abandonedCount = outcome.results.filter((r) => r.abandoned === true).length;

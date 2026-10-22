@@ -15,6 +15,7 @@ import {
   type LoadedBundle,
 } from './_stubs';
 import type { RaceSession } from '../../modules/src/race/types';
+import type { IMatchmakerResult } from '../../modules/src/nkruntime';
 
 type Resp<T> =
   | { ok: true; data: T }
@@ -26,7 +27,6 @@ const C = 'f1-player-c';
 
 // neon_blvd private = 3 laps; class D >= 48 000 ms per lap.
 const D_LAPS = [48_100, 48_100, 48_100];
-const D_TOTAL = D_LAPS.reduce((x, y) => x + y, 0);
 // Valid for a class-S car (32 000 ms per lap), below the class-D floor.
 const S_LAPS = [32_100, 32_100, 32_100];
 
@@ -275,6 +275,113 @@ describe('F1 races (plan T-06…T-10)', () => {
       expect(r.ok, JSON.stringify(r)).toBe(true);
       if (r.ok) expect(r.data.newHost).toBe(B);
       expect(storedSession(env, sid).host).toBe(B);
+    });
+  });
+
+  describe('T-09 matchmaker session, quorum and durable retries', () => {
+    function matchedEntry(user: string): IMatchmakerResult {
+      return {
+        properties: {
+          mode: 'quick', size: 2, version: '1.0.0', region: 'eu-west-1', segmentBy: 'none', ratingBand: 'unrated',
+        },
+        presence: { userId: user, sessionId: `${user}-socket`, username: user, node: 'test' },
+      };
+    }
+
+    it('the matchmaker hook creates one session and both players get it without an id', () => {
+      const hook = env.matchmakerMatchedHook!;
+      const returned = hook(FakeContext, env.logger, env.nak, [matchedEntry(A), matchedEntry(B)]);
+      expect(returned).toBeUndefined(); // relayed match, as before
+
+      const a = getActive(env, A);
+      const b = getActive(env, B);
+      expect(a.ok && b.ok).toBe(true);
+      if (!a.ok || !b.ok) return;
+      expect(a.data.session.id).toBe(b.data.session.id);
+      const s = a.data.session;
+      expect(s.state).toBe('created');
+      expect(s.mode).toBe('quick');
+      expect(s.size).toBe(2);
+      expect(s.trackId).not.toBe('');
+      expect(s.roster.map((e) => e.userId).sort()).toEqual([A, B].sort());
+      expect(s.roster.every((e) => e.loadout.bodyId === 'starter_viper')).toBe(true);
+      // The host can start it like any created session.
+      start(env, s.id, s.host);
+    });
+
+    it('a group that does not qualify gets no session', () => {
+      const hook = env.matchmakerMatchedHook!;
+      const bad = matchedEntry(B);
+      bad.properties['mode'] = 'ranked';
+      hook(FakeContext, env.logger, env.nak, [matchedEntry(A), bad]);
+      expect(getActive(env, A).ok).toBe(false);
+    });
+
+    it('quorum is ceil(n/2) humans: 2 of 3 → quorum, 1 of 3 → client', () => {
+      const closeLine = (sid: string) => env.fakeLogger.lines.find((l) => l.includes(`race closed sid=${sid}`)) ?? '';
+      const two = createPrivate(env, A, 4);
+      join(env, two, B);
+      join(env, two, C);
+      start(env, two, A);
+      backdate(env, two, 200_000);
+      submit(env, two, A);
+      submit(env, two, B);
+      expireGrace(env, two);
+      getById(env, A, two);
+      expect(closeLine(two)).toMatch(/confidence=quorum needsReview=false/);
+
+      const one = createPrivate(env, B, 4);
+      join(env, one, A);
+      join(env, one, C);
+      start(env, one, B);
+      backdate(env, one, 200_000);
+      submit(env, one, B);
+      expireGrace(env, one);
+      getById(env, B, one);
+      expect(closeLine(one)).toMatch(/confidence=client needsReview=true/);
+    });
+
+    it('P-01: a humans-vs-bots race does not count for wins_week', async () => {
+      const qb = call<{ sessionId: string; roster: Array<{ userId: string; isBot: boolean }> }>(
+        env, 'race_session_quick_bots', A,
+        { size: 2, trackId: 'neon_blvd', hostLoadout: { classId: 'D', bodyId: 'starter_viper' } },
+      );
+      if (!qb.ok) throw new Error(JSON.stringify(qb.error));
+      const sid = qb.data.sessionId;
+      const bot = qb.data.roster.find((e) => e.isBot)!.userId;
+      backdate(env, sid, 200_000);
+      expect(submit(env, sid, A).ok).toBe(true);
+      const botReport = call(env, 'race_submit_result', A, {
+        sessionId: sid,
+        report: { userId: bot, totalMs: 150_000, laps: [50_000, 50_000, 50_000], isBotReport: true },
+      });
+      expect(botReport.ok, JSON.stringify(botReport)).toBe(true);
+      expect(storedSession(env, sid).flags.botSession).toBe(true);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(env.fakeLogger.lines.some((l) => l.includes(`leaderboards written: sid=${sid}`))).toBe(true);
+      expect(env.fakeNakama.leaderboardRecords.get('wins_week')?.get(A)).toBeUndefined();
+    });
+
+    it('a retry with the same requestId replays the accepted response, even after the close', () => {
+      const sid = createPrivate(env, A, 4);
+      join(env, sid, B);
+      start(env, sid, A);
+      backdate(env, sid, 200_000);
+      const first = submit(env, sid, A, D_LAPS, { requestId: 'req-a-1' });
+      expect(first.ok).toBe(true);
+      // Past the 60 s localcache window and after the race closed.
+      env.fakeNakama.cache.clear();
+      expect(submit(env, sid, B).ok).toBe(true);
+      expect(storedSession(env, sid).state).toBe('closed');
+
+      const retry = submit(env, sid, A, D_LAPS, { requestId: 'req-a-1' });
+      expect(retry).toEqual(first);
+      const other = submit(env, sid, A, D_LAPS, { requestId: 'req-a-2' });
+      expect(other.ok).toBe(false);
+      if (!other.ok) expect(other.error.code).toBe('CONFLICT');
+      const bad = submit(env, sid, A, D_LAPS, { requestId: '' });
+      expect(bad.ok).toBe(false);
+      if (!bad.ok) expect(bad.error.code).toBe('BAD_REQUEST');
     });
   });
 

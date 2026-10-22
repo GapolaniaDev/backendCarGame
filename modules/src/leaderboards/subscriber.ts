@@ -85,6 +85,8 @@ export function subscribeLeaderboardWriter(
  * shouldn't have to know about ordering internals to recover the rule.
  */
 function deriveConfidence(event: RaceCompletedEvent): 'quorum' | 'client' | 'server' {
+  // The close records its confidence since plan T-09; older events derive it.
+  if (event.confidence !== undefined) return event.confidence;
   const humanResults = event.results.filter((r) => !r.isBot);
   // 0 humans → 'server'; humansInRoster isn't on the event so we
   // approximate "all reported" by checking needsReview: if the close
@@ -170,9 +172,14 @@ export async function applyRaceCompletedToLeaderboards(
   }
 
   // wins_week: increment by 1 for the rank-1 finisher, but only in
-  // quick/ranked (per spec). Bots do NOT increment wins_week.
+  // quick/ranked (per spec). Bots do NOT increment wins_week, and a
+  // humans-vs-bots race does not count (P-01, plan T-09).
   const winner = event.results.find((r) => r.rank === 1 && !r.abandoned && !r.isBot);
-  if (winner && (QUICK_MODES.has(event.mode) || RANKED_MODES.has(event.mode))) {
+  if (
+    winner &&
+    event.flags.botSession !== true &&
+    (QUICK_MODES.has(event.mode) || RANKED_MODES.has(event.mode))
+  ) {
     const winsTable = getWinsWeekTable();
     if (winsTable) {
       writeIncr(

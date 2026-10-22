@@ -82,11 +82,17 @@ describe('computeQuorum', () => {
     expect(out.confidence).toBe('quorum');
     expect(out.needsReview).toBe(false);
   });
-  it('returns "client" + needsReview when some humans did not report', () => {
-    const out = computeQuorum([report(P1, 100_000)], 2);
+  it('returns "client" + needsReview when fewer than ceil(n/2) humans reported (T-09)', () => {
+    const out = computeQuorum([report(P1, 100_000)], 3);
     expect(out.confidence).toBe('client');
     expect(out.needsReview).toBe(true);
     expect(out.reviewReason).toBe('incomplete_reports');
+  });
+  it('returns "quorum" once ceil(n/2) humans reported (T-09)', () => {
+    expect(computeQuorum([report(P1, 100_000)], 2).confidence).toBe('quorum');
+    expect(computeQuorum([report(P1, 100_000), report(P2, 101_000)], 3).confidence).toBe('quorum');
+    expect(computeQuorum([report(P1, 100_000), report(P2, 101_000)], 4).confidence).toBe('quorum');
+    expect(computeQuorum([report(P1, 100_000)], 4).confidence).toBe('client');
   });
   it('returns "quorum" when bots also reported', () => {
     const out = computeQuorum(
@@ -128,16 +134,26 @@ describe('aggregateForClose', () => {
     expect(agg.results.map((r) => r.userId)).toEqual([P1, P2]);
     expect(agg.needsReview).toBe(false);
   });
-  it('marks the missing player abandoned + flags client', () => {
+  it('marks the missing player abandoned; 1 of 2 humans is still a quorum (T-09)', () => {
     const roster: RosterEntry[] = [
       entry(P1, { reportedAt: 1, totalMs: 100_000 }),
       entry(P2), // abandoned
     ];
     const reports = [report(P1, 100_000)];
     const agg = aggregateForClose({ roster, reports });
+    expect(agg.confidence).toBe('quorum');
+    expect(agg.needsReview).toBe(false);
+    expect(agg.results[1]?.abandoned).toBe(true);
+  });
+  it('flags client when fewer than ceil(n/2) humans reported', () => {
+    const roster: RosterEntry[] = [
+      entry(P1, { reportedAt: 1, totalMs: 100_000 }),
+      entry(P2),
+      entry('p3'),
+    ];
+    const agg = aggregateForClose({ roster, reports: [report(P1, 100_000)] });
     expect(agg.confidence).toBe('client');
     expect(agg.needsReview).toBe(true);
     expect(agg.reviewReason).toBe('incomplete_reports');
-    expect(agg.results[1]?.abandoned).toBe(true);
   });
 });

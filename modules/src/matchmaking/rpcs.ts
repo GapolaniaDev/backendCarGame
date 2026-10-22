@@ -15,7 +15,8 @@
 // already (the types module ships in this same chunk; the JSON loader
 // arrives in Chunk 8).
 
-import type { IContext, IMatchmakerMatchedEnvelope, ILogger, INakama } from '../nkruntime';
+import type { IContext, ILogger, IMatchmakerResult, INakama } from '../nkruntime';
+import type { RaceSession } from '../race/types';
 import { err, ok, type Resp } from '../core/response';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
@@ -31,7 +32,7 @@ import type {
   MmTicketParamsInput,
   MmTicketParamsOutput,
 } from './types';
-import { pickCandidate } from './matched_hook';
+import { candidateFromMatches, createMatchedRaceSession, validateCandidate } from './matched_hook';
 import { readParty } from '../parties/parties_repo';
 import type { PartyRecord } from '../parties/types';
 import { requireCaller } from '../core/caller';
@@ -260,43 +261,53 @@ export const mm_ticket_params: RpcHandler = withRuntime(mm_ticket_params_impl);
 // ─── Matched-hook glue ───────────────────────────────────────────────────────
 
 /**
- * Glue that wraps `pickCandidate` and the `registerMatchmakerMatched`
- * hook signature. Returns `{ matched: boolean }` per the runtime
- * contract (returning `null` would re-eval; we always choose).
- *
- * The actual `RaceSession` creation + storage write lives in Chunk 4
- * (reconnection + host_claim); Chunk 2 just validates the candidate
- * set so the matchmaker can keep or drop it.
+ * `registerMatchmakerMatched` hook (plan T-09, audit 06 f3). Nakama 3.27
+ * calls it with the entries of ONE matched group (`IMatchmakerResult[]`,
+ * one per presence) and expects an authoritative match id or nothing; the
+ * group cannot be rejected here. The hook validates the group (mode,
+ * version, region, size, party) and, when it qualifies, creates the race
+ * session with the matched roster and points every player's active-session
+ * index at it (T-08): each client then gets the same session from
+ * `race_session_get` without an id. It returns nothing, so the players get
+ * Nakama's default relayed match as before. A group that does not qualify
+ * gets no session (logged).
  */
-export const matchmakerMatchedHook: RpcHandler = () => {
-  // This is registered separately via `initializer.registerMatchmakerMatched`.
-  // The real implementation is below as `matchmakerMatchedImpl`.
-  throw new Error('matchmakerMatchedHook should be registered via registerMatchmakerMatched');
-};
-
 export function matchmakerMatchedImpl(
   _ctx: IContext,
   logger: ILogger,
   nk: INakama,
-  envelope: IMatchmakerMatchedEnvelope,
-): { matched: boolean } {
-  const decision = pickCandidate(envelope);
-  if (decision.matched) {
-    logger.info('matchmakerMatched candidateIndex=%d (accepted)', decision.candidateIndex);
-    const session = envelope.matches[decision.candidateIndex];
-    if (session !== undefined) {
-      const humans = session.matched.filter((m) => m.vars['kind'] !== 'robot');
-      const bots = session.matched.filter((m) => m.vars['kind'] === 'robot');
-      emit(nk, logger, 'matchmaker_matched', {
-        sessionId: session.sessionId,
-        humanCount: humans.length,
-        botCount: bots.length,
-        ticketCount: session.tickets.length,
-        ratingSpread: null,
-      });
-    }
-    return { matched: true };
+  matches: IMatchmakerResult[],
+): string | void {
+  const entries = Array.isArray(matches) ? matches : [];
+  const candidate = candidateFromMatches(nk.uuidv4(), entries);
+  const reason = entries.length === 0 ? 'no_candidates' : validateCandidate(candidate);
+  if (reason !== null) {
+    logger.warn('matchmakerMatched no race session: %s (players=%d)', reason, entries.length);
+    return;
   }
-  logger.info('matchmakerMatched reason=%s (rejected)', decision.reason);
-  return { matched: false };
+  let session: RaceSession;
+  try {
+    session = createMatchedRaceSession(nk, logger, candidate, Date.now());
+  } catch (e) {
+    logger.error(
+      'matchmakerMatched race session not created: %s',
+      e instanceof Error ? e.message : String(e),
+    );
+    return;
+  }
+  logger.info(
+    'matchmakerMatched sid=%s mode=%s track=%s players=%d host=%s',
+    session.id,
+    session.mode,
+    session.trackId,
+    session.roster.length,
+    session.host,
+  );
+  emit(nk, logger, 'matchmaker_matched', {
+    sessionId: session.id,
+    humanCount: session.roster.length,
+    botCount: 0,
+    ticketCount: entries.length,
+    ratingSpread: null,
+  });
 }
