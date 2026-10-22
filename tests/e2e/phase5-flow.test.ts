@@ -8,12 +8,8 @@
 //   6. inbox_list                       → empty
 //   7. admin_send_inbox                 → push reward message
 //   8. inbox_list                       → shows message
-//  11. relay_token                      → token + relayUrl + expiresAt
 //  12. account_delete                   → user row removed
 //   14. wire-up regression: every Phase 5 RPC is registered
-//
-// Uses loadBundleWithLiveops (with Buffer polyfill) so relay_token
-// sign step works in the bare vm sandbox.
 
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -29,7 +25,6 @@ import {
 } from './_stubs';
 import type { IContext, ILogger, INakama, IInitializer } from '../../modules/src/nkruntime';
 
-const RELAY_TOKEN_SECRET = 'p5c10-relay-secret';
 const ADMIN_KEY = 'p5c10-admin-key-1234567890';
 
 type Resp<T> =
@@ -91,7 +86,6 @@ function loadBundleWithLiveops(
     regions: [{ id: 'us-east-1', displayName: 'US East', relayUrl: 'wss://relay.example.com' }],
     calendar: [],
     adminRpcKey: ADMIN_KEY,
-    relayTokenSecret: RELAY_TOKEN_SECRET,
     ...seed,
   };
   fakeNakama.store.set(`liveops/config/${SYSTEM_USER_ID}`, {
@@ -235,20 +229,6 @@ describe('phase5-flow (Phase 5 Chunk 10) — full e2e', () => {
     expect(list.data.unreadCount).toBe(1);
   });
 
-  it('11. relay_token returns token + relayUrl + expiresAt', () => {
-    const u = 'u-flow-11';
-    const { call } = bootstrap(u);
-    const r = call<{ data: { token: string; relayUrl: string; expiresAt: number; regionId: string } }>(
-      'relay_token', { callerUserId: u, clientVersion: '0.1.0', platform: 'ios' },
-    );
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.token.startsWith('v1.')).toBe(true);
-    expect(r.data.relayUrl).toBe('wss://relay.example.com');
-    expect(r.data.regionId).toBe('us-east-1');
-    expect(r.data.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
-  });
-
   it('12. account_delete removes the user row', () => {
     const u = 'u-flow-12';
     const { env, call } = bootstrap(u);
@@ -274,7 +254,6 @@ describe('phase5-flow (Phase 5 Chunk 10) — full e2e', () => {
       'liveops_config_get',
       'inbox_list', 'inbox_claim',
       'account_link', 'account_link_resolve_conflict', 'account_delete',
-      'relay_token',
       'admin_wallet_adjust', 'admin_send_inbox',
       'admin_sanitize_session', 'admin_remove_player',
       'admin_cleanup_race_sessions',

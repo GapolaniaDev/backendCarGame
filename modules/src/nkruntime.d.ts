@@ -62,8 +62,11 @@ export interface IInitializer {
   registerBeforeWriteStorageObjects(fn: BeforeStorageFnEnvelope): void;
   registerAfterWriteStorageObjects(fn: AfterStorageFnEnvelope): void;
 
-  registerBeforeLeaderboardRecordWrite(fn: BeforeLeaderboardRecordFn): void;
-  registerAfterLeaderboardRecordWrite(fn: AfterLeaderboardRecordFn): void;
+  // Names verified against v3.27.0 `mappings()`: the client API is
+  // `WriteLeaderboardRecord`, so the hooks are
+  // `register{Before,After}WriteLeaderboardRecord`.
+  registerBeforeWriteLeaderboardRecord(fn: BeforeReqFn): void;
+  registerAfterWriteLeaderboardRecord(fn: AfterReqFn): void;
 
   registerMatchmakerMatched(fn: MatchmakerMatchedFn): void;
 
@@ -90,11 +93,17 @@ export type BeforeAuthFn = (
   envelope: { username: string; userId: string; vars: Record<string, string> },
 ) => void;
 
+/**
+ * After-auth hook. v3.27.0 passes `(ctx, logger, nk, session, request)`:
+ * the authenticated user id is on `ctx.userId`, the session object
+ * carries only the tokens.
+ */
 export type AfterAuthFn = (
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
-  envelope: { username: string; userId: string; vars: Record<string, string> },
+  data?: unknown,
+  request?: unknown,
 ) => void;
 
 export type BeforeReqFn = (
@@ -102,7 +111,7 @@ export type BeforeReqFn = (
   logger: ILogger,
   nk: INakama,
   envelope: unknown,
-) => void;
+) => unknown;
 
 export type AfterReqFn = (
   ctx: IContext,
@@ -126,36 +135,6 @@ export type AfterStorageFnEnvelope = (
   logger: ILogger,
   nk: INakama,
   envelope: IStorageObjectEnvelope,
-) => void;
-
-export interface ILeaderboardRecordEnvelope {
-  leaderboardId: string;
-  leaderboard: ILeaderboard;
-  record: ILeaderboardRecord | null;
-  update: {
-    prevRank: number | null;
-    prevScore: number | null;
-    prevSubscore: number | null;
-    prevMetadata: Record<string, unknown> | null;
-    rank: number | null;
-    score: number;
-    subscore: number;
-    metadata: Record<string, unknown> | null;
-    operator: 'best' | 'set' | 'incr' | 'decr';
-  };
-}
-
-export type BeforeLeaderboardRecordFn = (
-  ctx: IContext,
-  logger: ILogger,
-  nk: INakama,
-  envelope: ILeaderboardRecordEnvelope,
-) => void;
-export type AfterLeaderboardRecordFn = (
-  ctx: IContext,
-  logger: ILogger,
-  nk: INakama,
-  envelope: ILeaderboardRecordEnvelope,
 ) => void;
 
 export interface IMatchmakerMatchedEnvelope {

@@ -19,7 +19,6 @@ import type {
   IInitializer,
   ILeaderboard,
   ILeaderboardRecord,
-  ILeaderboardRecordEnvelope,
   ILogger,
   IMatchmakerMatchedEnvelope,
   IMultiUpdateResult,
@@ -32,6 +31,9 @@ import type {
   RpcFunction,
   ShutdownFn,
 } from '../../modules/src/nkruntime';
+
+/** Client `WriteLeaderboardRecord` request as seen by a before-hook. */
+type LeaderboardWriteRequest = unknown;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -374,10 +376,10 @@ class FakeNakamaCore {
   /**
    * Installed before-hook for leaderboardRecordWrite. Tests can replace
    * this with their own function (e.g. to assert it's called).
-   * Signature mirrors IInitializer.registerBeforeLeaderboardRecordWrite.
+   * Signature mirrors IInitializer.registerBeforeWriteLeaderboardRecord.
    */
   beforeLeaderboardRecordWrite:
-    | ((ctx: unknown, logger: ILogger, nk: INakama, envelope: ILeaderboardRecordEnvelope) => void)
+    | ((ctx: unknown, logger: ILogger, nk: INakama, envelope: LeaderboardWriteRequest) => void)
     | null = null;
 
   leaderboardCreate(
@@ -733,7 +735,7 @@ export class FakeNakama {
         ctx: unknown,
         logger: ILogger,
         nk: INakama,
-        envelope: ILeaderboardRecordEnvelope,
+        envelope: LeaderboardWriteRequest,
       ) => void)
     | null;
   /** Outbound HTTP calls captured by the stub. See `httpRequest`. */
@@ -782,7 +784,7 @@ class FakeInitializerCore {
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void
   > = [];
   readonly afterLeaderboardRecordWrites: Array<
@@ -790,7 +792,7 @@ class FakeInitializerCore {
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void
   > = [];
   readonly afterAuthenticates: Array<
@@ -870,23 +872,23 @@ class FakeInitializerCore {
     this.afterAuthenticates.push(fn);
   }
 
-  registerBeforeLeaderboardRecordWrite(
+  registerBeforeWriteLeaderboardRecord(
     fn: (
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void,
   ): void {
     this.beforeLeaderboardRecordWrites.push(fn);
   }
 
-  registerAfterLeaderboardRecordWrite(
+  registerAfterWriteLeaderboardRecord(
     fn: (
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void,
   ): void {
     this.afterLeaderboardRecordWrites.push(fn);
@@ -919,7 +921,7 @@ export class FakeInitializer {
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void
   >;
   readonly afterLeaderboardRecordWrites: ReadonlyArray<
@@ -927,7 +929,7 @@ export class FakeInitializer {
       ctx: unknown,
       logger: ILogger,
       nk: INakama,
-      envelope: ILeaderboardRecordEnvelope,
+      envelope: LeaderboardWriteRequest,
     ) => void
   >;
   readonly afterAuthenticates: ReadonlyArray<

@@ -1,6 +1,6 @@
 // E2E tests for the Phase 2 leaderboard boot path:
 //   - InitModule loads the catalog, ensures tables, drops race_score
-//   - registerLeaderboardWriteGuard rejects un-tokenized writes
+//   - the WriteLeaderboardRecord before-hook rejects every client write
 //
 // Note on VM isolation: the bundle's InitModule runs in `vm.runInContext`
 // so the catalog's module-level state lives in a SEPARATE goja VM from
@@ -21,10 +21,8 @@ import {
 import { ensureLeaderboards } from '../../modules/src/leaderboards/ensure';
 import {
   hasServerToken,
-  registerLeaderboardWriteGuard,
   stampServerToken,
 } from '../../modules/src/leaderboards/hooks';
-import type { ILeaderboardRecordEnvelope } from '../../modules/src/nkruntime';
 import leaderboardsJson from '../../modules/src/catalogs/leaderboards.json';
 
 const TRACKS = 6;
@@ -109,56 +107,30 @@ describe('leaderboards boot (Chunk 11)', () => {
     expect(env.fakeInitializer.beforeLeaderboardRecordWrites.length).toBe(1);
   });
 
-  it('before-hook rejects writes without the server token', () => {
+  it('before-hook rejects a client write without the server token', () => {
     const hook = env.fakeInitializer.beforeLeaderboardRecordWrites[0];
     expect(hook).toBeDefined();
     if (!hook) return;
-    const lb = env.fakeNakama.leaderboards.get('tt_neon_blvd_B_all');
-    expect(lb).toBeDefined();
-    if (!lb) return;
-    const envelope = {
+    const request = {
       leaderboardId: 'tt_neon_blvd_B_all',
-      leaderboard: lb,
-      record: null,
-      update: {
-        prevRank: null,
-        prevScore: null,
-        prevSubscore: null,
-        prevMetadata: null,
-        rank: null,
-        score: 120_000,
-        subscore: Date.now(),
-        metadata: { car: 'coupe', platform: 'ios' }, // NO server token
-        operator: 'best',
-      },
-    } as unknown as ILeaderboardRecordEnvelope;
-    expect(() => hook(null, env.fakeLogger, env.nak, envelope)).toThrow(/rejected/);
+      record: { score: '120000', subscore: '0', metadata: '{"car":"coupe"}' },
+    };
+    expect(() => hook(null, env.fakeLogger, env.nak, request)).toThrow(/server authority/);
   });
 
-  it('before-hook accepts writes that carry the server token', () => {
+  it('before-hook rejects a client write even when it forges the server token', () => {
     const hook = env.fakeInitializer.beforeLeaderboardRecordWrites[0];
     expect(hook).toBeDefined();
     if (!hook) return;
-    const lb = env.fakeNakama.leaderboards.get('tt_neon_blvd_B_all');
-    expect(lb).toBeDefined();
-    if (!lb) return;
-    const envelope = {
+    const request = {
       leaderboardId: 'tt_neon_blvd_B_all',
-      leaderboard: lb,
-      record: null,
-      update: {
-        prevRank: null,
-        prevScore: null,
-        prevSubscore: null,
-        prevMetadata: null,
-        rank: null,
-        score: 120_000,
-        subscore: Date.now(),
-        metadata: stampServerToken({ car: 'coupe', platform: 'ios' }),
-        operator: 'best',
+      record: {
+        score: '120000',
+        subscore: '0',
+        metadata: JSON.stringify(stampServerToken({ car: 'coupe' })),
       },
-    } as unknown as ILeaderboardRecordEnvelope;
-    expect(() => hook(null, env.fakeLogger, env.nak, envelope)).not.toThrow();
+    };
+    expect(() => hook(null, env.fakeLogger, env.nak, request)).toThrow(/server authority/);
   });
 
   it('hasServerToken + stampServerToken are inverse functions', () => {
@@ -169,16 +141,6 @@ describe('leaderboards boot (Chunk 11)', () => {
 
   it('keeps the system_user_id sentinel available for storage operations', () => {
     expect(SYSTEM_USER_ID).toBe('00000000-0000-0000-0000-000000000000');
-  });
-
-  it('registerLeaderboardWriteGuard can be re-installed safely', () => {
-    // Calling it again from the test layer just adds another hook entry;
-    // production code only calls it once. The point of the test is to
-    // assert the helper doesn't throw on a second registration.
-    expect(() =>
-      registerLeaderboardWriteGuard(env.fakeInitializer.initializer),
-    ).not.toThrow();
-    expect(env.fakeInitializer.beforeLeaderboardRecordWrites.length).toBe(2);
   });
 
   it('returns well-formed LeaderboardTableEntry objects', () => {

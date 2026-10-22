@@ -122,7 +122,6 @@ Ver `docker-compose.yml` para detalles del routing por IP estática (`172.28.0.1
 │       ├── liveops/             # Phase 4-5: liveops config (no-cache), abandon tracker, inbox messages
 │       ├── account/             # Phase 5: account_link, account_link_resolve_conflict, account_delete cascade
 │       ├── admin/               # Phase 5: admin RPCs (wallet_adjust, send_inbox, sanitize_session, remove_player, cleanup_race_sessions)
-│       ├── region/              # Phase 5: nodeRole + relay_token HMAC sign/verify + beforeAuthenticateDevice relay gate
 │       ├── core/admin/          # Phase 5: emit() helper for analytics_events + emitAdminAction wrapper
 │       ├── missions/            # Phase 6: counter engine + subscriber + assignments + 3 RPCs + achievements
 │       ├── pass/                # Phase 6: battle pass catalog + PassRecord + 4 RPCs + season close + XP engine + reward granter
@@ -446,10 +445,10 @@ the contracts.
 | D6 | 3 ranked abandons in 24h → 15-min matchmaking block | `liveops/abandon_tracker.ts` |
 | D7 | Lazy close on `ranked_get`: distribute tier rewards, spin up next season, migrate records | `ranked/season.ts::lazyCloseSeason` |
 | D8 | `mm.segmentBy` default `'none'`; liveops override at `liveops_config/current` | `liveops/mm_config.ts` |
-| D9 | Rating band widens with time-since-last-rated (100→600) | `ranked/config.ts::ratingWindowFor` |
-| D10 | `botCount = size - humanCount`; full lobby → 0 bots | `matchmaking/quick_bots.ts::pickBotCount` |
-| D11 | Ranked record is publicly readable (perm 2); no `FORBIDDEN` cross-user path | `ranked/rpcs.ts` |
-| D12 | Ranked sessions equalize every roster entry's `loadout.stats` to the car's class max | `race/stats_equalization.ts::loadoutStatsFor` |
+| D9 | ~~Rating band widens with time-since-last-rated (100→600)~~ removed 2026-10-22 (D-01) | `ranked/config.ts::ratingWindowFor` |
+| D10 | ~~`botCount = size - humanCount`; full lobby → 0 bots~~ removed 2026-10-22 (D-01) | `matchmaking/quick_bots.ts::pickBotCount` |
+| D11 | ~~Ranked record is publicly readable (perm 2); no `FORBIDDEN` cross-user path~~ removed 2026-10-22 (D-01) | `ranked/rpcs.ts` |
+| D12 | ~~Ranked sessions equalize every roster entry's `loadout.stats` to the car's class max~~ removed 2026-10-22 (D-01) | `race/stats_equalization.ts::loadoutStatsFor` |
 
 ### Phase 4 RPC quick reference
 
@@ -493,8 +492,8 @@ flags via LiveOps config, a per-platform min-version gate, a
 maintenance flag with a careful exempt list, a per-user inbox, full
 account linking (Apple / Google / email) with conflict resolution +
 cascade deletion, five admin RPCs for ops, an analytics event stream
-to storage + optional webhook, and a home/relay node split behind an
-HMAC-signed relay token.
+to storage + optional webhook. (The original home/relay node split
+behind an HMAC-signed relay token was removed on 2026-10-22, D-01.)
 
 ### Phase 5 RPCs (player-facing)
 
@@ -506,7 +505,7 @@ HMAC-signed relay token.
 | `account_link` | attach Apple / Google / email identity | `liveopsGate` |
 | `account_link_resolve_conflict` | resolve a 24h link conflict | `liveopsGate` |
 | `account_delete` | GDPR right to erasure | no |
-| `relay_token` | mint HMAC relay token (TTL 60min) | maintenance only (`skipForAdmin`) |
+| ~~`relay_token`~~ | removed 2026-10-22 (D-01) | — |
 
 ### Phase 5 RPCs (admin — `skipForAdmin`)
 
@@ -532,9 +531,8 @@ All admin RPCs require `body.adminKey === LiveopsConfig.adminRpcKey`
   `mm_ticket_params`, `ranked_get`.
 - **NOT gated** (always callable): `liveops_config_get`, `inbox_list`,
   `account_delete` (GDPR > ops).
-- **NOT gated + admin bypass**: `admin_*` and `relay_token` (clients
-  need a relay URL even during maintenance splash; ops needs admin
-  RPCs).
+- **NOT gated + admin bypass**: `admin_*` (ops needs admin RPCs
+  during maintenance).
 
 ### Phase 5 decisions locked
 
@@ -548,10 +546,10 @@ All admin RPCs require `body.adminKey === LiveopsConfig.adminRpcKey`
 | D6 | Inbox messages have 30-day retention; lazily GC'd on read | `liveops/inbox.ts::listInboxMessages` |
 | D7 | Admin RPCs auth = `body.adminKey` matching `LiveopsConfig.adminRpcKey`; JS layer cannot see `http_key` query param | `admin/rpcs.ts` |
 | D8 | Analytics destination = `analytics_events` storage + optional webhook; webhook best-effort, no retry | `core/admin/analytics.ts::emit` |
-| D9 | `relay_token` TTL = 60min (`RELAY_TOKEN_TTL_SEC`) | `region/relay_token.ts` |
-| D10 | Relay token = HMAC-SHA-256 over `<userId|region|expSec>` using `LiveopsConfig.relayTokenSecret` | `region/relay_token.ts::signRelayToken` |
-| D11 | Home/relay split via `LiveopsConfig.nodeRole`; relay registers only `race_session_get` + `race_submit_result` | `main.ts::registerRpc` |
-| D12 | Relay validates `vars.relayToken` in `beforeAuthenticateDevice`; offline HMAC verify | `region/before_auth.ts` |
+| D9 | (removed 2026-10-22, D-01) `relay_token` TTL = 60min (`RELAY_TOKEN_TTL_SEC`) | `region/relay_token.ts` |
+| D10 | (removed 2026-10-22, D-01) Relay token = HMAC-SHA-256 over `<userId|region|expSec>` using `LiveopsConfig.relayTokenSecret` | `region/relay_token.ts::signRelayToken` |
+| D11 | (removed 2026-10-22, D-01) Home/relay split via `LiveopsConfig.nodeRole`; relay registers only `race_session_get` + `race_submit_result` | `main.ts::registerRpc` |
+| D12 | (removed 2026-10-22, D-01) Relay validates `vars.relayToken` in `beforeAuthenticateDevice`; offline HMAC verify | `region/before_auth.ts` |
 | D13 | `MmPlatform` (`mobile`/`console`/`pc`) ≠ `ClientPlatform`; race/matchmaking RPCs use `assertNotInMaintenance` only | `matchmaking/rpcs.ts`, `race/rpcs.ts` |
 
 ### Phase 5 tests
@@ -561,25 +559,21 @@ total at the close of Phase 5 Chunk 9, then 873 at Chunk 10).
 
 | Suite | Cases | Coverage |
 |---|---|---|
-| `tests/e2e/region_e2e.test.ts` | 9 | home/relay split, HMAC sign/verify, beforeAuthenticateDevice, maintenance skipForAdmin |
-| `tests/e2e/liveops_full.test.ts` | 17 | every gated RPC returns SERVICE_UNAVAILABLE; liveops_config_get/inbox_list/account_delete/admin_*/relay_token stay OK |
+| `tests/e2e/liveops_full.test.ts` | 17 | every gated RPC returns SERVICE_UNAVAILABLE; liveops_config_get/inbox_list/account_delete/admin_* stay OK |
 | `tests/e2e/analytics_full.test.ts` | 5 | every emit() site fires; analytics_events storage rows |
-| `tests/e2e/phase5-flow.test.ts` | 9 | full e2e: liveops_config_get → garage → wallet → account_link → inbox send/list → relay_token → account_delete |
+| `tests/e2e/phase5-flow.test.ts` | 9 | full e2e: liveops_config_get → garage → wallet → account_link → inbox send/list → account_delete |
 | `tests/e2e/account_e2e.test.ts` | 11 | link bonus, conflict flow, delete cascade, GDPR bypass |
 | `tests/e2e/inbox_e2e.test.ts` | 11 | send, list, claim, idempotency, retention |
 | `tests/e2e/admin_e2e.test.ts` | 16 | 5 admin RPCs, FORBIDDEN, maintenance bypass, audit trail |
 | `tests/e2e/maintenance_e2e.test.ts` | 8 | liveops_gate + min-version enforcement |
 | `tests/unit/liveops_remaining_gates.test.ts` | 9 | static source-text checks that each RPC has the gate where expected |
 | `tests/unit/analytics.test.ts` | 8 | emit() best-effort, webhook failure, schema |
-| `tests/unit/region_token.test.ts` | 6 | HMAC sign/verify, expiry, tampered payload |
-| `tests/unit/region_node_role.test.ts` | 4 | isHome/isRelay, default |
 
 ### Module additions
 
 ```
 modules/src/
 ├── core/admin/          # emit() helper, emitAdminAction wrapper
-├── region/              # nodeRole, relay_token sign/verify, beforeAuthenticateDevice
 ├── admin/               # admin RPCs (wallet, inbox, race)
 └── account/             # account_link, account_link_resolve_conflict, account_delete cascade
 ```

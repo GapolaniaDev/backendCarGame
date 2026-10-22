@@ -1000,7 +1000,6 @@ fields. When either is present, the server enforces a min-version gate
 | `inbox_list` | none (splash) | Badge renders during maintenance |
 | `account_delete` | none (GDPR) | Erasure cannot be blocked by ops |
 | `admin_*` | `skipForAdmin: true` | Admins work during maintenance |
-| `relay_token` | `skipForAdmin: true` | Clients need a relay URL even during pause |
 | `wallet_get` | `liveopsGate` | full |
 | `garage_get` | `liveopsGate` | full |
 | `car_buy`, `car_upgrade`, `cosmetic_equip`, `loadout_set` | `liveopsGate` | full |
@@ -1232,40 +1231,10 @@ config and `abandons` aggregate counters.
 
 See `docs/account-linking.md` §6 for the cascade contract.
 
-### 18.7 `relay_token`
+### 18.7 `relay_token` (removed)
 
-Mint a short-lived HMAC token the client presents to the relay
-replica. Always callable — `skipForAdmin: true` on the maintenance
-gate. **Requires `ctx.userId`** (the socket must be authenticated;
-`callerUserId` is ignored).
-
-```json
-// request
-{
-  "callerUserId":  "<uuid>",
-  "clientVersion": "1.2.0",
-  "platform":      "ios"
-}
-
-// response.data
-{
-  "token":     "v1.<base64-payload>.<base64-sig>",
-  "relayUrl":  "wss://api.gapolaniadev.com",
-  "expiresAt": 1762515600,        // unix SECONDS, now+60min
-  "regionId":  "us-east-1"
-}
-```
-
-The token format is `v1.<userId|region|expSec>.<hmacSha256>`. The
-relay-side `beforeAuthenticateDevice` verifies offline (no home
-round-trip) using `LiveopsConfig.relayTokenSecret`. TTL:
-`RELAY_TOKEN_TTL_SEC = 60 * 60`.
-
-| Error | When |
-|---|---|
-| `UNAUTHENTICATED` | no socket `userId` |
-| `SERVICE_UNAVAILABLE` | no regions configured / `relayTokenSecret` missing |
-| `UPGRADE_REQUIRED` | min-version failed (admin bypass on maintenance only) |
+Removed on 2026-10-22 together with the regional Nakama relay
+(decision D-01 of the backend fix plan). Race traffic uses Unity Relay.
 
 ### 18.8 Admin RPCs (compact reference)
 
@@ -1299,7 +1268,7 @@ Each call writes an `admin_action` analytics row.
 | Gated RPCs (player-facing, gated) | Return `SERVICE_UNAVAILABLE`; client shows the splash with the liveops config |
 | Splash RPCs (`liveops_config_get`, `inbox_list`) | Always callable |
 | GDPR RPC (`account_delete`) | Always callable (GDPR > ops) |
-| Admin RPCs (`admin_*`, `relay_token` with `skipForAdmin`) | Always callable |
+| Admin RPCs (`admin_*` with `skipForAdmin`) | Always callable |
 
 See `docs/liveops.md` §2 for the full matrix and rationale.
 

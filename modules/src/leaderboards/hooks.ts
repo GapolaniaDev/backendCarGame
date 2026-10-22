@@ -1,30 +1,21 @@
 // Leaderboard write hooks. Per Phase 2 spec: "bloquearla en el servidor
 // con un hook before que rechace escrituras de cliente".
 //
-// Strategy: every server-initiated write goes through a single RPC-
-// internal function that stamps a sentinel metadata field `server_token`
-// on the record envelope BEFORE the call. The `before` hook accepts the
-// write only if that token is present and matches our constant. Client
-// callers cannot set the token because they hit the leaderboard
-// write via Nakama's socket transport which doesn't expose the
-// `leaderboardRecordWrite` API — but we belt-and-suspenders the
-// check anyway in case future RPCs forget to stamp it.
+// Strategy: every server-initiated write goes through
+// `nk.leaderboardRecordWrite`, which never triggers before-hooks, and
+// stamps a sentinel metadata field `server_token` on the record. The
+// client API path (`WriteLeaderboardRecord`) is the only one that
+// reaches `beforeWriteLeaderboardRecordGuard`, so the guard rejects
+// every call it sees: clients never write leaderboards directly.
 //
-// Note: Nakama 3.27's JS runtime does NOT expose
-// `initializer.registerBeforeLeaderboardRecordWrite` (it was added in a
-// later runtime). The type def in nkruntime.d.ts claims it exists, but
-// in practice the method is undefined and calling it crashes InitModule.
-// This is the 5th documented 3.27 JS runtime gap. We detect the missing
-// method and log a warning instead of crashing — the RPC-side token
-// stamp still prevents direct client writes (clients have no API path
-// to leaderboardRecordWrite anyway).
+// Registration happens in `main.ts` as a top-level
+// `initializer.registerBeforeWriteLeaderboardRecord(...)` statement —
+// the 3.27 AST scanner only finds hooks registered there with a global
+// function identifier. (The old helper used the non-existent name
+// `registerBeforeLeaderboardRecordWrite` from a nested function, which
+// is why it never installed.)
 
-import type {
-  IInitializer,
-  ILeaderboardRecordEnvelope,
-  ILogger,
-  INakama,
-} from '../nkruntime';
+import type { IContext, ILogger, INakama } from '../nkruntime';
 
 const SERVER_TOKEN_KEY = '__server_token__';
 const SERVER_TOKEN_VALUE = 'phase2';
@@ -47,47 +38,22 @@ export function hasServerToken(metadata: unknown): boolean {
 }
 
 /**
- * Register the `before` hook. Must be called from InitModule once per
- * boot. The hook reads the existing metadata and aborts the write (by
- * throwing) when the token is missing — this prevents direct client
- * writes from succeeding via any future API surface.
- *
- * In Nakama 3.27's JS runtime the method is missing; we detect that
- * and log a warning instead of crashing. See the file header for the
- * 5th documented 3.27 JS runtime gap.
+ * Before-hook for the client `WriteLeaderboardRecord` API. Rejects
+ * every request: all authoritative writes come from the server via
+ * `nk.leaderboardRecordWrite`, which bypasses hooks. Throwing makes
+ * Nakama return the error to the client.
  */
-export function registerLeaderboardWriteGuard(
-  initializer: IInitializer,
-  logger?: ILogger,
-): void {
-  // Direct property access (not bracket notation) is required because
-  // the Go runtime extracts the JS function name at call time.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const init = initializer as any;
-  if (typeof init.registerBeforeLeaderboardRecordWrite !== 'function') {
-    if (logger) {
-      logger.warn(
-        'registerLeaderboardWriteGuard: registerBeforeLeaderboardRecordWrite not available in this runtime (Nakama 3.27 JS gap); skipping hook registration. RPC-side token stamp still prevents direct client writes.',
-      );
-    }
-    return;
-  }
-  initializer.registerBeforeLeaderboardRecordWrite((
-    _ctx: unknown,
-    logger: ILogger,
-    _nk: INakama,
-    envelope: ILeaderboardRecordEnvelope,
-  ) => {
-    if (!hasServerToken(envelope.update.metadata)) {
-      logger.warn(
-        'rejecting leaderboard write: missing server token [lb=%s user=%s score=%d]',
-        envelope.leaderboardId,
-        String((envelope.update as { ownerId?: unknown }).ownerId ?? '?'),
-        envelope.update.score,
-      );
-      throw new Error(
-        `leaderboard write rejected: ${envelope.leaderboardId} requires server authority`,
-      );
-    }
-  });
+export function beforeWriteLeaderboardRecordGuard(
+  ctx: IContext,
+  logger: ILogger,
+  _nk: INakama,
+  data: unknown,
+): unknown {
+  const req = (data ?? {}) as { leaderboardId?: unknown };
+  logger.warn(
+    'rejecting client leaderboard write [lb=%s user=%s]',
+    String(req.leaderboardId ?? '?'),
+    String(ctx?.userId ?? '?'),
+  );
+  throw new Error('leaderboard writes require server authority');
 }

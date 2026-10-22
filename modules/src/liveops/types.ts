@@ -8,7 +8,6 @@
 
 export type ClientPlatform = 'ios' | 'android' | 'windows' | 'macos' | 'linux';
 export type CalendarEntryType = 'event' | 'tournament' | 'maintenance';
-export type NodeRole = 'home' | 'relay';
 
 /**
  * Provider of receipt verification. `mock` is for development/CI and
@@ -74,22 +73,6 @@ export interface LiveopsConfig {
    * warn level and never propagate. D8 (Phase 5 Chunk 7).
    */
   analyticsWebhook?: string;
-  /**
-   * Node role. `home` (default) exposes the full game surface;
-   * `relay` only exposes the match + race RPCs needed for the
-   * latency-sensitive race loop. Phase 5 Chunk 8.
-   *
-   * Stored here (not `process.env.NODE_ROLE`) because the JS
-   * runtime strips `process.env` (esbuild `--platform=neutral`).
-   * Bootstrap via `liveops_config_override` per replica.
-   */
-  nodeRole?: NodeRole;
-  /**
-   * HMAC secret for `relay_token` RPC signing/verification. The
-   * relay replica verifies tokens offline with this secret — no
-   * round-trip to home. Phase 5 Chunk 8.
-   */
-  relayTokenSecret?: string;
   /**
    * Receipt verification config for IAPs (Phase 9 Chunk 2). When set
    * the `verifyReceipt` dispatcher routes to the configured provider;

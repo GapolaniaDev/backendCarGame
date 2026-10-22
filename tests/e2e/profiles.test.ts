@@ -188,10 +188,10 @@ describe('profile module (Chunk 14)', () => {
     if (!hook) return;
     const fakeNk = env.fakeNakama.nakama;
     hook(
-     FakeContext,
+      { ...FakeContext, userId: 'user-newbie' },
       env.logger,
       fakeNk,
-      { username: 'newbie', userId: 'user-newbie', vars: {} },
+      { token: 't', refresh_token: 'r', created: true },
     );
     // Profile should now exist.
     const stored = env.fakeNakama.store.get('profiles/user-newbie/user-newbie');

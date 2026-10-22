@@ -30,7 +30,7 @@ import {
 import type { RaceCompletedEvent } from './race/types';
 import { loadLeaderboardsCatalog } from './leaderboards/catalog';
 import { ensureLeaderboards } from './leaderboards/ensure';
-import { registerLeaderboardWriteGuard } from './leaderboards/hooks';
+import { beforeWriteLeaderboardRecordGuard } from './leaderboards/hooks';
 import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
 import { subscribeClubWeek } from './clubs/club_week_subscriber';
 import { subscribeAntiCheat } from './anti_cheat/subscriber';
@@ -46,7 +46,7 @@ import {
   profile_get,
   profile_update,
 } from './profiles/rpcs';
-import { registerProfileAutoCreate } from './profiles/after_auth';
+import { afterAuthenticateAutoCreate } from './account/after_auth';
 import profilesJson from './catalogs/profiles.json';
 import tracksJson from './catalogs/tracks.json';
 import modesJson from './catalogs/modes.json';
@@ -69,7 +69,6 @@ import { loadRewardsCatalog } from './economy/catalog';
 import { loadLevelsCatalog } from './progression/catalog';
 import { loadGarageCatalog } from './garage/catalog';
 import { garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set } from './garage/rpcs';
-import { registerGarageAutoCreate } from './garage/after_auth';
 import { loadStoreCatalog } from './store/catalog';
 import { loadRankedConfig } from './ranked/config';
 import { loadSeasonsCatalog } from './ranked/seasons';
@@ -208,9 +207,6 @@ import { subscribeEconomyRewards } from './economy/subscriber';
 import { subscribeProgressionRewards } from './progression/subscriber';
 import { subscribeRankedRewards } from './ranked/subscriber';
 import { wallet_get } from './economy/rpcs';
-import { relay_token } from './region/rpcs';
-import { beforeAuthenticateDeviceRelay } from './region/before_auth';
-import { isHome } from './core/region';
 
 function InitModule(
   _ctx: IContext,
@@ -230,23 +226,15 @@ function InitModule(
   );
 
   // Phase 2: load the leaderboards catalog (declarative table list),
-  // ensure every authoritative table exists, drop the deprecated
-  // client-writable `race_score` table, and register a before-hook
-  // that rejects any write missing the server token.
+  // ensure every authoritative table exists and drop the deprecated
+  // client-writable `race_score` table. The client-write guard hook is
+  // registered with the other hooks at the end of InitModule.
   loadLeaderboardsCatalog(logger, leaderboardsJson as unknown as import('./leaderboards/catalog').RawTablesFile, nk);
   ensureLeaderboards(logger, nk);
   // Phase 7 Chunk 5: ensure the `club_week` authoritative table
   // exists with the Monday 00:00 UTC reset schedule. Idempotent —
   // re-creating an existing table is a no-op.
   ensureClubWeekLeaderboard(logger, nk);
-  registerLeaderboardWriteGuard(initializer, logger);
-
-  // Phase 4: register the matchmaker matched-hook. The hook validates
-  // candidate groups (mode/version/region aligned, size in {2,4,6})
-  // and accepts the first qualifying candidate; rejection tells the
-  // matchmaker to keep tickets queued. The full RaceSession creation
-  // is in Chunk 4 (reconnection + host_claim).
-  initializer.registerMatchmakerMatched(matchmakerMatchedImpl);
 
   // Profiles catalog: blocked-words list + displayName rules.
   loadProfilesCatalog(
@@ -254,11 +242,6 @@ function InitModule(
     profilesJson as unknown as import('./profiles/catalog').RawProfilesFile,
     nk,
   );
-
-  // Auto-create a default profile on every successful auth.
-  registerProfileAutoCreate(initializer, nk, logger);
-  // Phase 3: auto-create the starter-car garage on first auth.
-  registerGarageAutoCreate(initializer, nk, logger);
 
   // Phase 3 catalogs: rewards, levels, garage (cars/upgrades/cosmetics),
   // store. Chained after Phase 1+2 so a malformed Phase 3 catalog
@@ -464,158 +447,154 @@ function InitModule(
   startSubscriptionScanner(nk, logger);
   setRaceBus(bus);
 
-  // Register the RPCs as individual top-level statements.
+  // Every registration is a top-level statement of this `try` — no
+  // `if`, loop or nested block, and never from a helper function.
   //
-  // Nakama's goja runtime uses an AST scanner to extract the RPC
-  // function names at boot. The scanner walks top-level
-  // ExpressionStatements and TryStatement bodies — it does NOT recurse
-  // into ForStatement, IfStatement, BlockStatement, etc. So we cannot
-  // use a loop here; the calls must be inlined. Each call also uses
-  // the bare identifier `config_get` (not a member expression) because
-  // the scanner returns the first arg as a string and `checkFnScope`
-  // then verifies that `globalThis[arg]` is a function.
-  //
-  // Phase 5 Chunk 8: `nodeRole === 'relay'` (region replica) only
-  // registers the race + match primitives. Wallet/garage/store/
-  // profile/account/admin/liveops RPCs stay on the home node.
-  // `nodeRole === 'home'` (default) registers the full surface.
-  const homeRelay = isHome(nk, logger);
-  logger.info('[boot] nodeRole=%s', homeRelay ? 'home' : 'relay');
+  // Nakama 3.27's goja runtime extracts the handler names with an AST
+  // scanner (`getRegisteredFnIdentifier` / `getHookFnIdentifier` in
+  // runtime_javascript_init.go). It only walks the top-level statements
+  // of `InitModule` and the bodies of top-level `try` statements, and
+  // the handler argument must be a bare identifier of a global
+  // function. A registration anywhere else throws "function key could
+  // not be extracted: not found" (audit N0). The static test
+  // `tests/unit/registration_shape.test.ts` enforces this shape on the
+  // built bundle.
   try {
-    // ── Both modes: race + match primitives ──
+    // ── Hooks ──
+    initializer.registerMatchmakerMatched(matchmakerMatchedImpl);
+    initializer.registerAfterAuthenticateDevice(afterAuthenticateAutoCreate);
+    initializer.registerAfterAuthenticateCustom(afterAuthenticateAutoCreate);
+    initializer.registerAfterAuthenticateEmail(afterAuthenticateAutoCreate);
+    initializer.registerAfterAuthenticateApple(afterAuthenticateAutoCreate);
+    initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecordGuard);
+    // ── RPCs ──
     initializer.registerRpc('race_session_get', race_session_get);
     initializer.registerRpc('race_submit_result', race_submit_result);
-    if (homeRelay) {
-      // ── Home-only: race creation + matching + metagame + ops ──
-      initializer.registerRpc('config_get', config_get);
-      initializer.registerRpc('race_session_create', race_session_create);
-      initializer.registerRpc('race_session_join', race_session_join);
-      initializer.registerRpc('race_session_start', race_session_start);
-      initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
-      initializer.registerRpc('race_host_claim', race_host_claim);
-      initializer.registerRpc('lb_get', lb_get);
-      initializer.registerRpc('profile_get', profile_get);
-      initializer.registerRpc('profile_update', profile_update);
-      initializer.registerRpc('garage_get', garage_get);
-      initializer.registerRpc('car_buy', car_buy);
-      initializer.registerRpc('car_upgrade', car_upgrade);
-      initializer.registerRpc('cosmetic_equip', cosmetic_equip);
-      initializer.registerRpc('loadout_set', loadout_set);
-      initializer.registerRpc('store_get', store_get);
-      initializer.registerRpc('store_buy', store_buy);
-      initializer.registerRpc('wallet_get', wallet_get);
-      initializer.registerRpc('mm_ticket_params', mm_ticket_params);
-      initializer.registerRpc('ranked_get', ranked_get);
-      initializer.registerRpc('liveops_config_get', liveops_config_get);
-      initializer.registerRpc('inbox_list', inbox_list);
-      initializer.registerRpc('inbox_claim', inbox_claim);
-      initializer.registerRpc('missions_get', missions_get);
-      initializer.registerRpc('mission_claim', mission_claim);
-      initializer.registerRpc('mission_reroll', mission_reroll);
-      initializer.registerRpc('achievements_get', achievements_get);
-      initializer.registerRpc('achievement_claim', achievement_claim);
-      initializer.registerRpc('account_link', account_link);
-      initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
-      initializer.registerRpc('account_delete', account_delete);
-      // Phase 9 Chunk 3: IAP purchase (bypasses maintenance — money
-      // already paid via Apple/Google, must still redeem).
-      initializer.registerRpc('iap_purchase', iap_purchase);
-      // Phase 9 Chunk 4: subscription status + cancel (also maintenance-bypass).
-      initializer.registerRpc('iap_subscription_status', iap_subscription_status);
-      initializer.registerRpc('iap_subscription_cancel', iap_subscription_cancel);
-      // Phase 9 Chunk 5: ad reward (maintenance-bypass, D77).
-      initializer.registerRpc('ad_watched', ad_watched);
-      // Phase 9 Chunk 6: 6 admin IAP RPCs (assertAdminKey + maintenance-bypass).
-      initializer.registerRpc('admin_iap_purchases_list', admin_iap_purchases_list);
-      initializer.registerRpc('admin_iap_purchases_get', admin_iap_purchases_get);
-      initializer.registerRpc('admin_iap_refund', admin_iap_refund);
-      initializer.registerRpc('admin_iap_fraud_flags_list', admin_iap_fraud_flags_list);
-      initializer.registerRpc('admin_iap_fraud_flag_action', admin_iap_fraud_flag_action);
-      initializer.registerRpc('admin_iap_revenue_stats_get', admin_iap_revenue_stats_get);
-      // Phase 9 Chunk 7: 4 admin IAP analytics RPCs (assertAdminKey + maintenance-bypass D91).
-      initializer.registerRpc('admin_iap_analytics_get', admin_iap_analytics_get);
-      initializer.registerRpc('admin_iap_ltv_get', admin_iap_ltv_get);
-      initializer.registerRpc('admin_iap_funnel_get', admin_iap_funnel_get);
-      initializer.registerRpc('admin_iap_top_buyers_get', admin_iap_top_buyers_get);
-      initializer.registerRpc('pass_get', pass_get);
-      initializer.registerRpc('pass_claim', pass_claim);
-      initializer.registerRpc('pass_buy_premium', pass_buy_premium);
-      initializer.registerRpc('admin_grant_premium', admin_grant_premium);
-      initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
-      initializer.registerRpc('admin_send_inbox', admin_send_inbox);
-      initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
-      initializer.registerRpc('admin_remove_player', admin_remove_player);
-      initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
-      // Phase 8 Chunk 4: anti-cheat admin RPCs (6).
-      initializer.registerRpc('admin_marks_list', admin_marks_list);
-      initializer.registerRpc('admin_marks_partials_view', admin_marks_partials_view);
-      initializer.registerRpc('admin_marks_confirm', admin_marks_confirm);
-      initializer.registerRpc('admin_marks_dismiss', admin_marks_dismiss);
-      initializer.registerRpc('admin_marks_sanction', admin_marks_sanction);
-      initializer.registerRpc('admin_anti_cheat_stats_get', admin_anti_cheat_stats_get);
-      // Phase 8 Chunk 9: admin dashboard RPCs (6).
-      initializer.registerRpc('admin_overview_get', admin_overview_get);
-      initializer.registerRpc('admin_tournaments_stats_get', admin_tournaments_stats_get);
-      initializer.registerRpc('admin_events_stats_get', admin_events_stats_get);
-      initializer.registerRpc('admin_players_search', admin_players_search);
-      initializer.registerRpc('admin_wallet_grant', admin_wallet_grant);
-      initializer.registerRpc('admin_anti_cheat_dashboard_get', admin_anti_cheat_dashboard_get);
-      // Phase 8 Chunk 5: tournaments (3 RPCs).
-      initializer.registerRpc('tournament_list', tournament_list);
-      initializer.registerRpc('tournament_get', tournament_get);
-      initializer.registerRpc('tournament_join', tournament_join);
-      // Phase 8 Chunk 7: admin tournament RPCs (6).
-      initializer.registerRpc('admin_tournament_list', admin_tournament_list);
-      initializer.registerRpc('admin_tournament_get', admin_tournament_get);
-      initializer.registerRpc('admin_tournament_release_prizes', admin_tournament_release_prizes);
-      initializer.registerRpc('admin_tournament_void_refund', admin_tournament_void_refund);
-      initializer.registerRpc('admin_tournament_cancel', admin_tournament_cancel);
-      initializer.registerRpc('admin_tournament_extend', admin_tournament_extend);
-      // Phase 8 Chunk 8: event_list RPC.
-      initializer.registerRpc('event_list', event_list);
-      initializer.registerRpc('relay_token', relay_token);
-      // Phase 7 Chunk 1: friend codes + recent rivals.
-      initializer.registerRpc('friend_code_get', friend_code_get);
-      initializer.registerRpc('friend_add_by_code', friend_add_by_code);
-      initializer.registerRpc('friend_list_get', friend_list_get);
-      initializer.registerRpc('friend_remove', friend_remove);
-      initializer.registerRpc('recent_rivals_get', recent_rivals_get);
-      // Phase 7 Chunk 2: invites + blocks.
-      initializer.registerRpc('invite_send', invite_send);
-      initializer.registerRpc('invite_list', invite_list);
-      initializer.registerRpc('invite_respond', invite_respond);
-      initializer.registerRpc('block_add', block_add);
-      initializer.registerRpc('block_remove', block_remove);
-      initializer.registerRpc('block_list', block_list);
-      // Phase 7 Chunk 3: clubs CRUD + catalog.
-      initializer.registerRpc('club_create', club_create);
-      initializer.registerRpc('club_get', club_get);
-      initializer.registerRpc('club_search', club_search);
-      // Phase 7 Chunk 4: membership + roles + updates.
-      initializer.registerRpc('club_update', club_update);
-      initializer.registerRpc('club_members_list', club_members_list);
-      initializer.registerRpc('club_kick', club_kick);
-      initializer.registerRpc('club_promote', club_promote);
-      initializer.registerRpc('club_demote', club_demote);
-      initializer.registerRpc('club_leave', club_leave);
-      // Phase 7 Chunk 6: chat (2 RPCs).
-      initializer.registerRpc('chat_send', chat_send);
-      initializer.registerRpc('chat_list', chat_list);
-      // Phase 7 Chunk 7: moderation (1 player RPC + 3 admin RPCs).
-      initializer.registerRpc('report_player', report_player);
-      initializer.registerRpc('admin_view_reports', admin_view_reports);
-      initializer.registerRpc('admin_silence', admin_silence);
-      initializer.registerRpc('admin_unsilence', admin_unsilence);
-      // Phase 7 Chunk 8: parties (5 RPCs).
-      initializer.registerRpc('party_create', party_create);
-      initializer.registerRpc('party_invite', party_invite);
-      initializer.registerRpc('party_leave', party_leave);
-      initializer.registerRpc('party_kick', party_kick);
-      initializer.registerRpc('party_get', party_get);
-      initializer.registerRpc('party_join', party_join);
-    }
-    // ── Auth hook — registered on every node; no-op on home ──
-    initializer.registerBeforeAuthenticateDevice(beforeAuthenticateDeviceRelay);
+    initializer.registerRpc('config_get', config_get);
+    initializer.registerRpc('race_session_create', race_session_create);
+    initializer.registerRpc('race_session_join', race_session_join);
+    initializer.registerRpc('race_session_start', race_session_start);
+    initializer.registerRpc('race_session_quick_bots', race_session_quick_bots);
+    initializer.registerRpc('race_host_claim', race_host_claim);
+    initializer.registerRpc('lb_get', lb_get);
+    initializer.registerRpc('profile_get', profile_get);
+    initializer.registerRpc('profile_update', profile_update);
+    initializer.registerRpc('garage_get', garage_get);
+    initializer.registerRpc('car_buy', car_buy);
+    initializer.registerRpc('car_upgrade', car_upgrade);
+    initializer.registerRpc('cosmetic_equip', cosmetic_equip);
+    initializer.registerRpc('loadout_set', loadout_set);
+    initializer.registerRpc('store_get', store_get);
+    initializer.registerRpc('store_buy', store_buy);
+    initializer.registerRpc('wallet_get', wallet_get);
+    initializer.registerRpc('mm_ticket_params', mm_ticket_params);
+    initializer.registerRpc('ranked_get', ranked_get);
+    initializer.registerRpc('liveops_config_get', liveops_config_get);
+    initializer.registerRpc('inbox_list', inbox_list);
+    initializer.registerRpc('inbox_claim', inbox_claim);
+    initializer.registerRpc('missions_get', missions_get);
+    initializer.registerRpc('mission_claim', mission_claim);
+    initializer.registerRpc('mission_reroll', mission_reroll);
+    initializer.registerRpc('achievements_get', achievements_get);
+    initializer.registerRpc('achievement_claim', achievement_claim);
+    initializer.registerRpc('account_link', account_link);
+    initializer.registerRpc('account_link_resolve_conflict', account_link_resolve_conflict);
+    initializer.registerRpc('account_delete', account_delete);
+    // Phase 9 Chunk 3: IAP purchase (bypasses maintenance — money
+    // already paid via Apple/Google, must still redeem).
+    initializer.registerRpc('iap_purchase', iap_purchase);
+    // Phase 9 Chunk 4: subscription status + cancel (also maintenance-bypass).
+    initializer.registerRpc('iap_subscription_status', iap_subscription_status);
+    initializer.registerRpc('iap_subscription_cancel', iap_subscription_cancel);
+    // Phase 9 Chunk 5: ad reward (maintenance-bypass, D77).
+    initializer.registerRpc('ad_watched', ad_watched);
+    // Phase 9 Chunk 6: 6 admin IAP RPCs (assertAdminKey + maintenance-bypass).
+    initializer.registerRpc('admin_iap_purchases_list', admin_iap_purchases_list);
+    initializer.registerRpc('admin_iap_purchases_get', admin_iap_purchases_get);
+    initializer.registerRpc('admin_iap_refund', admin_iap_refund);
+    initializer.registerRpc('admin_iap_fraud_flags_list', admin_iap_fraud_flags_list);
+    initializer.registerRpc('admin_iap_fraud_flag_action', admin_iap_fraud_flag_action);
+    initializer.registerRpc('admin_iap_revenue_stats_get', admin_iap_revenue_stats_get);
+    // Phase 9 Chunk 7: 4 admin IAP analytics RPCs (assertAdminKey + maintenance-bypass D91).
+    initializer.registerRpc('admin_iap_analytics_get', admin_iap_analytics_get);
+    initializer.registerRpc('admin_iap_ltv_get', admin_iap_ltv_get);
+    initializer.registerRpc('admin_iap_funnel_get', admin_iap_funnel_get);
+    initializer.registerRpc('admin_iap_top_buyers_get', admin_iap_top_buyers_get);
+    initializer.registerRpc('pass_get', pass_get);
+    initializer.registerRpc('pass_claim', pass_claim);
+    initializer.registerRpc('pass_buy_premium', pass_buy_premium);
+    initializer.registerRpc('admin_grant_premium', admin_grant_premium);
+    initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
+    initializer.registerRpc('admin_send_inbox', admin_send_inbox);
+    initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
+    initializer.registerRpc('admin_remove_player', admin_remove_player);
+    initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
+    // Phase 8 Chunk 4: anti-cheat admin RPCs (6).
+    initializer.registerRpc('admin_marks_list', admin_marks_list);
+    initializer.registerRpc('admin_marks_partials_view', admin_marks_partials_view);
+    initializer.registerRpc('admin_marks_confirm', admin_marks_confirm);
+    initializer.registerRpc('admin_marks_dismiss', admin_marks_dismiss);
+    initializer.registerRpc('admin_marks_sanction', admin_marks_sanction);
+    initializer.registerRpc('admin_anti_cheat_stats_get', admin_anti_cheat_stats_get);
+    // Phase 8 Chunk 9: admin dashboard RPCs (6).
+    initializer.registerRpc('admin_overview_get', admin_overview_get);
+    initializer.registerRpc('admin_tournaments_stats_get', admin_tournaments_stats_get);
+    initializer.registerRpc('admin_events_stats_get', admin_events_stats_get);
+    initializer.registerRpc('admin_players_search', admin_players_search);
+    initializer.registerRpc('admin_wallet_grant', admin_wallet_grant);
+    initializer.registerRpc('admin_anti_cheat_dashboard_get', admin_anti_cheat_dashboard_get);
+    // Phase 8 Chunk 5: tournaments (3 RPCs).
+    initializer.registerRpc('tournament_list', tournament_list);
+    initializer.registerRpc('tournament_get', tournament_get);
+    initializer.registerRpc('tournament_join', tournament_join);
+    // Phase 8 Chunk 7: admin tournament RPCs (6).
+    initializer.registerRpc('admin_tournament_list', admin_tournament_list);
+    initializer.registerRpc('admin_tournament_get', admin_tournament_get);
+    initializer.registerRpc('admin_tournament_release_prizes', admin_tournament_release_prizes);
+    initializer.registerRpc('admin_tournament_void_refund', admin_tournament_void_refund);
+    initializer.registerRpc('admin_tournament_cancel', admin_tournament_cancel);
+    initializer.registerRpc('admin_tournament_extend', admin_tournament_extend);
+    // Phase 8 Chunk 8: event_list RPC.
+    initializer.registerRpc('event_list', event_list);
+    // Phase 7 Chunk 1: friend codes + recent rivals.
+    initializer.registerRpc('friend_code_get', friend_code_get);
+    initializer.registerRpc('friend_add_by_code', friend_add_by_code);
+    initializer.registerRpc('friend_list_get', friend_list_get);
+    initializer.registerRpc('friend_remove', friend_remove);
+    initializer.registerRpc('recent_rivals_get', recent_rivals_get);
+    // Phase 7 Chunk 2: invites + blocks.
+    initializer.registerRpc('invite_send', invite_send);
+    initializer.registerRpc('invite_list', invite_list);
+    initializer.registerRpc('invite_respond', invite_respond);
+    initializer.registerRpc('block_add', block_add);
+    initializer.registerRpc('block_remove', block_remove);
+    initializer.registerRpc('block_list', block_list);
+    // Phase 7 Chunk 3: clubs CRUD + catalog.
+    initializer.registerRpc('club_create', club_create);
+    initializer.registerRpc('club_get', club_get);
+    initializer.registerRpc('club_search', club_search);
+    // Phase 7 Chunk 4: membership + roles + updates.
+    initializer.registerRpc('club_update', club_update);
+    initializer.registerRpc('club_members_list', club_members_list);
+    initializer.registerRpc('club_kick', club_kick);
+    initializer.registerRpc('club_promote', club_promote);
+    initializer.registerRpc('club_demote', club_demote);
+    initializer.registerRpc('club_leave', club_leave);
+    // Phase 7 Chunk 6: chat (2 RPCs).
+    initializer.registerRpc('chat_send', chat_send);
+    initializer.registerRpc('chat_list', chat_list);
+    // Phase 7 Chunk 7: moderation (1 player RPC + 3 admin RPCs).
+    initializer.registerRpc('report_player', report_player);
+    initializer.registerRpc('admin_view_reports', admin_view_reports);
+    initializer.registerRpc('admin_silence', admin_silence);
+    initializer.registerRpc('admin_unsilence', admin_unsilence);
+    // Phase 7 Chunk 8: parties (5 RPCs).
+    initializer.registerRpc('party_create', party_create);
+    initializer.registerRpc('party_invite', party_invite);
+    initializer.registerRpc('party_leave', party_leave);
+    initializer.registerRpc('party_kick', party_kick);
+    initializer.registerRpc('party_get', party_get);
+    initializer.registerRpc('party_join', party_join);
   } catch (e) {
     logger.error('rpc registration failed: %s', e instanceof Error ? e.message : String(e));
   }

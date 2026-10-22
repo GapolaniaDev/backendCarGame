@@ -47,8 +47,6 @@ something to serve.
   calendar: [],               // future: events, tournaments
   adminRpcKey:    "p5v8-admin-key",        // shared secret for admin RPCs
   analyticsWebhook: "https://...",         // optional outbound POST target
-  relayTokenSecret: "p5v8-region-relay-dev-secret-rotate-in-prod",
-  nodeRole:        "home",                 // "home" | "relay"
 }
 ```
 
@@ -60,8 +58,6 @@ something to serve.
 | `calendar[]` | no | Reserved for Phase 8 events/tournaments. Today: ignored. |
 | `adminRpcKey` | yes for admin RPCs | Shared secret; see `docs/admin.md`. |
 | `analyticsWebhook` | no | When set, every `emit()` does a best-effort POST. |
-| `relayTokenSecret` | yes for relay split | HMAC-SHA-256 secret for the `relay_token` token (see `docs/unity-api.md` §18.7). |
-| `nodeRole` | yes | `home` registers 28 RPCs; `relay` only registers `race_session_get` + `race_submit_result`. |
 
 ### Validation
 
@@ -72,8 +68,6 @@ something to serve.
 - `regions` MUST be a non-empty array of `{id, relayUrl}`.
 - `adminRpcKey`, when present, MUST be ≥ 16 chars.
 - `analyticsWebhook`, when present, MUST start with `http://` or `https://`.
-- `relayTokenSecret`, when present, MUST be ≥ 16 chars.
-- `nodeRole` MUST be `'home'` or `'relay'`.
 
 Validation runs on every read AND on every admin override. A malformed
 override is rejected with the same code that the reader would throw.
@@ -113,7 +107,6 @@ Gated RPCs and the wire code:
 | `inbox_list` | Badge / banner must render even during maintenance so the player sees what they're missing. |
 | `account_delete` | **GDPR right to erasure — cannot be blocked by an operational pause.** |
 | `admin_*` (5 RPCs) | `assertNotInMaintenance(..., { skipForAdmin: true })`. Admins can still send inbox grants, adjust wallets, clean up sessions during a maintenance window. |
-| `relay_token` | `assertNotInMaintenance(..., { skipForAdmin: true })`. Clients need a relay URL/token even when the home is paused; admins mint tokens during ops drills. |
 
 ### Why some RPCs use `assertNotInMaintenance` directly
 
@@ -168,14 +161,14 @@ Validation accepts any array; readers are not wired today.
 ## 5. Bootstrap — how to set adminRpcKey + analyticsWebhook post-deploy
 
 The admin RPCs cannot set their own key (chicken/egg). To install the
-initial `adminRpcKey`, `relayTokenSecret`, or `analyticsWebhook`, use
+initial `adminRpcKey` or `analyticsWebhook`, use
 one of:
 
 1. **`liveops_config_override` ops tool** (recommended). The tool
    writes the storage row directly:
    ```
    collection: "liveops", key: "config", userId: SYSTEM_USER_ID
-   value: { ..., adminRpcKey: "...", relayTokenSecret: "..." }
+   value: { ..., adminRpcKey: "..." }
    ```
    The bundled `bootEnsure()` will NOT overwrite an existing row, so
    the override persists.
@@ -256,25 +249,15 @@ future work. See `modules/src/core/admin/analytics.ts`.
 
 ---
 
-## 7. Region relay
+## 7. Regions
 
-Two node roles: `home` (full API, 28 RPCs) and `relay`
-(`race_session_get` + `race_submit_result` only). The role is set via
-`LiveopsConfig.nodeRole`.
-
-- **Home**: client gets a session token, calls `relay_token` RPC,
-  receives `{token, relayUrl, expiresAt, regionId}`. `relayUrl` points
-  to the canonical region (v1: always the first region in the catalog).
-- **Relay**: rejects unauthenticated sockets via
-  `beforeAuthenticateDevice` unless `vars.relayToken` is a valid
-  HMAC-SHA-256 token signed with `relayTokenSecret`. Verification is
-  offline — no home round-trip.
-
-Token wire format: `v1.<base64-payload>.<base64-sig>`. TTL: 60 minutes
-(`RELAY_TOKEN_TTL_SEC`). `admin` RPCs + `relay_token` itself bypass
-maintenance.
-
-See `docs/unity-api.md` §18.7 and `modules/src/region/`.
+The regional Nakama relay (`relay_token`, `nodeRole`, the relay
+`beforeAuthenticateDevice` gate) was removed on 2026-10-22 (decision
+D-01 of the backend fix plan): one Nakama node serves the whole API and
+race traffic goes through Unity Relay, which has its own regions.
+`regions[]` stays in the config as display data for `config_get`;
+stored configs that still carry `nodeRole` / `relayTokenSecret` remain
+valid (unknown keys are ignored).
 
 ---
 
@@ -291,4 +274,3 @@ See `docs/unity-api.md` §18.7 and `modules/src/region/`.
 | Analytics emit | `core/admin/analytics.ts` | `emit(nk, logger, name, props, opts?)` |
 | Audit wrapper | `core/admin/analytics.ts` | `emitAdminAction(nk, logger, rpcName, props)` |
 | Region routing | `core/region.ts` | `isHome(nk, logger)` / `isRelay(nk, logger)` |
-| Token sign/verify | `region/relay_token.ts` | `signRelayToken(nk, payload, secret)` / `verifyRelayToken(...)` |

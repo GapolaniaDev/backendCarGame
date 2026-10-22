@@ -6,7 +6,6 @@
 //   - `inbox_list`         (badge)
 //   - `account_delete`     (GDPR > ops)
 //   - `admin_*`            (skipForAdmin)
-//   - `relay_token`        (skipForAdmin)
 //
 // Matrix: each gated RPC × {maintenance ON|OFF} × {adminKey set|not}.
 
@@ -77,7 +76,6 @@ function setMaintenance(env: ReturnType<typeof loadBundleForTest>, on: boolean):
       regions: [{ id: 'us', displayName: 'America', relayUrl: 'wss://api.example.com' }],
       calendar: [],
       adminRpcKey: ADMIN_KEY,
-      relayTokenSecret: 'p5c9-secret',
     },
     version: on ? 'v00000002' : 'v00000001',
     permissionRead: 0, permissionWrite: 0,
@@ -253,16 +251,5 @@ describe('liveops_full (Phase 5 Chunk 9) — exhaustive gate matrix', () => {
       adminKey: ADMIN_KEY, userId: 'u1', coins: 1000, reason: 'test',
     });
     expect(r.ok).toBe(true);
-  });
-
-  // ── 9: relay_token (skipForAdmin, Chunk 8) — covered by region_e2e test 4 ──
-  it('relay_token OK in maintenance (skipForAdmin)', () => {
-    setMaintenance(env, true);
-    const handler = env.resolver('relay_token');
-    expect(handler).toBeDefined();
-    // Full minting requires the Buffer-polyfilled loader (region_e2e).
-    // Here we only assert the gate does NOT block the RPC at
-    // registration time + the maintenance flag is wired correctly.
-    expect(true).toBe(true);
   });
 });

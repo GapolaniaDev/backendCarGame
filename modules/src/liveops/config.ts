@@ -68,13 +68,6 @@ const bundled: Readonly<LiveopsConfig> = Object.freeze({
   // secret. Admins bootstrap via `liveops_config_override` after the
   // first boot. The field is undefined here, which `validate()` and
   // `freeze()` both handle.
-  // nodeRole defaults to 'home' for the bundled config; ops flips
-  // relay replicas via `liveops_config_override` after boot.
-  nodeRole: 'home',
-  // relayTokenSecret is bundled with a dev placeholder; ops MUST
-  // override per-region. Same shape as `adminRpcKey` — never shipped
-  // as-is.
-  relayTokenSecret: 'p5v8-region-relay-dev-secret-rotate-in-prod',
   // iapVerification defaults to the mock provider in dev. Ops swaps
   // to apple|google in `liveops_config_override` after provisioning
   // the per-provider secrets. Phase 9 Chunk 2 (D61).
@@ -210,25 +203,6 @@ export function validate(raw: unknown): asserts raw is LiveopsConfig {
     }
   }
 
-  // nodeRole: optional, defaults to 'home' (forwarded by callers via
-  // `isHome(nk)`). Case-insensitive at the validator, lower-cased on
-  // freeze so downstream code can compare strict strings.
-  const nr = r['nodeRole'];
-  if (nr !== undefined) {
-    if (typeof nr !== 'string') fail('nodeRole must be a string when present');
-    const lowered = (nr as string).toLowerCase();
-    if (lowered !== 'home' && lowered !== 'relay') {
-      fail('nodeRole must be "home" or "relay"');
-    }
-  }
-
-  // relayTokenSecret: optional. Non-empty string when present. The
-  // bundled default supplies a dev secret — ops MUST override in prod.
-  const rts = r['relayTokenSecret'];
-  if (rts !== undefined && (typeof rts !== 'string' || (rts as string).length === 0)) {
-    fail('relayTokenSecret must be a non-empty string when present');
-  }
-
   // iapVerification: optional. When absent the receipt dispatcher
   // rejects everything. When present, per-provider required fields.
   const ivRaw = r['iapVerification'];
@@ -362,8 +336,6 @@ function freeze(cfg: LiveopsConfig): LiveopsConfig {
     calendar: Object.freeze(cfg.calendar.map((c) => Object.freeze({ ...c }))),
     ...(cfg.adminRpcKey !== undefined ? { adminRpcKey: cfg.adminRpcKey } : {}),
     ...(cfg.analyticsWebhook !== undefined ? { analyticsWebhook: cfg.analyticsWebhook } : {}),
-    ...(cfg.nodeRole !== undefined ? { nodeRole: cfg.nodeRole } : {}),
-    ...(cfg.relayTokenSecret !== undefined ? { relayTokenSecret: cfg.relayTokenSecret } : {}),
     ...(cfg.iapVerification !== undefined ? { iapVerification: Object.freeze({ ...cfg.iapVerification }) } : {}),
   });
 }
