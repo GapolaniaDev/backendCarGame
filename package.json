@@ -10,7 +10,8 @@
     "test": "npm run typecheck && vitest run",
     "test:watch": "vitest",
     "lint": "eslint modules/src tests --ext .ts",
-    "verify": "npm run lint && npm test && npm run build"
+    "verify": "npm run lint && npm test && npm run build",
+    "smoke:live": "node scripts/smoke-live.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
