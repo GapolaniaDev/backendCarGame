@@ -15,6 +15,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type { RaceSubmitResultOutput } from '../../modules/src/race/types';
 import { TOURNAMENT_LEADERBOARD_SYSTEM_USER } from '../../modules/src/tournaments/leaderboard';
@@ -162,6 +163,7 @@ describe('phase8 full flow e2e (Chunk 10)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
     seedAdminKey(env);
     invalidateDashboardCache('');
   });

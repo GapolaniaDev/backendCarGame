@@ -49,7 +49,7 @@ import {
   tryCloseAndPublish,
 } from './session_repo';
 import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
-import { loadoutStatsFor } from './stats_equalization';
+import { resolveServerLoadout } from './loadout';
 import type {
   ConfigGetOutput,
   CarClassId,
@@ -276,11 +276,16 @@ function race_session_create_impl(
   // Build minimal session — host is the only roster entry, no reports yet.
   const sessionId = nk.uuidv4();
   const nowMs = serverNowMs();
-  // Phase 4 Chunk 8: stats equalization for ranked sessions.
-  const hostStats = loadoutStatsFor(nk, hostId, input.hostLoadout, input.mode === 'ranked' ? 'ranked' : 'normal');
-  const hostLoadout: Loadout = hostStats
-    ? { ...input.hostLoadout, stats: hostStats }
-    : { ...input.hostLoadout };
+  // The loadout comes from the host's garage, not from the body (T-10,
+  // audit PC-16); ranked sessions get equalized stats (Phase 4 Chunk 8).
+  const hostLoadout: Loadout = resolveServerLoadout(
+    nk,
+    logger,
+    hostId,
+    input.hostLoadout,
+    input.mode === 'ranked' ? 'ranked' : 'normal',
+    'race_session_create',
+  );
   const session: RaceSession = {
     schemaVersion: 1,
     id: sessionId,
@@ -542,18 +547,17 @@ function race_session_join_impl(
     );
   }
 
-  // Phase 4 Chunk 8: stats equalization for ranked joiners. When the
-  // session is ranked, the joiner's loadout.stats must be clamped to
-  // their car's maxStats so the race rewards driver skill, not wallet.
-  const joinerStats = loadoutStatsFor(
+  // The loadout comes from the joiner's garage (T-10, audit PC-16); in a
+  // ranked session its stats are clamped to the car's maxStats so the
+  // race rewards driver skill, not wallet (Phase 4 Chunk 8).
+  const joinerLoadout: Loadout = resolveServerLoadout(
     nk,
+    logger,
     joinerId,
     loadout,
     cur.session.mode === 'ranked' ? 'ranked' : 'normal',
+    'race_session_join',
   );
-  const joinerLoadout: Loadout = joinerStats
-    ? { ...loadout, stats: joinerStats }
-    : { ...loadout };
 
   try {
     appendRosterEntry(
@@ -1080,10 +1084,18 @@ function race_session_quick_bots_impl(
     return toJson(err('BAD_REQUEST', `size must be 2|4|6, got ${String(input.size)}`));
   }
 
-  // hostLoadout validation
+  // hostLoadout validation; the loadout itself comes from the caller's
+  // garage (T-10, audit PC-16) and the bots reuse its class.
   const lv = validateLoadout(input.hostLoadout);
   if (!lv.ok) return toJson(lv);
-  const hostLoadout = lv.data;
+  const hostLoadout = resolveServerLoadout(
+    nk,
+    logger,
+    callerId,
+    lv.data,
+    'normal',
+    'race_session_quick_bots',
+  );
 
   // callerRating defaults
   const callerRating =

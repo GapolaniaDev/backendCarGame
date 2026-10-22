@@ -11,6 +11,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type { RankedGetOutput } from '../../modules/src/ranked/types';
 import type { RaceSession } from '../../modules/src/race/types';
@@ -98,6 +99,7 @@ describe('ranked full lifecycle (Phase 4 Chunk 10)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
     seedGarage(env, HOST_ID, 'phantom_rsx', 'B');
     seedGarage(env, P1, 'coupe_gt', 'C');
     seedGarage(env, P2, 'aurora_aero', 'A');

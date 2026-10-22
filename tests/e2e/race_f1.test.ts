@@ -1,12 +1,17 @@
 // E2E tests for the F1 race fixes of the audit plan (cards T-06…T-10):
-// active-session index first; the other cards extend it.
+// active-session index, garage loadout, close with grace, reachable host
+// claim, matchmaker session, quorum and durable submit retries.
 //
+// Unlike the older race suites this file does NOT auto-seed garages from
+// the declared loadout: every player gets an explicit garage, so the
+// loadout the server derives (T-10) is the one under test.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   FakeContext,
   loadBundleForTest,
   SYSTEM_USER_ID,
+  seedRaceGarage,
   type LoadedBundle,
 } from './_stubs';
 import type { RaceSession } from '../../modules/src/race/types';
@@ -90,6 +95,7 @@ describe('F1 races (plan T-06…T-10)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    for (const u of [A, B, C]) seedRaceGarage(env.nak, u, 'D');
   });
 
   describe('T-08 active-session index', () => {
@@ -138,6 +144,68 @@ describe('F1 races (plan T-06…T-10)', () => {
 
       const got = getActive(env, A);
       expect(got.ok && got.data.session.id).toBe(newer);
+    });
+  });
+
+  describe('T-10 loadout from the garage', () => {
+    it('a declared car the player does not own is replaced by the garage car', () => {
+      const r = call<{ sessionId: string }>(env, 'race_session_create', A, {
+        matchId: 'm-t10',
+        mode: 'private',
+        trackId: 'neon_blvd',
+        size: 2,
+        hostLoadout: { classId: 'S', bodyId: 'titan_s1' },
+        hostUserId: A,
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(join(env, r.data.sessionId, B, 'S').ok).toBe(true);
+
+      const roster = storedSession(env, r.data.sessionId).roster;
+      for (const e of roster) {
+        expect(e.loadout.classId).toBe('D');
+        expect(e.loadout.bodyId).toBe('starter_viper');
+      }
+      expect(env.fakeLogger.lines.some((l) => /declared loadout titan_s1\/S ignored/.test(l))).toBe(true);
+    });
+
+    it('the min-time floor is the garage car class, not the declared one', () => {
+      const r = call<{ sessionId: string }>(env, 'race_session_create', A, {
+        matchId: 'm-t10b',
+        mode: 'private',
+        trackId: 'neon_blvd',
+        size: 2,
+        hostLoadout: { classId: 'S', bodyId: 'titan_s1' },
+        hostUserId: A,
+      });
+      if (!r.ok) throw new Error('create failed');
+      start(env, r.data.sessionId, A);
+      backdate(env, r.data.sessionId, 200_000);
+
+      const fast = submit(env, r.data.sessionId, A, S_LAPS);
+      expect(fast.ok).toBe(false);
+      if (!fast.ok) {
+        expect(fast.error.code).toBe('INVALID_RESULT');
+        expect(fast.error.details?.['reason']).toBe('BELOW_MIN_TIME');
+        expect(fast.error.details?.['classId']).toBe('D');
+      }
+    });
+
+    it('an owned declared car is used with its catalog class', () => {
+      seedRaceGarage(env.nak, A, 'S');
+      seedRaceGarage(env.nak, A, 'D'); // owns both, active = D
+      const r = call<{ sessionId: string }>(env, 'race_session_create', A, {
+        matchId: 'm-t10c',
+        mode: 'private',
+        trackId: 'neon_blvd',
+        size: 2,
+        hostLoadout: { classId: 'D', bodyId: 'titan_s1' },
+        hostUserId: A,
+      });
+      if (!r.ok) throw new Error('create failed');
+      const host = storedSession(env, r.data.sessionId).roster[0]!;
+      expect(host.loadout.bodyId).toBe('titan_s1');
+      expect(host.loadout.classId).toBe('S');
     });
   });
 });

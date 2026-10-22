@@ -19,6 +19,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type {
   RaceSubmitResultOutput,
@@ -64,6 +65,7 @@ describe('leaderboards weekly reset (Phase 2 §2.5)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   function setupQuick(): string {

@@ -3,7 +3,7 @@
 // reconciling profile.activeSpecialOffers.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor, autoSeedRaceGarages } from './_stubs';
 
 type Resp<T> =
   | { ok: true; data: T }
@@ -92,6 +92,7 @@ describe('events e2e (Phase 8 Chunk 8)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   // ─── event_list RPC ──────────────────────────────────────────────────

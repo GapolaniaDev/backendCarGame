@@ -11,6 +11,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type { RaceSessionCreateOutput } from '../../modules/src/race/types';
 
@@ -71,6 +72,7 @@ describe('lb_get RPC (Chunk 13)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   /**

@@ -10,6 +10,7 @@ import {
   FakeContext,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type { RpcFunction } from '../../modules/src/nkruntime';
 
@@ -69,6 +70,7 @@ describe('race_lifecycle (Chunk 5)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   function makeCreatePayload(overrides: Partial<CreatePayload> = {}): CreatePayload {

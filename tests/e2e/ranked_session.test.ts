@@ -12,7 +12,7 @@
 // ranked.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor } from './_stubs';
+import { FakeContext, loadBundleForTest, SYSTEM_USER_ID, sessionCtxFor, autoSeedRaceGarages } from './_stubs';
 import type { RaceSession } from '../../modules/src/race/types';
 
 const HOST_ID = 'eq-host';
@@ -91,6 +91,7 @@ describe('stats equalization (Phase 4 Chunk 8) — ranked session lifecycle', ()
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
     // Seed 4 players with mixed-class cars.
     seedGarage(env, HOST_ID, 'phantom_rsx', 'B');
     seedGarage(env, D_USER, 'starter_viper', 'D');

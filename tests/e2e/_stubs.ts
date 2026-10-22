@@ -1132,3 +1132,90 @@ export function loadBundleForTest(): LoadedBundle {
 // The `buildSession({ hostId, ...overrides })` helper that returns a minimal
 // RaceSession payload for tests will be added once `modules/src/race/types.ts`
 // (defining `RaceSession`) lands in Chunk 5. Stays as a placeholder for now.
+
+// ─── Race garages (plan T-10) ───────────────────────────────────────────────
+
+/** One catalog car per class (`modules/src/catalogs/cars.json`). */
+export const RACE_CAR_BY_CLASS: Readonly<Record<'D' | 'C' | 'B' | 'A' | 'S', string>> = {
+  D: 'starter_viper',
+  C: 'coupe_gt',
+  B: 'phantom_rsx',
+  A: 'aurora_aero',
+  S: 'titan_s1',
+};
+
+/**
+ * Make the catalog car of `classId` the active car of `userId`'s garage,
+ * adding it to the garage (or creating the garage) when needed. Race
+ * loadouts come from the garage since T-10, not from the RPC body.
+ */
+export function seedRaceGarage(
+  nk: INakama,
+  userId: string,
+  classId: keyof typeof RACE_CAR_BY_CLASS = 'S',
+): string {
+  const carId = RACE_CAR_BY_CLASS[classId];
+  const stats = { speed: 50, acceleration: 50, handling: 50, nitro: 50 };
+  const existing = nk.storageRead([{ collection: 'garage', key: userId, userId }])[0];
+  const garage = (existing?.value as Record<string, unknown> | undefined) ?? {
+    schemaVersion: 1,
+    userId,
+    cars: [],
+    cosmeticsBag: [],
+    purchasedPacks: [],
+    loadout: null,
+    lastDailyWin: 0,
+    dailyPrivateCount: 0,
+    dailyResetAt: 0,
+  };
+  const cars = (garage['cars'] as Array<{ carId: string }>).slice();
+  if (!cars.some((c) => c.carId === carId)) {
+    cars.push({
+      carId,
+      classId,
+      upgrades: { engine: 0, tires: 0, nitro: 0, handling: 0 },
+      cosmetics: {},
+      computedStats: stats,
+    } as { carId: string });
+  }
+  nk.storageWrite([{
+    collection: 'garage',
+    key: userId,
+    userId,
+    value: { ...garage, cars, loadout: { activeCarId: carId, equipped: {}, stats } },
+    permissionRead: 1,
+    permissionWrite: 0,
+  }]);
+  return carId;
+}
+
+const RACE_LOADOUT_RPCS = new Set(['race_session_create', 'race_session_join', 'race_session_quick_bots']);
+
+/**
+ * Fixtures written before T-10 declare any class with made-up body ids.
+ * This wraps `env.resolver` so `race_session_create|join|quick_bots` first
+ * make the caller's active garage car match the declared class; the
+ * declared body id itself is still ignored by the server.
+ */
+export function autoSeedRaceGarages(env: LoadedBundle): void {
+  const resolve = env.resolver.bind(env);
+  env.resolver = (key: string) => {
+    const handler = resolve(key);
+    if (!handler || !RACE_LOADOUT_RPCS.has(key)) return handler;
+    return (ctx, logger, nk, payload) => {
+      try {
+        const body = JSON.parse(payload) as Record<string, unknown>;
+        const loadout = (body['hostLoadout'] ?? body['loadout']) as { classId?: string } | undefined;
+        const userId = ctx.userId
+          ?? (body['hostUserId'] ?? body['userId'] ?? body['callerUserId']) as string | undefined;
+        const classId = loadout?.classId;
+        if (typeof userId === 'string' && classId !== undefined && classId in RACE_CAR_BY_CLASS) {
+          seedRaceGarage(nk, userId, classId as keyof typeof RACE_CAR_BY_CLASS);
+        }
+      } catch {
+        // Malformed payloads reach the handler untouched.
+      }
+      return handler(ctx, logger, nk, payload);
+    };
+  };
+}

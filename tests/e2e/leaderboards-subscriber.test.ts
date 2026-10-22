@@ -10,6 +10,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type {
   RaceSubmitResultOutput,
@@ -43,6 +44,7 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   function setupFourPlayerSession(): { sid: string } {
@@ -213,7 +215,8 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     expect(meta['mode']).toBe('quick');
     expect(meta['confidence']).toBe('quorum');
     expect(meta['isBot']).toBe(false);
-    expect(meta['car']).toBe('coupe');
+    // T-10: the car is the garage's (the declared 'coupe' is ignored).
+    expect(meta['car']).toBe('phantom_rsx');
   });
 
   it('does not increment wins_week in time_trial mode (ranked/quick only)', async () => {

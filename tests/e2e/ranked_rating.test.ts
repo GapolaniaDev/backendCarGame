@@ -10,6 +10,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type {
   RaceSessionCreateOutput,
@@ -98,6 +99,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — full race lifecycle', () => {
 
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   function setupRankedSession(): { sid: string } {

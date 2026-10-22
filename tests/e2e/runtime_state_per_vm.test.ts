@@ -28,6 +28,7 @@ import {
   FakeLogger,
   FakeNakama,
   SYSTEM_USER_ID,
+  seedRaceGarage,
 } from './_stubs';
 import type { IContext, ILogger, INakama } from '../../modules/src/nkruntime';
 
@@ -140,6 +141,7 @@ describe('runtime state per VM (T-29, audit N8)', () => {
   it('a valid 1-player private race submitted in a pool VM closes with rewards', () => {
     const host = 'n8-racer';
     const ctx = userCtx(host);
+    seedRaceGarage(fake.nakama, host, 'S');
     const created = parse(rpcInPool('race_session_create')(ctx, poolLogger, fake.nakama, JSON.stringify({
       matchId: 'n8-match',
       mode: 'private',

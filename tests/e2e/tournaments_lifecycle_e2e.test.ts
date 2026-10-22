@@ -6,6 +6,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import type { RaceSubmitResultOutput } from '../../modules/src/race/types';
 import { TOURNAMENT_LEADERBOARD_SYSTEM_USER } from '../../modules/src/tournaments/leaderboard';
@@ -127,6 +128,7 @@ describe('tournaments lifecycle e2e (Phase 8 Chunk 6)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
   });
 
   it('happy path: race_submit_result with tournamentId updates entry + leaderboard', async () => {

@@ -13,6 +13,7 @@ import {
   loadBundleForTest,
   SYSTEM_USER_ID,
   sessionCtxFor,
+  autoSeedRaceGarages,
 } from './_stubs';
 import { ANALYTICS_COLLECTION } from '../../modules/src/core/admin/analytics';
 import type {
@@ -85,6 +86,7 @@ describe('analytics_e2e (Phase 5 Chunk 7) — emit', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => {
     env = loadBundleForTest();
+    autoSeedRaceGarages(env);
     setLiveops(env, {});
   });
 
