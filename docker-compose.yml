@@ -53,6 +53,10 @@ services:
         session:
           encryption_key: "${NAKAMA_SESSION_ENCRYPTION_KEY}"
           refresh_encryption_key: "${NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY}"
+          # 2 h session token / 7 day refresh token (plan D-02; Nakama's
+          # default 60 s token made the client refresh before every RPC).
+          token_expiry_sec: 7200
+          refresh_token_expiry_sec: 604800
         console:
           port: 8090
           username: "${NAKAMA_CONSOLE_USER}"

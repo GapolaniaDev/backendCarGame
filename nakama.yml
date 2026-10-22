@@ -18,6 +18,12 @@ database:
   address:
     - "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
 
+session:
+  encryption_key: "${NAKAMA_SESSION_ENCRYPTION_KEY}"
+  refresh_encryption_key: "${NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY}"
+  token_expiry_sec: 7200            # 2 h session token (plan D-02)
+  refresh_token_expiry_sec: 604800  # 7 day refresh token (plan D-02)
+
 logger:
   level: "info"
 
