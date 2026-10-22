@@ -16,8 +16,14 @@
 //     without a session is UNAUTHENTICATED;
 //   - minimal F0 flow: config_get, profile_get, garage_get, wallet_get, and a
 //     direct client leaderboard write is rejected;
+//   - per-VM runtime state (T-29, audit N8): a brand-new account gets its
+//     profile and garage from the after-auth hook, and a valid 1-player
+//     private race (neon_blvd, class S, 3 x 32.1 s after a ~97 s wait) ends
+//     `closed` with rewards (`--skip-race` skips the wait);
 //   - `docker compose logs nakama` since the last boot: no error-level
-//     lines, no "rpc registration failed", periodic service-ticker ticks.
+//     lines, no "rpc registration failed", no "auto-create failed",
+//     periodic service-ticker ticks, and the cost of loading the runtime
+//     state in each VM (R-07: one "runtime state ready" line per VM).
 //
 // Secrets: keys are read from .env and never printed; tokens are redacted.
 // Target: 127.0.0.1 unless --host is given explicitly.
@@ -41,7 +47,14 @@ function argValue(name, fallback) {
 const HOST = argValue('--host', '127.0.0.1');
 const PORT = Number(argValue('--port', '8081'));
 const SKIP_DOCKER = argv.includes('--skip-docker') || HOST !== '127.0.0.1';
+const SKIP_RACE = argv.includes('--skip-race');
 const BASE = `http://${HOST}:${PORT}`;
+const RUNTIME_READY_LOG = /^runtime state ready: .* in (\d+)ms \((boot|vm)\)$/;
+/** R-07 budget for loading the runtime state in one VM. */
+const RUNTIME_LOAD_BUDGET_MS = 1000;
+// 1-player private race: neon_blvd private = 3 laps, class S >= 32 000 ms/lap.
+const RACE_LAPS = [32_100, 32_100, 32_100];
+const RACE_TOTAL_MS = RACE_LAPS.reduce((x, y) => x + y, 0);
 
 // ── report ──────────────────────────────────────────────────────────────────
 const rows = [];
@@ -147,6 +160,20 @@ function checkLogs(bin) {
     scannerErrors.map((m) => String(m.msg).slice(0, 120)).slice(0, 3).join(' | '));
   record('logs: no error-level lines since boot', errors.length === 0,
     errors.length ? `${errors.length}: ${[...new Set(errors.map((m) => String(m.msg).slice(0, 120)))].slice(0, 4).join(' | ')}` : `since ${started}`);
+  const autoCreate = msgs.filter((m) => /auto-create failed/i.test(String(m.msg)));
+  record('logs: no after-auth "auto-create failed"', autoCreate.length === 0,
+    autoCreate.map((m) => String(m.msg).slice(0, 120)).slice(0, 2).join(' | '));
+  const noBus = msgs.filter((m) => /no EventBus installed/i.test(String(m.msg)));
+  record('logs: no race closes skipped for a missing EventBus', noBus.length === 0, noBus.length ? `${noBus.length} line(s)` : '');
+  // R-07: one line per VM that loaded its state, with the load time.
+  const loads = msgs.map((m) => RUNTIME_READY_LOG.exec(String(m.msg))).filter(Boolean)
+    .map((m) => ({ ms: Number(m[1]), kind: m[2] }));
+  const vmLoads = loads.filter((l) => l.kind === 'vm').map((l) => l.ms).sort((x, y) => x - y);
+  const boot = loads.find((l) => l.kind === 'boot');
+  const median = vmLoads.length ? vmLoads[Math.floor(vmLoads.length / 2)] : 0;
+  const max = vmLoads.length ? vmLoads[vmLoads.length - 1] : 0;
+  record('R-07: runtime state load per VM', vmLoads.length > 0 && max <= RUNTIME_LOAD_BUDGET_MS,
+    `${vmLoads.length} VM(s): median ${median} ms, max ${max} ms (budget ${RUNTIME_LOAD_BUDGET_MS} ms); boot ${boot ? `${boot.ms} ms` : 'n/a'}`);
   const registered = msgs.filter((m) => m.msg === 'Registered JavaScript runtime RPC function invocation').length;
   const ticks = msgs.filter((m) => TICK_LOG.test(String(m.msg)));
   const uptimeSec = (Date.now() - Date.parse(started)) / 1000;
@@ -217,6 +244,48 @@ function bundleRpcIds() {
   return [...new Set([...src.matchAll(/initializer\.registerRpc\("([a-z0-9_]+)"/g)].map((m) => m[1]))].sort();
 }
 
+// ── 1-player private race (T-29: the race bus exists in every VM) ───────────
+async function startPrivateRace(acct) {
+  const created = await rpc(acct.token, 'race_session_create', {
+    matchId: `smoke-${Date.now()}`,
+    mode: 'private',
+    trackId: 'neon_blvd',
+    size: 2,
+    hostLoadout: { classId: 'S', bodyId: 'coupe' },
+    hostUserId: acct.uid,
+  });
+  if (created.envelope?.ok !== true) {
+    record('1-player private race closes with rewards', false, `create: ${errCode(created)}`);
+    return null;
+  }
+  const sessionId = created.envelope.data.sessionId;
+  const started = await rpc(acct.token, 'race_session_start', { sessionId });
+  if (started.envelope?.ok !== true) {
+    record('1-player private race closes with rewards', false, `start: ${errCode(started)}`);
+    return null;
+  }
+  return { sessionId, startedAtMs: Date.now() };
+}
+
+async function finishPrivateRace(acct, race) {
+  // The server accepts totalMs <= elapsed clock (+500 ms): wait it out.
+  const waitMs = race.startedAtMs + RACE_TOTAL_MS + 1500 - Date.now();
+  if (waitMs > 0) {
+    console.log(`waiting ${Math.ceil(waitMs / 1000)} s for the race clock…`);
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+  const sub = await rpc(acct.token, 'race_submit_result', {
+    sessionId: race.sessionId,
+    report: { userId: acct.uid, totalMs: RACE_TOTAL_MS, laps: RACE_LAPS, isBotReport: false },
+  });
+  const got = await rpc(acct.token, 'race_session_get', { sessionId: race.sessionId });
+  const state = got.envelope?.data?.session?.state;
+  const rewards = sub.envelope?.data?.rewards?.[acct.uid];
+  record('1-player private race closes with rewards',
+    sub.envelope?.ok === true && state === 'closed' && rewards !== undefined,
+    `submit=${errCode(sub)} state=${state} confidence=${sub.envelope?.data?.confidence} rewards=${JSON.stringify(rewards ?? null).slice(0, 120)}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
@@ -251,17 +320,35 @@ async function main() {
   const rclaims = jwtClaims(a.refresh);
   record('refresh JWT exp - iat = 604800 s', rclaims.exp - rclaims.iat === 604800, `exp-iat=${rclaims.exp - rclaims.iat}`);
 
+  // A brand-new account (unique per run): checks the after-auth hook and
+  // runs the race, so the private-room reward cap (3/day) never applies.
+  const fresh = await authDevice(serverKey, `smoke-${day}-${Date.now()}-D-device`);
+  // Start the 1-player race now; the other checks run while its clock does.
+  const race = SKIP_RACE ? null : await startPrivateRace(fresh);
+
   // Registration: every id the bundle registers must answer with an envelope.
   const ids = bundleRpcIds();
   const missing = [];
   const noEnvelope = [];
+  const latencies = [];
   for (const id of ids) {
+    const t0 = Date.now();
     const r = await rpc(c.token, id, {});
+    latencies.push(Date.now() - t0);
     if (r.status === 404 && /RPC function not found/i.test(JSON.stringify(r.raw))) missing.push(id);
     else if (!r.envelope) noEnvelope.push(`${id}(HTTP ${r.status})`);
   }
   record(`RPCs registered ${ids.length - missing.length}/${ids.length}`, missing.length === 0, missing.join(', '));
   record('every RPC answers with an envelope', noEnvelope.length === 0, noEnvelope.slice(0, 8).join(', '));
+  latencies.sort((x, y) => x - y);
+  record('R-07: client latency of the RPC sweep', true,
+    `median ${latencies[Math.floor(latencies.length / 2)]} ms, max ${latencies[latencies.length - 1]} ms over ${latencies.length} calls`);
+
+  // After-auth (T-29): a brand-new account gets a profile and a garage.
+  for (const id of ['profile_get', 'garage_get']) {
+    const r = await rpc(fresh.token, id, { clientVersion: '0.1.0', platform: 'android' });
+    record(`${id} (brand-new account) ok`, r.envelope?.ok === true, errCode(r));
+  }
   const probe = await rpc(c.token, 'smoke_not_a_real_rpc', {});
   record('unknown RPC id → 404 (probe is meaningful)', probe.status === 404, `HTTP ${probe.status}`);
 
@@ -289,6 +376,9 @@ async function main() {
     headers: { Authorization: `Bearer ${a.token}` },
   });
   record('client leaderboard write rejected', lbw.status >= 400, `HTTP ${lbw.status}`);
+
+  if (race) await finishPrivateRace(fresh, race);
+  else record('1-player private race closes with rewards', null, '--skip-race');
 
   if (bin) {
     const registered = checkLogs(bin);
