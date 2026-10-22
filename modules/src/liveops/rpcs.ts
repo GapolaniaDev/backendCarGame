@@ -24,6 +24,7 @@ import { addCarToGarage, addCosmeticToBag, readGarage, readGarageObject, writeGa
 import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
 import { liveopsGate } from '../core/liveops';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export interface LiveopsConfigGetInput {
   /** Required when called via HTTP gateway; the socket path reads it from ctx.userId. */
@@ -109,7 +110,7 @@ function stripHash<T extends Record<string, unknown>>(obj: T): Record<string, un
 }
 
 // Top-level binding for the goja AST scanner.
-export const liveops_config_get: RpcHandler = liveops_config_get_impl;
+export const liveops_config_get: RpcHandler = withRuntime(liveops_config_get_impl);
 
 // ─── inbox_list ────────────────────────────────────────────────────────────
 
@@ -256,8 +257,8 @@ export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
 };
 
 // Top-level bindings for the goja AST scanner.
-export const inbox_list: RpcHandler = inbox_list_impl;
-export const inbox_claim: RpcHandler = inbox_claim_impl;
+export const inbox_list: RpcHandler = withRuntime(inbox_list_impl);
+export const inbox_claim: RpcHandler = withRuntime(inbox_claim_impl);
 
 /** Read garage with version (thin wrapper that returns null on miss). */
 function readGarageWithVersion(nk: INakama, userId: string): { value: import('../garage/types').Garage; version: string } | null {

@@ -14,22 +14,18 @@
 // time even with several matches or nodes.
 //
 // The match runs in its own goja VM: it re-evaluates the bundle but not
-// `InitModule`, so `serviceTickerInit` loads the catalogs the jobs read.
+// `InitModule`, so `serviceTickerInit` loads the VM's runtime state (the
+// catalogs the jobs read; plan T-29, `ensureRuntimeState`).
 //
 // Every handler is a top-level function so the 3.27 registration scanner
 // can resolve them (`initializer.registerMatch` in main.ts).
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
-import { loadTournamentsCatalog } from '../tournaments/catalog';
-import { loadEventsCatalog } from '../core/active_events';
-import { loadIapPacksCatalog } from '../iap/catalog';
+import { ensureRuntimeState } from '../core/runtime_state';
 import { runScannerTick as runTournamentTick } from '../tournaments/scanner';
 import { runEventScannerTick } from '../events/scanner';
 import { scanOnce as runSubscriptionTick } from '../iap/subscription_scanner';
 import { tryAcquireTickLock, releaseTickLock } from './tick_lock';
-import tournamentsJson from '../catalogs/tournaments.json';
-import eventsJson from '../catalogs/events.json';
-import iapPacksJson from '../catalogs/iap_packs.json';
 
 export const SERVICE_TICKER_MODULE = 'service_ticker';
 /** Match label used to find (and not duplicate) the running ticker. */
@@ -59,13 +55,6 @@ export interface ServiceTickResult {
   tournaments: string;
   events: string;
   subscriptions: string;
-}
-
-/** Load the catalogs the jobs read into the current VM. Idempotent. */
-export function loadServiceTickerCatalogs(logger: ILogger, nk: INakama): void {
-  loadTournamentsCatalog(logger, tournamentsJson);
-  loadEventsCatalog(logger, eventsJson as unknown as Parameters<typeof loadEventsCatalog>[1], nk);
-  loadIapPacksCatalog(logger, iapPacksJson);
 }
 
 function runJob(logger: ILogger, name: string, job: () => string): string {
@@ -162,7 +151,7 @@ export function serviceTickerInit(
   nk: INakama,
   _params: Record<string, unknown>,
 ): { state: ServiceTickerState; tickRate: number; label: string } {
-  loadServiceTickerCatalogs(logger, nk);
+  ensureRuntimeState(nk, logger);
   const state: ServiceTickerState = {
     lastTournamentMs: 0,
     lastEventMs: 0,

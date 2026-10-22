@@ -45,6 +45,7 @@ import type { PassLevelReward } from './types';
 import { spend as walletSpend, walletGet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -201,7 +202,7 @@ export const pass_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   return toJson(ok(payload));
 };
-export const pass_get: RpcHandler = pass_get_impl;
+export const pass_get: RpcHandler = withRuntime(pass_get_impl);
 
 // ─── pass_claim ──────────────────────────────────────────────────────────────
 
@@ -344,7 +345,7 @@ export const pass_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
   return toJson(err('CONFLICT', `pass_claim CAS retries exhausted for level ${level}`));
 };
-export const pass_claim: RpcHandler = pass_claim_impl;
+export const pass_claim: RpcHandler = withRuntime(pass_claim_impl);
 
 // ─── pass_buy_premium ────────────────────────────────────────────────────────
 
@@ -470,7 +471,7 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
   return toJson(err('CONFLICT', 'pass_buy_premium CAS retries exhausted'));
 };
-export const pass_buy_premium: RpcHandler = pass_buy_premium_impl;
+export const pass_buy_premium: RpcHandler = withRuntime(pass_buy_premium_impl);
 
 // ─── admin_grant_premium ─────────────────────────────────────────────────────
 
@@ -562,7 +563,7 @@ export const admin_grant_premium_impl: RpcHandler = (_ctx, logger, nk, body) => 
   }
   return toJson(err('CONFLICT', 'admin_grant_premium CAS retries exhausted'));
 };
-export const admin_grant_premium: RpcHandler = admin_grant_premium_impl;
+export const admin_grant_premium: RpcHandler = withRuntime(admin_grant_premium_impl);
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 

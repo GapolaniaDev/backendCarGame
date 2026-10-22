@@ -58,6 +58,7 @@ import { writeFraudFlagCreate, readFraudFlag } from './admin_repo';
 import type { IapSubscription } from './subscription';
 import type { IapPlatform, IapVerificationError } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -481,4 +482,4 @@ function verifyErrorToCode(e: IapVerificationError | undefined): ErrorCode {
   }
 }
 
-export const iap_purchase: RpcHandler = iap_purchase_impl;
+export const iap_purchase: RpcHandler = withRuntime(iap_purchase_impl);

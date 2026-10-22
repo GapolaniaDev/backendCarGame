@@ -24,6 +24,7 @@ import { err, ok, type Resp } from '../core/response';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import { requireCaller } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -270,4 +271,4 @@ function toJson<T>(r: Resp<T>): string {
 
 // Top-level binding so the goja AST scanner can find the RPC. The
 // runtime resolves `globalThis[literal]` against this exact name.
-export const lb_get: LbGetRpc = lb_get_impl;
+export const lb_get: LbGetRpc = withRuntime(lb_get_impl);

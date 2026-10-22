@@ -13,13 +13,13 @@ import {
   SERVICE_TICK_LOCK_NAME,
   TOURNAMENT_TICK_MS,
   ensureServiceTicker,
-  loadServiceTickerCatalogs,
   runServiceTick,
   serviceTickerInit,
   serviceTickerJoinAttempt,
   serviceTickerLoop,
   type ServiceTickerState,
 } from '../../modules/src/scheduler/service_ticker';
+import { ensureRuntimeState } from '../../modules/src/core/runtime_state';
 import {
   TICK_LOCK_COLLECTION,
   TICK_LOCK_OWNER_ID,
@@ -123,7 +123,7 @@ describe('service ticker scheduling', () => {
     fake = new FakeNakama();
     nk = fake.nakama;
     logger = makeLogger();
-    loadServiceTickerCatalogs(logger, nk);
+    ensureRuntimeState(nk, logger);
     state = { lastTournamentMs: 0, lastEventMs: 0, lastSubscriptionMs: 0, runs: 0, nextAttemptMs: 0 };
   });
 

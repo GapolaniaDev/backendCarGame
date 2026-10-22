@@ -2,7 +2,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { event_list } from '../../modules/src/events/rpcs';
+import { event_list_impl as event_list } from '../../modules/src/events/rpcs';
 import {
   loadEventsCatalog,
   _resetActiveEventsCatalogForTests,

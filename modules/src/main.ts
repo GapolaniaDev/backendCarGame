@@ -1,9 +1,11 @@
 // Entry point loaded by Nakama via `--runtime.js_entrypoint=index.js`.
 //
-// Lifecycle (Phase 1):
+// Lifecycle:
 //   InitModule(ctx, logger, nk, initializer):
-//     1. Load game-data catalogs (chunk 3 wires the JSON sources).
-//     2. Register the 6 RPCs (chunks 4+) + the shutdown hook.
+//     1. Load this VM's catalogs + race bus (`ensureRuntimeState`; every
+//        other VM loads its own on first use, plan T-29 / audit N8).
+//     2. Boot-only side effects (leaderboard tables, liveops storage).
+//     3. Register the RPCs, hooks and the service ticker match.
 //
 // Bundle entry is esbuild — see package.json's "build" script.
 //
@@ -13,9 +15,7 @@
 // the FOURTH argument, not the third.
 
 import type { IContext, ILogger, IInitializer, INakama } from './nkruntime';
-import { loadCatalogs, type TracksCatalog, type ModesCatalog } from './core/catalog';
-import { EventBus } from './core/event_bus';
-import { RACE_EVENT_RACE_COMPLETED } from './race/constants';
+import { ensureRuntimeState, withRuntimeHook } from './core/runtime_state';
 import {
   config_get,
   race_host_claim,
@@ -25,62 +25,21 @@ import {
   race_session_get,
   race_session_quick_bots,
   race_submit_result,
-  setRaceBus,
 } from './race/rpcs';
-import type { RaceCompletedEvent } from './race/types';
-import { loadLeaderboardsCatalog } from './leaderboards/catalog';
 import { ensureLeaderboards } from './leaderboards/ensure';
 import { beforeWriteLeaderboardRecordGuard } from './leaderboards/hooks';
 import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
-import { subscribeClubWeek } from './clubs/club_week_subscriber';
-import { subscribeAntiCheat } from './anti_cheat/subscriber';
-import { subscribeTournaments } from './tournaments/subscriber';
-import { subscribeEvents } from './events/subscriber';
 import { event_list } from './events/rpcs';
-import { subscribeLeaderboardWriter } from './leaderboards/subscriber';
 import { lb_get as lb_get } from './leaderboards/lb_get';
-import { loadProfilesCatalog } from './profiles/catalog';
 import {
   profile_get,
   profile_update,
 } from './profiles/rpcs';
 import { afterAuthenticateAutoCreate } from './account/after_auth';
-import profilesJson from './catalogs/profiles.json';
-import tracksJson from './catalogs/tracks.json';
-import modesJson from './catalogs/modes.json';
-import leaderboardsJson from './catalogs/leaderboards.json';
-import carsJson from './catalogs/cars.json';
-import upgradesJson from './catalogs/upgrades.json';
-import cosmeticsJson from './catalogs/cosmetics.json';
-import levelsJson from './catalogs/levels.json';
-import rewardsJson from './catalogs/rewards.json';
-import storeJson from './catalogs/store.json';
-import rankedConfigJson from './catalogs/ranked_config.json';
-import seasonsJson from './catalogs/seasons.json';
-import liveopsConfigJson from './catalogs/liveops_config.json';
-import missionsDailyJson from './catalogs/missions_daily.json';
-import missionsWeeklyJson from './catalogs/missions_weekly.json';
-import achievementsJson from './catalogs/achievements.json';
-import passS1Json from './catalogs/pass_s1.json';
-import emblemasJson from './catalogs/emblemas.json';
-import { loadRewardsCatalog } from './economy/catalog';
-import { loadLevelsCatalog } from './progression/catalog';
-import { loadGarageCatalog } from './garage/catalog';
 import { garage_get, car_buy, car_upgrade, cosmetic_equip, loadout_set } from './garage/rpcs';
-import { loadStoreCatalog } from './store/catalog';
-import { loadRankedConfig } from './ranked/config';
-import { loadSeasonsCatalog } from './ranked/seasons';
-import { loadLiveOpsConfig } from './liveops/mm_config';
 import { bootEnsure as bootEnsureLiveops } from './liveops/config';
-import {
-  loadMissionsDailyCatalog,
-  loadMissionsWeeklyCatalog,
-  loadAchievementsCatalog,
-} from './missions/catalog';
-import { loadPassCatalog } from './pass/catalog';
 import { liveops_config_get, inbox_list, inbox_claim } from './liveops/rpcs';
 import { missions_get, mission_claim, mission_reroll } from './missions/rpcs';
-import { subscribeMissionsProgress } from './missions/subscriber';
 import {
   friend_code_get,
   friend_add_by_code,
@@ -88,7 +47,6 @@ import {
   friend_remove,
   recent_rivals_get,
 } from './social/rpcs';
-import { subscribeRecentRivals } from './social/recent_rivals';
 import { invite_send, invite_list, invite_respond } from './social/invites';
 import { block_add, block_remove, block_list } from './social/blocks';
 import { club_create, club_get, club_search } from './clubs/rpcs';
@@ -100,25 +58,8 @@ import {
   club_demote,
   club_leave,
 } from './clubs/rpcs';
-import { loadEmblemasCatalog } from './clubs/catalog';
-import blockedWordsJson from './catalogs/blocked_words.json';
-import tournamentsJson from './catalogs/tournaments.json';
-import eventsJson from './catalogs/events.json';
-import markThresholdsJson from './catalogs/mark_thresholds.json';
-import iapPacksJson from './catalogs/iap_packs.json';
-import adRewardsJson from './catalogs/ad_rewards.json';
-import { loadBlockedWordsCatalog } from './chat/blocked_words';
-import { loadEventsCatalog } from './core/active_events';
-import {
-  validateTournamentsFile,
-} from './tournaments/types';
-import {
-  validateMarkThresholdsFile,
-} from './anti_cheat/types';
-import { loadIapPacksCatalog } from './iap/catalog';
 import { iap_purchase } from './iap/rpcs';
 import { iap_subscription_status, iap_subscription_cancel } from './iap/subscription_rpcs';
-import { loadAdRewardsCatalog } from './ads/catalog';
 import { ad_watched } from './ads/rpcs';
 import {
   admin_iap_purchases_list,
@@ -174,7 +115,6 @@ import {
   admin_tournament_cancel,
   admin_tournament_extend,
 } from './tournaments/admin';
-import { loadTournamentsCatalog } from './tournaments/catalog';
 import {
   admin_marks_list,
   admin_marks_partials_view,
@@ -200,9 +140,6 @@ import {
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
 import { store_get, store_buy } from './store/rpcs';
-import { subscribeEconomyRewards } from './economy/subscriber';
-import { subscribeProgressionRewards } from './progression/subscriber';
-import { subscribeRankedRewards } from './ranked/subscriber';
 import { wallet_get } from './economy/rpcs';
 import {
   ensureServiceTicker,
@@ -215,172 +152,33 @@ import {
   serviceTickerSignal,
 } from './scheduler/service_ticker';
 
+// Hooks run in pool VMs that never ran InitModule: each wrapper loads the
+// VM's catalogs and race bus first (plan T-29, D-11; audit N8). They are
+// top-level bindings so the 3.27 registration scanner resolves them.
+const matchmakerMatched = withRuntimeHook(matchmakerMatchedImpl);
+const afterAuthenticate = withRuntimeHook(afterAuthenticateAutoCreate);
+const beforeWriteLeaderboardRecord = withRuntimeHook(beforeWriteLeaderboardRecordGuard);
+
 function InitModule(
   _ctx: IContext,
   logger: ILogger,
   nk: INakama,
   initializer: IInitializer,
 ): void {
-  // Embed tracks/modes into the bundle via esbuild's default JSON loader.
-  loadCatalogs(
-    logger,
-    {
-      tracks: tracksJson as unknown as TracksCatalog,
-      modes: modesJson as unknown as ModesCatalog,
-    },
-    (s: string): string => nk.sha256Hash(s),
-    nk,
-  );
+  // Catalogs + race bus for this (throwaway) VM, with the same loaders
+  // every pool and match VM uses. Throws on an invalid catalog, so a bad
+  // catalog still aborts the boot.
+  ensureRuntimeState(nk, logger, { boot: true });
 
-  // Phase 2: load the leaderboards catalog (declarative table list),
-  // ensure every authoritative table exists and drop the deprecated
-  // client-writable `race_score` table. The client-write guard hook is
-  // registered with the other hooks at the end of InitModule.
-  loadLeaderboardsCatalog(logger, leaderboardsJson as unknown as import('./leaderboards/catalog').RawTablesFile, nk);
+  // Boot-only side effects (storage / leaderboard tables), not per VM.
+  // Ensure every authoritative leaderboard exists and drop the deprecated
+  // client-writable `race_score` table; the client-write guard hook is
+  // registered with the other hooks below.
   ensureLeaderboards(logger, nk);
   // Phase 7 Chunk 5: ensure the `club_week` authoritative table
   // exists with the Monday 00:00 UTC reset schedule. Idempotent —
   // re-creating an existing table is a no-op.
   ensureClubWeekLeaderboard(logger, nk);
-
-  // Profiles catalog: blocked-words list + displayName rules.
-  loadProfilesCatalog(
-    logger,
-    profilesJson as unknown as import('./profiles/catalog').RawProfilesFile,
-    nk,
-  );
-
-  // Phase 3 catalogs: rewards, levels, garage (cars/upgrades/cosmetics),
-  // store. Chained after Phase 1+2 so a malformed Phase 3 catalog
-  // still surfaces as CATALOG_INVALID instead of silently passing.
-  loadRewardsCatalog(
-    logger,
-    rewardsJson as unknown as import('./economy/catalog').RawRewardsFile,
-    nk,
-  );
-  loadLevelsCatalog(
-    logger,
-    levelsJson as unknown as import('./progression/catalog').RawLevelsFile,
-    nk,
-  );
-  loadGarageCatalog(
-    logger,
-    {
-      cars: carsJson as unknown as import('./garage/catalog').RawGarageFiles['cars'],
-      upgrades: upgradesJson as unknown as import('./garage/catalog').RawGarageFiles['upgrades'],
-      cosmetics: cosmeticsJson as unknown as import('./garage/catalog').RawGarageFiles['cosmetics'],
-    },
-    nk,
-  );
-  loadStoreCatalog(
-    logger,
-    storeJson as unknown as import('./store/catalog').RawStoreFile,
-    nk,
-  );
-
-  // Phase 4 catalogs: ranked config (K-factor, divisions, rating
-  // windows, grace) and seasons (UTC dates + division cutoffs).
-  // Chained after Phase 3 so a malformed Phase 4 catalog surfaces as
-  // CATALOG_INVALID instead of silently passing.
-  loadRankedConfig(
-    logger,
-    rankedConfigJson as unknown as import('./ranked/config').RawRankedConfigFile,
-    nk,
-  );
-  loadSeasonsCatalog(
-    logger,
-    seasonsJson as unknown as import('./ranked/seasons').RawSeasonsFile,
-    nk,
-  );
-
-  // Phase 4 Chunk 9: liveops config — D8 segmentBy default, D6 abandon
-  // block threshold + minutes. Loaded last so a malformed liveops
-  // override surfaces with the same CATALOG_INVALID diagnostic as the
-  // other Phase 4 catalogs.
-  loadLiveOpsConfig(
-    logger,
-    liveopsConfigJson as unknown as import('./liveops/mm_config').RawLiveOpsFile,
-    nk,
-  );
-
-  // Phase 6 Chunk 1: daily/weekly missions + achievements + battle pass
-  // catalogs. Loaded after Phase 4 so a malformed Phase 6 catalog
-  // surfaces as CATALOG_INVALID alongside the other catalogs. The
-  // RaceCompleted subscriber + RPCs land in later chunks.
-  loadMissionsDailyCatalog(
-    logger,
-    missionsDailyJson as unknown as import('./missions/catalog').RawMissionsFile,
-    nk,
-  );
-  loadMissionsWeeklyCatalog(
-    logger,
-    missionsWeeklyJson as unknown as import('./missions/catalog').RawMissionsFile,
-    nk,
-  );
-  loadAchievementsCatalog(
-    logger,
-    achievementsJson as unknown as import('./missions/catalog').RawAchievementsFile,
-    nk,
-  );
-  loadPassCatalog(
-    logger,
-    passS1Json as unknown as import('./pass/catalog').RawPassFile,
-    nk,
-  );
-
-  // Phase 7 Chunk 3: emblemas catalog for clubs. ~20 entries; validated
-  // at load so `club_create` rejects unknown emblemIds up front.
-  loadEmblemasCatalog(
-    logger,
-    emblemasJson as unknown as import('./clubs/types').EmblemDef[],
-  );
-
-  // Phase 7 Chunk 6: chat blocked-words catalog (es / en / pt). Loaded
-  // AFTER emblemas so a malformed chat catalog surfaces with the same
-  // CATALOG_INVALID diagnostic, not a silently-missing moderation list.
-  loadBlockedWordsCatalog(
-    logger,
-    blockedWordsJson as unknown as import('./chat/blocked_words').RawBlockedWordsFile,
-    nk,
-  );
-
-  // Phase 8 Chunk 1: tournaments + events + anti-cheat mark thresholds.
-  // Chained after the Phase 7 catalogs so a malformed Phase 8 catalog
-  // surfaces with the same CATALOG_INVALID diagnostic.
-  const tCat = validateTournamentsFile(tournamentsJson);
-  if (!tCat.ok) {
-    throw new Error(`tournaments catalog invalid: ${tCat.reason}`);
-  }
-  logger.info('tournaments catalog loaded: version=%d templates=%d',
-    tCat.value.version, tCat.value.templates.length);
-
-  const mtCat = validateMarkThresholdsFile(markThresholdsJson);
-  if (!mtCat.ok) {
-    throw new Error(`mark_thresholds catalog invalid: ${mtCat.reason}`);
-  }
-  logger.info('mark_thresholds catalog loaded: version=%d low=%d medium=%d high=%d cooldownDays=%d',
-    mtCat.value.version,
-    mtCat.value.severityThresholds.low,
-    mtCat.value.severityThresholds.medium,
-    mtCat.value.severityThresholds.high,
-    mtCat.value.cooldownDays);
-
-  loadEventsCatalog(
-    logger,
-    eventsJson as unknown as import('./events/types').RawEventsFile,
-    nk,
-  );
-
-  // Phase 8 Chunk 5: tournaments catalog. Templates only — actual
-  // instances materialise lazily on first access via `tournament_list`
-  // / `tournament_get` / `tournament_join`.
-  loadTournamentsCatalog(logger, tournamentsJson);
-
-  // Phase 9 Chunk 1: IAP packs + ad reward tiers. Both catalogs are
-  // cross-platform; the runtime resolves by `packId` (the IAP RPCs
-  // route by `appleProductId` / `googleProductId`).
-  loadIapPacksCatalog(logger, iapPacksJson);
-  loadAdRewardsCatalog(logger, adRewardsJson);
 
   // Phase 5 Chunk 1: ensure the liveops config object is present in
   // storage. Wrapped in try/catch so a transient storage failure
@@ -396,55 +194,6 @@ function InitModule(
     );
   }
 
-  // Wire the in-process event bus and install the default subscribers
-  // for `RaceCompleted`. Phase 2:
-  //   1. logger (always): one-line trace of every closed session
-  //   2. leaderboards: writes times/best-lap/wins for every human
-  //      finisher, with the confidence gate (Chunk 12)
-  const bus = new EventBus(logger);
-  bus.subscribe(RACE_EVENT_RACE_COMPLETED, (payload) => {
-    const e = payload as RaceCompletedEvent;
-    logger.info(
-      'RaceCompleted sid=%s mode=%s track=%s size=%d results=%d needsReview=%s',
-      e.sessionId,
-      e.mode,
-      e.trackId,
-      e.size,
-      e.results.length,
-      String(e.flags.needsReview),
-    );
-  });
-  subscribeLeaderboardWriter(logger, bus, nk);
-  // Phase 3: wallet + XP rewards for every closed race.
-  subscribeEconomyRewards({ logger, nk, bus });
-  subscribeProgressionRewards({ logger, nk, bus });
-  // Phase 4: ranked rating updates for every closed ranked race.
-  subscribeRankedRewards({ logger, nk, bus });
-  // Phase 6 Chunk 4: missions + achievements progress for every
-  // closed race (all modes). Bots filtered; lazy storage skipped.
-  subscribeMissionsProgress({ logger, nk, bus });
-  // Phase 7 Chunk 1: recent rivals (LRU, rolling 30d) for every closed
-  // race. Runs AFTER missions so a storage hiccup never delays the
-  // missions path.
-  subscribeRecentRivals({ logger, nk, bus });
-  // Phase 7 Chunk 5: club week points — confidence-gated, increments
-  // the `club_week` leaderboard and per-member weeklyContribution
-  // for every human finisher. Runs last so a storage hiccup never
-  // delays any earlier subscriber.
-  subscribeClubWeek({ logger, nk, bus });
-  // Phase 8 Chunk 4: anti-cheat detection (partials / abrupt /
-  // quorum_disagreement). Runs AFTER missions, ranked, club_week so a
-  // storage hiccup never delays any earlier subscriber.
-  subscribeAntiCheat({ logger, nk, bus });
-  // Phase 8 Chunk 6: tournament subscriber. Runs AFTER anti-cheat so
-  // a hidden cheater's race is never paired with a tournament entry.
-  subscribeTournaments({ logger, nk, bus });
-  // Phase 8 Chunk 8: events subscriber. Runs AFTER tournaments (last in
-  // the chain) so the XP bonus is computed on the final shape of the
-  // race and never delays an earlier subscriber.
-  subscribeEvents({ logger, nk, bus });
-  setRaceBus(bus);
-
   // Every registration is a top-level statement of this `try` — no
   // `if`, loop or nested block, and never from a helper function.
   //
@@ -459,12 +208,12 @@ function InitModule(
   // built bundle.
   try {
     // ── Hooks ──
-    initializer.registerMatchmakerMatched(matchmakerMatchedImpl);
-    initializer.registerAfterAuthenticateDevice(afterAuthenticateAutoCreate);
-    initializer.registerAfterAuthenticateCustom(afterAuthenticateAutoCreate);
-    initializer.registerAfterAuthenticateEmail(afterAuthenticateAutoCreate);
-    initializer.registerAfterAuthenticateApple(afterAuthenticateAutoCreate);
-    initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecordGuard);
+    initializer.registerMatchmakerMatched(matchmakerMatched);
+    initializer.registerAfterAuthenticateDevice(afterAuthenticate);
+    initializer.registerAfterAuthenticateCustom(afterAuthenticate);
+    initializer.registerAfterAuthenticateEmail(afterAuthenticate);
+    initializer.registerAfterAuthenticateApple(afterAuthenticate);
+    initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecord);
     // Periodic jobs (tournaments, events, subscriptions) run in this
     // service match: the runtime has no setInterval (audit PC-09).
     initializer.registerMatch('service_ticker', {

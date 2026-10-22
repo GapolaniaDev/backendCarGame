@@ -53,6 +53,7 @@ import { ANALYTICS_COLLECTION, type AnalyticsEvent } from '../core/admin/analyti
 import { getTournamentTemplates } from '../tournaments/catalog';
 import type { Tournament, TournamentType } from '../tournaments/types';
 import { listStorage } from '../core/storage';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -293,7 +294,7 @@ export const admin_overview_get_impl: RpcHandler = (_ctx, logger, nk, body) => {
   });
   return JSON.stringify(ok(payload));
 };
-export const admin_overview_get: RpcHandler = admin_overview_get_impl;
+export const admin_overview_get: RpcHandler = withRuntime(admin_overview_get_impl);
 
 /**
  * Compute server uptime by reading the oldest analytics event row.
@@ -385,7 +386,7 @@ export const admin_tournaments_stats_get_impl: RpcHandler = (_ctx, logger, nk, b
   });
   return JSON.stringify(ok(payload));
 };
-export const admin_tournaments_stats_get: RpcHandler = admin_tournaments_stats_get_impl;
+export const admin_tournaments_stats_get: RpcHandler = withRuntime(admin_tournaments_stats_get_impl);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -505,7 +506,7 @@ export const admin_events_stats_get_impl: RpcHandler = (_ctx, logger, nk, body) 
   });
   return JSON.stringify(ok(payload));
 };
-export const admin_events_stats_get: RpcHandler = admin_events_stats_get_impl;
+export const admin_events_stats_get: RpcHandler = withRuntime(admin_events_stats_get_impl);
 
 // ─── admin_players_search ─────────────────────────────────────────────────
 
@@ -592,7 +593,7 @@ export const admin_players_search_impl: RpcHandler = (_ctx, logger, nk, body) =>
   });
   return JSON.stringify(ok(payload));
 };
-export const admin_players_search: RpcHandler = admin_players_search_impl;
+export const admin_players_search: RpcHandler = withRuntime(admin_players_search_impl);
 
 // ─── admin_wallet_grant ───────────────────────────────────────────────────
 
@@ -679,7 +680,7 @@ export const admin_wallet_grant_impl: RpcHandler = (_ctx, logger, nk, body) => {
     userId, coins, gems, reason);
   return JSON.stringify(ok(payload));
 };
-export const admin_wallet_grant: RpcHandler = admin_wallet_grant_impl;
+export const admin_wallet_grant: RpcHandler = withRuntime(admin_wallet_grant_impl);
 
 // ─── admin_anti_cheat_dashboard_get ───────────────────────────────────────
 
@@ -778,7 +779,7 @@ export const admin_anti_cheat_dashboard_get_impl: RpcHandler = (_ctx, logger, nk
   });
   return JSON.stringify(ok(payload));
 };
-export const admin_anti_cheat_dashboard_get: RpcHandler = admin_anti_cheat_dashboard_get_impl;
+export const admin_anti_cheat_dashboard_get: RpcHandler = withRuntime(admin_anti_cheat_dashboard_get_impl);
 
 // Type re-export used by the bundle scanner so goja sees the named
 // exports of the response types.

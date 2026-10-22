@@ -31,6 +31,7 @@ import {
 } from './repo';
 import type { AdProvider, AdTier, AdWatchLog } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -282,4 +283,4 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
   return JSON.stringify(ok(out));
 };
 
-export const ad_watched: RpcHandler = ad_watched_impl;
+export const ad_watched: RpcHandler = withRuntime(ad_watched_impl);

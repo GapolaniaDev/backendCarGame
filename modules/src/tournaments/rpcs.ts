@@ -45,6 +45,7 @@ import type {
   TournamentEntry,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -180,7 +181,7 @@ export const tournament_list_impl: RpcHandler = (ctx, logger, nk, body) => {
   const payload: TournamentListOutput = { tournaments: out };
   return JSON.stringify(ok(payload));
 };
-export const tournament_list: RpcHandler = tournament_list_impl;
+export const tournament_list: RpcHandler = withRuntime(tournament_list_impl);
 
 // ─── tournament_get ───────────────────────────────────────────────────────
 
@@ -245,7 +246,7 @@ export const tournament_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   };
   return JSON.stringify(ok(payload));
 };
-export const tournament_get: RpcHandler = tournament_get_impl;
+export const tournament_get: RpcHandler = withRuntime(tournament_get_impl);
 
 // ─── tournament_join ──────────────────────────────────────────────────────
 
@@ -359,7 +360,7 @@ export const tournament_join_impl: RpcHandler = (ctx, logger, nk, body) => {
   };
   return JSON.stringify(ok(payload));
 };
-export const tournament_join: RpcHandler = tournament_join_impl;
+export const tournament_join: RpcHandler = withRuntime(tournament_join_impl);
 
 // Type re-export used by the bundle scanner so goja sees the named
 // exports of the response types.

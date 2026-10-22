@@ -38,6 +38,7 @@ import { COSMETIC_SLOTS, UPGRADE_LINES } from './types';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -188,7 +189,7 @@ function toJson<T>(r: Resp<T>): string {
 }
 
 // Top-level binding for the goja AST scanner.
-export const garage_get: RpcHandler = garage_get_impl;
+export const garage_get: RpcHandler = withRuntime(garage_get_impl);
 
 // ─── car_buy ─────────────────────────────────────────────────────────────────
 
@@ -592,7 +593,7 @@ function walletGetLocal(nk: INakama, userId: string): { coins: number; gems: num
 }
 
 // Top-level bindings for the goja AST scanner.
-export const car_buy: RpcHandler = car_buy_impl;
-export const car_upgrade: RpcHandler = car_upgrade_impl;
-export const cosmetic_equip: RpcHandler = cosmetic_equip_impl;
-export const loadout_set: RpcHandler = loadout_set_impl;
+export const car_buy: RpcHandler = withRuntime(car_buy_impl);
+export const car_upgrade: RpcHandler = withRuntime(car_upgrade_impl);
+export const cosmetic_equip: RpcHandler = withRuntime(cosmetic_equip_impl);
+export const loadout_set: RpcHandler = withRuntime(loadout_set_impl);

@@ -55,6 +55,7 @@ import {
   writePartyUpdate,
 } from './parties_repo';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const PARTY_RPC_RATE = { maxPerWindow: 30, windowSec: 60 };
 
@@ -196,7 +197,7 @@ export function party_create_impl(
   };
   return toJson(ok(out));
 }
-export const party_create: RpcHandler = party_create_impl;
+export const party_create: RpcHandler = withRuntime(party_create_impl);
 
 // ─── party_invite ───────────────────────────────────────────────────────────
 
@@ -311,7 +312,7 @@ export function party_invite_impl(
   const out: PartyInviteRpcOutput = { inviteId, expiresAt, partyId: party.partyId, targetUserId };
   return toJson(ok(out));
 }
-export const party_invite: RpcHandler = party_invite_impl;
+export const party_invite: RpcHandler = withRuntime(party_invite_impl);
 
 // ─── party_join ─────────────────────────────────────────────────────────────
 
@@ -391,7 +392,7 @@ export function party_join_impl(
   };
   return toJson(ok(out));
 }
-export const party_join: RpcHandler = party_join_impl;
+export const party_join: RpcHandler = withRuntime(party_join_impl);
 
 // ─── party_leave ────────────────────────────────────────────────────────────
 
@@ -488,7 +489,7 @@ export function party_leave_impl(
   const out: PartyLeaveRpcOutput = { left: true, disbanded };
   return toJson(ok(out));
 }
-export const party_leave: RpcHandler = party_leave_impl;
+export const party_leave: RpcHandler = withRuntime(party_leave_impl);
 
 // ─── party_kick ─────────────────────────────────────────────────────────────
 
@@ -586,7 +587,7 @@ export function party_kick_impl(
   const out: PartyKickRpcOutput = { kicked: true, partyId: party.partyId, targetUserId };
   return toJson(ok(out));
 }
-export const party_kick: RpcHandler = party_kick_impl;
+export const party_kick: RpcHandler = withRuntime(party_kick_impl);
 
 // ─── party_get ──────────────────────────────────────────────────────────────
 
@@ -626,7 +627,7 @@ export function party_get_impl(
   const out: PartyGetRpcOutput = { party: asPartyCard(party) };
   return toJson(ok(out));
 }
-export const party_get: RpcHandler = party_get_impl;
+export const party_get: RpcHandler = withRuntime(party_get_impl);
 
 // Suppress unused-warning on PARTY_MAX_SIZE (kept here as a breadcrumb).
 void PARTY_MAX_SIZE;

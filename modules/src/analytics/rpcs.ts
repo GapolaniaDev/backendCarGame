@@ -25,6 +25,7 @@ import { computeLtv, type LtvResult, type LtvWindow } from './ltv';
 import { computeFunnel, type FunnelResult, type FunnelFilters } from './funnel';
 import { computeTopBuyers, type TopBuyer } from './top_buyers';
 import { listStorage } from '../core/storage';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -254,7 +255,7 @@ export const admin_iap_analytics_get_impl: RpcHandler = (_ctx, logger, nk, body)
   return JSON.stringify(ok(result));
 };
 
-export const admin_iap_analytics_get: RpcHandler = admin_iap_analytics_get_impl;
+export const admin_iap_analytics_get: RpcHandler = withRuntime(admin_iap_analytics_get_impl);
 
 // ─── admin_iap_ltv_get ──────────────────────────────────────────────
 
@@ -298,7 +299,7 @@ export const admin_iap_ltv_get_impl: RpcHandler = (_ctx, logger, nk, body) => {
   return JSON.stringify(ok(result));
 };
 
-export const admin_iap_ltv_get: RpcHandler = admin_iap_ltv_get_impl;
+export const admin_iap_ltv_get: RpcHandler = withRuntime(admin_iap_ltv_get_impl);
 
 // ─── admin_iap_funnel_get ───────────────────────────────────────────
 
@@ -364,7 +365,7 @@ export const admin_iap_funnel_get_impl: RpcHandler = (_ctx, logger, nk, body) =>
   return JSON.stringify(ok(result));
 };
 
-export const admin_iap_funnel_get: RpcHandler = admin_iap_funnel_get_impl;
+export const admin_iap_funnel_get: RpcHandler = withRuntime(admin_iap_funnel_get_impl);
 
 // ─── admin_iap_top_buyers_get ───────────────────────────────────────
 
@@ -420,4 +421,4 @@ export const admin_iap_top_buyers_get_impl: RpcHandler = (_ctx, logger, nk, body
   return JSON.stringify(ok(result));
 };
 
-export const admin_iap_top_buyers_get: RpcHandler = admin_iap_top_buyers_get_impl;
+export const admin_iap_top_buyers_get: RpcHandler = withRuntime(admin_iap_top_buyers_get_impl);

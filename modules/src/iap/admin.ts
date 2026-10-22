@@ -40,6 +40,7 @@ import {
   type FraudFlagStatus,
 } from './admin_repo';
 import type { IapPlatform } from './types';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -180,7 +181,7 @@ export const admin_iap_purchases_list_impl: RpcHandler = (_ctx, logger, nk, body
   return JSON.stringify(ok({ purchases }));
 };
 
-export const admin_iap_purchases_list: RpcHandler = admin_iap_purchases_list_impl;
+export const admin_iap_purchases_list: RpcHandler = withRuntime(admin_iap_purchases_list_impl);
 
 // ─── admin_iap_purchases_get ───────────────────────────────────────────
 
@@ -225,7 +226,7 @@ export const admin_iap_purchases_get_impl: RpcHandler = (_ctx, logger, nk, body)
   return JSON.stringify(ok({ purchase: row, fraudFlags }));
 };
 
-export const admin_iap_purchases_get: RpcHandler = admin_iap_purchases_get_impl;
+export const admin_iap_purchases_get: RpcHandler = withRuntime(admin_iap_purchases_get_impl);
 
 // ─── admin_iap_refund ──────────────────────────────────────────────────
 
@@ -332,7 +333,7 @@ export const admin_iap_refund_impl: RpcHandler = (ctx, logger, nk, body) => {
   return JSON.stringify(ok(out));
 };
 
-export const admin_iap_refund: RpcHandler = admin_iap_refund_impl;
+export const admin_iap_refund: RpcHandler = withRuntime(admin_iap_refund_impl);
 
 // ─── admin_iap_fraud_flags_list ───────────────────────────────────────
 
@@ -366,7 +367,7 @@ export const admin_iap_fraud_flags_list_impl: RpcHandler = (_ctx, logger, nk, bo
   return JSON.stringify(ok({ flags: rows }));
 };
 
-export const admin_iap_fraud_flags_list: RpcHandler = admin_iap_fraud_flags_list_impl;
+export const admin_iap_fraud_flags_list: RpcHandler = withRuntime(admin_iap_fraud_flags_list_impl);
 
 // ─── admin_iap_fraud_flag_action ──────────────────────────────────────
 
@@ -454,7 +455,7 @@ export const admin_iap_fraud_flag_action_impl: RpcHandler = (ctx, logger, nk, bo
   return JSON.stringify(ok(out));
 };
 
-export const admin_iap_fraud_flag_action: RpcHandler = admin_iap_fraud_flag_action_impl;
+export const admin_iap_fraud_flag_action: RpcHandler = withRuntime(admin_iap_fraud_flag_action_impl);
 
 // ─── admin_iap_revenue_stats_get ──────────────────────────────────────
 
@@ -485,4 +486,4 @@ export const admin_iap_revenue_stats_get_impl: RpcHandler = (_ctx, logger, nk, b
   return JSON.stringify(ok(stats));
 };
 
-export const admin_iap_revenue_stats_get: RpcHandler = admin_iap_revenue_stats_get_impl;
+export const admin_iap_revenue_stats_get: RpcHandler = withRuntime(admin_iap_revenue_stats_get_impl);

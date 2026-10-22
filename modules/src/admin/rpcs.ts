@@ -5,8 +5,8 @@
 //
 // Pattern matches `account/rpcs.ts`: each handler exports both
 // `<name>_impl: RpcHandler` (testable directly with a hand-crafted
-// ctx) and a bare `export const <name>: RpcHandler = <name>_impl` for
-// the goja AST scanner (`initializer.registerRpc('admin_*', fn)`).
+// ctx) and `export const <name>: RpcHandler = withRuntime(<name>_impl)`
+// for the goja AST scanner (`initializer.registerRpc('admin_*', fn)`).
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
@@ -29,6 +29,7 @@ import type {
   AdminWalletAdjustInput,
   AdminWalletAdjustOutput,
 } from './types';
+import { withRuntime } from '../core/runtime_state';
 
 const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
@@ -90,7 +91,7 @@ export const admin_wallet_adjust_impl: RpcHandler = (_ctx, logger, nk, body) => 
   const data = r.data as AdminWalletAdjustOutput;
   return JSON.stringify(ok(data));
 };
-export const admin_wallet_adjust: RpcHandler = admin_wallet_adjust_impl;
+export const admin_wallet_adjust: RpcHandler = withRuntime(admin_wallet_adjust_impl);
 
 // ─── admin_send_inbox ──────────────────────────────────────────────────────
 
@@ -122,7 +123,7 @@ export const admin_send_inbox_impl: RpcHandler = (_ctx, logger, nk, body) => {
   const data = r.data as AdminSendInboxOutput;
   return JSON.stringify(ok(data));
 };
-export const admin_send_inbox: RpcHandler = admin_send_inbox_impl;
+export const admin_send_inbox: RpcHandler = withRuntime(admin_send_inbox_impl);
 
 // ─── admin_sanitize_session ────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ export const admin_sanitize_session_impl: RpcHandler = (_ctx, logger, nk, body) 
   const data = r.data as AdminSanitizeSessionOutput;
   return JSON.stringify(ok(data));
 };
-export const admin_sanitize_session: RpcHandler = admin_sanitize_session_impl;
+export const admin_sanitize_session: RpcHandler = withRuntime(admin_sanitize_session_impl);
 
 // ─── admin_remove_player ──────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ export const admin_remove_player_impl: RpcHandler = (_ctx, logger, nk, body) => 
   const data = r.data as AdminRemovePlayerOutput;
   return JSON.stringify(ok(data));
 };
-export const admin_remove_player: RpcHandler = admin_remove_player_impl;
+export const admin_remove_player: RpcHandler = withRuntime(admin_remove_player_impl);
 
 // ─── admin_cleanup_race_sessions ───────────────────────────────────────────
 
@@ -170,7 +171,7 @@ export const admin_cleanup_race_sessions_impl: RpcHandler = (_ctx, logger, nk, b
   const data = r.data as AdminCleanupRaceSessionsOutput;
   return JSON.stringify(ok(data));
 };
-export const admin_cleanup_race_sessions: RpcHandler = admin_cleanup_race_sessions_impl;
+export const admin_cleanup_race_sessions: RpcHandler = withRuntime(admin_cleanup_race_sessions_impl);
 
 // Side-effect: keep ADMIN_USER_ID as a compile-time marker so
 // TypeScript complains if every reference is removed (would indicate

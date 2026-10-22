@@ -7,8 +7,9 @@
 //     `main.ts` (Nakama goja AST scanner requires top-level expr)
 //
 // Two patterns per RPC: `<name>_impl: RpcHandler` (testable directly
-// with a hand-crafted ctx) and a bare
-// `export const <name>: RpcHandler = <name>_impl` for the goja scanner.
+// with a hand-crafted ctx) and
+// `export const <name>: RpcHandler = withRuntime(<name>_impl)` for the
+// goja scanner.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
@@ -39,6 +40,7 @@ import {
 } from './stats';
 import { invalidateDashboardCache } from '../admin/cache';
 import { listStorage } from '../core/storage';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -189,7 +191,7 @@ export const admin_marks_list_impl: RpcHandler = (_ctx, logger, nk, body) => {
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_marks_list: RpcHandler = admin_marks_list_impl;
+export const admin_marks_list: RpcHandler = withRuntime(admin_marks_list_impl);
 
 // ─── admin_marks_partials_view ───────────────────────────────────────────
 
@@ -264,7 +266,7 @@ export const admin_marks_partials_view_impl: RpcHandler = (_ctx, logger, nk, bod
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_marks_partials_view: RpcHandler = admin_marks_partials_view_impl;
+export const admin_marks_partials_view: RpcHandler = withRuntime(admin_marks_partials_view_impl);
 
 // ─── admin_marks_confirm ─────────────────────────────────────────────────
 
@@ -312,7 +314,7 @@ export const admin_marks_confirm_impl: RpcHandler = (_ctx, logger, nk, body) => 
   const payload: AdminMarksConfirmOutput = { confirmed: true, markId };
   return JSON.stringify(ok(payload));
 };
-export const admin_marks_confirm: RpcHandler = admin_marks_confirm_impl;
+export const admin_marks_confirm: RpcHandler = withRuntime(admin_marks_confirm_impl);
 
 // ─── admin_marks_dismiss ─────────────────────────────────────────────────
 
@@ -362,7 +364,7 @@ export const admin_marks_dismiss_impl: RpcHandler = (_ctx, logger, nk, body) => 
   const payload: AdminMarksDismissOutput = { dismissed: true, markId };
   return JSON.stringify(ok(payload));
 };
-export const admin_marks_dismiss: RpcHandler = admin_marks_dismiss_impl;
+export const admin_marks_dismiss: RpcHandler = withRuntime(admin_marks_dismiss_impl);
 
 // ─── admin_marks_sanction ────────────────────────────────────────────────
 
@@ -437,7 +439,7 @@ export const admin_marks_sanction_impl: RpcHandler = (_ctx, logger, nk, body) =>
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_marks_sanction: RpcHandler = admin_marks_sanction_impl;
+export const admin_marks_sanction: RpcHandler = withRuntime(admin_marks_sanction_impl);
 
 // ─── admin_anti_cheat_stats_get ──────────────────────────────────────────
 
@@ -510,7 +512,7 @@ export const admin_anti_cheat_stats_get_impl: RpcHandler = (_ctx, logger, nk, bo
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_anti_cheat_stats_get: RpcHandler = admin_anti_cheat_stats_get_impl;
+export const admin_anti_cheat_stats_get: RpcHandler = withRuntime(admin_anti_cheat_stats_get_impl);
 
 // Surface constants used by tests / future callers. Kept at the bottom
 // so the RPC definitions stay clustered for the goja scanner.

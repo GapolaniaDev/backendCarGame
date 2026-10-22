@@ -83,6 +83,7 @@ import {
   type Role,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const CLUB_RATE_LIMITS = {
   club_create: { maxPerWindow: 5, windowSec: 60 },
@@ -200,7 +201,7 @@ function containsBlockedWord(s: string): boolean {
 
 // ─── club_create ──────────────────────────────────────────────────────────────
 
-export function club_create(
+export function club_create_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -381,7 +382,7 @@ export function findGroupByName(
 
 // ─── club_get ─────────────────────────────────────────────────────────────────
 
-export function club_get(
+export function club_get_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -472,7 +473,7 @@ export function club_get(
 
 // ─── club_search ──────────────────────────────────────────────────────────────
 
-export function club_search(
+export function club_search_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -584,7 +585,7 @@ function readTargetRole(
 
 // ─── club_update ────────────────────────────────────────────────────────────
 
-export function club_update(
+export function club_update_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -659,7 +660,7 @@ export function club_update(
 
 // ─── club_members_list ──────────────────────────────────────────────────────
 
-export function club_members_list(
+export function club_members_list_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -742,7 +743,7 @@ export function club_members_list(
 
 // ─── club_kick ──────────────────────────────────────────────────────────────
 
-export function club_kick(
+export function club_kick_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -798,7 +799,7 @@ export function club_kick(
 
 // ─── club_promote (atomic leader swap when `to === 'leader'`) ──────────────
 
-export function club_promote(
+export function club_promote_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -923,7 +924,7 @@ export function club_promote(
 
 // ─── club_demote ────────────────────────────────────────────────────────────
 
-export function club_demote(
+export function club_demote_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -986,7 +987,7 @@ export function club_demote(
 
 // ─── club_leave ─────────────────────────────────────────────────────────────
 
-export function club_leave(
+export function club_leave_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -1033,3 +1034,17 @@ export function club_leave(
 
 // Touch memberRecordFromRead so esbuild keeps it.
 void memberRecordFromRead;
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const club_create = withRuntime(club_create_impl);
+export const club_get = withRuntime(club_get_impl);
+export const club_search = withRuntime(club_search_impl);
+export const club_update = withRuntime(club_update_impl);
+export const club_members_list = withRuntime(club_members_list_impl);
+export const club_kick = withRuntime(club_kick_impl);
+export const club_promote = withRuntime(club_promote_impl);
+export const club_demote = withRuntime(club_demote_impl);
+export const club_leave = withRuntime(club_leave_impl);

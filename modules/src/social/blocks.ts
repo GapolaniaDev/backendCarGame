@@ -30,6 +30,7 @@ import {
   type BlockRemoveOutput,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const BLOCK_RATE_LIMITS = {
   block_add: { maxPerWindow: 30, windowSec: 60 },
@@ -80,7 +81,7 @@ function checkRateOrLimit(
  *
  * Self-block → BAD_REQUEST.
  */
-export function block_add(
+export function block_add_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -140,7 +141,7 @@ export function block_add(
  * Remove a target from caller's block list. Idempotent — returns
  * `{removed:false}` when the block didn't exist (still OK).
  */
-export function block_remove(
+export function block_remove_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -186,7 +187,7 @@ export function block_remove(
 
 // ─── block_list ───────────────────────────────────────────────────────────────
 
-export function block_list(
+export function block_list_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -212,3 +213,11 @@ export function block_list(
   const out: BlockListOutput = { blocks, count: blocks.length };
   return toJson(ok(out));
 }
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const block_add = withRuntime(block_add_impl);
+export const block_remove = withRuntime(block_remove_impl);
+export const block_list = withRuntime(block_list_impl);

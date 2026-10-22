@@ -47,6 +47,7 @@ import type {
 import { getEventsCatalog } from '../core/active_events';
 import { readProfile } from '../profiles/storage';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export interface StoreGetInput {
   /** Optional client-supplied "now" for deterministic tests. */
@@ -491,5 +492,5 @@ function toJson<T>(r: Resp<T>): string {
 }
 
 // Top-level bindings for the goja AST scanner.
-export const store_get: RpcHandler = store_get_impl;
-export const store_buy: RpcHandler = store_buy_impl;
+export const store_get: RpcHandler = withRuntime(store_get_impl);
+export const store_buy: RpcHandler = withRuntime(store_buy_impl);

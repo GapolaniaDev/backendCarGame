@@ -37,6 +37,7 @@ import {
   PAID_REROLL_COST_GEMS,
 } from './missions_repo';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -176,7 +177,7 @@ function checkRateOrLimit(
 
 // ─── missions_get ───────────────────────────────────────────────────────────
 
-export const missions_get: RpcHandler = (ctx, logger, nk, body) => {
+export const missions_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionsGetInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
@@ -248,7 +249,7 @@ export const missions_get: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── mission_claim ──────────────────────────────────────────────────────────
 
-export const mission_claim: RpcHandler = (ctx, logger, nk, body) => {
+export const mission_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionClaimInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
@@ -343,7 +344,7 @@ export const mission_claim: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── mission_reroll ─────────────────────────────────────────────────────────
 
-export const mission_reroll: RpcHandler = (ctx, logger, nk, body) => {
+export const mission_reroll_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<MissionRerollInput>(body);
   if (!parsed.ok) return toJson(parsed);
 
@@ -403,3 +404,11 @@ export const _testInternals = {
   buildMissionCard,
   parseInput,
 };
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const missions_get: RpcHandler = withRuntime(missions_get_impl);
+export const mission_claim: RpcHandler = withRuntime(mission_claim_impl);
+export const mission_reroll: RpcHandler = withRuntime(mission_reroll_impl);

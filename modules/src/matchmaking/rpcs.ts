@@ -35,6 +35,7 @@ import { pickCandidate } from './matched_hook';
 import { readParty } from '../parties/parties_repo';
 import type { PartyRecord } from '../parties/types';
 import { requireCaller } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export interface ResolvedTicketOptions {
   version: string;
@@ -254,7 +255,7 @@ function toJson<T>(r: Resp<T>): string {
 }
 
 // Top-level binding for the goja AST scanner.
-export const mm_ticket_params: RpcHandler = mm_ticket_params_impl;
+export const mm_ticket_params: RpcHandler = withRuntime(mm_ticket_params_impl);
 
 // ─── Matched-hook glue ───────────────────────────────────────────────────────
 

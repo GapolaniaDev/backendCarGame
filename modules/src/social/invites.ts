@@ -47,6 +47,7 @@ import {
 } from './types';
 import { joinParty } from '../parties/parties_repo';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const INVITE_RATE_LIMITS = {
   invite_send: { maxPerWindow: INVITE_RATE_LIMIT_PER_MIN, windowSec: 60 },
@@ -95,7 +96,7 @@ function checkRateOrLimit(
 
 // ─── invite_send ──────────────────────────────────────────────────────────────
 
-export function invite_send(
+export function invite_send_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -194,7 +195,7 @@ export function invite_send(
 
 // ─── invite_list ─────────────────────────────────────────────────────────────
 
-export function invite_list(
+export function invite_list_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -247,7 +248,7 @@ export function invite_list(
  * missing, CONFLICT when already responded to, or INTERNAL on CAS
  * exhaustion.
  */
-export function invite_respond(
+export function invite_respond_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -366,3 +367,11 @@ export function invite_respond(
   }
   return toJson(ok(out));
 }
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const invite_send = withRuntime(invite_send_impl);
+export const invite_list = withRuntime(invite_list_impl);
+export const invite_respond = withRuntime(invite_respond_impl);

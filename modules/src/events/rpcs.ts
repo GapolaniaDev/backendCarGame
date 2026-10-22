@@ -11,6 +11,7 @@ import { err, ok, type Resp } from '../core/response';
 import { activeEvents, getEventsCatalog } from '../core/active_events';
 import { serverNowMs } from '../core/time';
 import { requireCaller } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export interface EventListInput {
   /** Optional; must match the session user when present (D-03). */
@@ -32,7 +33,7 @@ export interface EventListOutput {
   now: number;
 }
 
-export const event_list = (ctx: IContext, logger: ILogger, nk: INakama, body: string): string => {
+export const event_list_impl = (ctx: IContext, logger: ILogger, nk: INakama, body: string): string => {
   const parsed = parseInput(body);
   if (!parsed.ok) return toJson(parsed.value);
 
@@ -88,3 +89,9 @@ function parseInput(body: string): ParseOk<EventListInput> | ParseErr {
 function toJson<T>(r: Resp<T>): string {
   return JSON.stringify(r);
 }
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const event_list = withRuntime(event_list_impl);

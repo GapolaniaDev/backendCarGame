@@ -50,6 +50,7 @@ import {
 } from './season';
 import type { RankedGetInput, RankedGetOutput, RankedRecord } from './types';
 import { requireCaller } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -181,7 +182,7 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
 };
 
 // Top-level binding so the goja AST scanner can find the RPC.
-export const ranked_get: RpcHandler = ranked_get_impl;
+export const ranked_get: RpcHandler = withRuntime(ranked_get_impl);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

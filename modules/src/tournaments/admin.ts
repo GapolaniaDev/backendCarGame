@@ -37,6 +37,7 @@ import {
 import { grantTournamentPrize } from './scanner';
 import type { Tournament, TournamentType } from './types';
 import { listStorage } from '../core/storage';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -217,7 +218,7 @@ export const admin_tournament_list_impl: RpcHandler = (_ctx, logger, nk, body) =
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_list: RpcHandler = admin_tournament_list_impl;
+export const admin_tournament_list: RpcHandler = withRuntime(admin_tournament_list_impl);
 
 // ─── admin_tournament_get ─────────────────────────────────────────────────
 
@@ -313,7 +314,7 @@ export const admin_tournament_get_impl: RpcHandler = (_ctx, logger, nk, body) =>
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_get: RpcHandler = admin_tournament_get_impl;
+export const admin_tournament_get: RpcHandler = withRuntime(admin_tournament_get_impl);
 
 // ─── admin_tournament_release_prizes ──────────────────────────────────────
 
@@ -380,7 +381,7 @@ export const admin_tournament_release_prizes_impl: RpcHandler = (_ctx, logger, n
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_release_prizes: RpcHandler = admin_tournament_release_prizes_impl;
+export const admin_tournament_release_prizes: RpcHandler = withRuntime(admin_tournament_release_prizes_impl);
 
 // ─── admin_tournament_void_refund ─────────────────────────────────────────
 
@@ -500,7 +501,7 @@ export const admin_tournament_void_refund_impl: RpcHandler = (_ctx, logger, nk, 
   const payload: AdminTournamentVoidRefundOutput = { refunded, totalAmount };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_void_refund: RpcHandler = admin_tournament_void_refund_impl;
+export const admin_tournament_void_refund: RpcHandler = withRuntime(admin_tournament_void_refund_impl);
 
 // ─── admin_tournament_cancel ──────────────────────────────────────────────
 
@@ -570,7 +571,7 @@ export const admin_tournament_cancel_impl: RpcHandler = (_ctx, logger, nk, body)
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_cancel: RpcHandler = admin_tournament_cancel_impl;
+export const admin_tournament_cancel: RpcHandler = withRuntime(admin_tournament_cancel_impl);
 
 // ─── admin_tournament_extend ──────────────────────────────────────────────
 
@@ -647,7 +648,7 @@ export const admin_tournament_extend_impl: RpcHandler = (_ctx, logger, nk, body)
   };
   return JSON.stringify(ok(payload));
 };
-export const admin_tournament_extend: RpcHandler = admin_tournament_extend_impl;
+export const admin_tournament_extend: RpcHandler = withRuntime(admin_tournament_extend_impl);
 
 // Re-export for type-only callers (bundle scanner picks up the named
 // export of the response types so goja's AST sees them).

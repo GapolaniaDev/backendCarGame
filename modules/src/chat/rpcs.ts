@@ -49,6 +49,7 @@ import {
   type ChatMessageCard,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -277,7 +278,7 @@ export interface ChatSendRpcOutput {
   channelId: string;
 }
 
-export function chat_send(
+export function chat_send_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -377,7 +378,7 @@ export interface ChatListRpcOutput {
   nextCursor: string;
 }
 
-export function chat_list(
+export function chat_list_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -450,3 +451,10 @@ export function chat_list(
   };
   return toJson(ok(out));
 }
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const chat_send = withRuntime(chat_send_impl);
+export const chat_list = withRuntime(chat_list_impl);

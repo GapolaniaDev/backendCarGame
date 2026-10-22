@@ -22,6 +22,7 @@ import { walletGet } from './wallet';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
@@ -171,4 +172,4 @@ function toJson<T>(r: Resp<T>): string {
 }
 
 // Top-level binding for the goja AST scanner.
-export const wallet_get: RpcHandler = wallet_get_impl;
+export const wallet_get: RpcHandler = withRuntime(wallet_get_impl);

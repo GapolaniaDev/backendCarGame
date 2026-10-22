@@ -31,6 +31,7 @@ import {
 } from '../core/catalog';
 import { serverNowMs } from '../core/time';
 import type { EventBus } from '../core/event_bus';
+import { ensureRuntimeState, withRuntime } from '../core/runtime_state';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { RATE_LIMITS } from './constants';
 import { canTransition } from './state';
@@ -100,22 +101,13 @@ export type RpcHandler = (
 // ─── Event bus wiring ─────────────────────────────────────────────────────────
 
 /**
- * Module-level reference to the EventBus, set by `main.ts` after
- * InitModule constructs it. The race handlers read this on every
- * submit so tests don't need to plumb the bus through the RPC
- * signature. Defaults to `null` — submit handlers skip publishing
- * when no bus is installed (unit/e2e tests that don't exercise close).
+ * The race bus of the VM serving this call. Every pool VM builds its own
+ * on first use (`ensureRuntimeState`, plan T-29 / D-11): a bus set from
+ * `InitModule` would only exist in the throwaway boot VM (audit N8,
+ * PC-14), and races would never close.
  */
-let raceBus: EventBus | null = null;
-
-/** Called once by `InitModule` after the EventBus is constructed. */
-export function setRaceBus(bus: EventBus): void {
-  raceBus = bus;
-}
-
-/** Test/diagnostic accessor. */
-export function getRaceBus(): EventBus | null {
-  return raceBus;
+export function getRaceBus(nk: INakama, logger: ILogger): EventBus {
+  return ensureRuntimeState(nk, logger);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -873,69 +865,63 @@ function race_submit_result_impl(
   // sees `closed: false` from the idempotency check below on retry.
   let closeOutcome: ReturnType<typeof tryCloseAndPublish> | null = null;
   let closedEvent: RaceCompletedEvent | null = null;
+  const raceBus = getRaceBus(nk, logger);
   if (allSubmitted(updated.session.roster)) {
-    if (raceBus === null) {
-      logger.warn(
-        'race_submit_result sid=%s: all submitted but no EventBus installed — skipping close',
-        sessionId,
+    try {
+      closeOutcome = tryCloseAndPublish(
+        nk,
+        raceBus,
+        updated.session,
+        newSessionVersion,
+        serverNowMs(),
       );
-    } else {
-      try {
-        closeOutcome = tryCloseAndPublish(
-          nk,
-          raceBus,
-          updated.session,
-          newSessionVersion,
-          serverNowMs(),
-        );
-        logger.info(
-          'race_submit_result sid=%s closed confidence=%s needsReview=%s',
-          sessionId,
-          closeOutcome.confidence,
-          String(closeOutcome.needsReview),
-        );
-        // Synthesize the closed event so the RPC can synchronously
-        // compute the per-player reward summary (Decision 6) without
-        // waiting on the async subscribers. The async subscribers
-        // (economy, progression) also run; their grant() / XP updates
-        // are idempotent via the wallet helper's localcache keys.
-        closedEvent = {
-          schemaVersion: 1,
-          sessionId,
-          mode: updated.session.mode,
-          trackId: updated.session.trackId,
-          size: updated.session.size,
-          results: closeOutcome.results,
-          flags: {
-            needsReview: closeOutcome.needsReview,
-            ...(closeOutcome.reviewReason !== undefined
-              ? { reviewReason: closeOutcome.reviewReason }
-              : {}),
-          },
-          closedAt: serverNowMs(),
-        };
-        const startedAt = updated.session.startedAt;
-        const abandonedCount = closeOutcome.results.filter((r) => r.abandoned === true).length;
-        const finisherCount = closeOutcome.results.length - abandonedCount;
-        const durationMs = typeof startedAt === 'number' ? closedEvent.closedAt - startedAt : 0;
-        emit(nk, logger, 'race_completed', {
-          sessionId: closedEvent.sessionId,
-          mode: closedEvent.mode,
-          size: closedEvent.size,
-          durationMs,
-          finisherCount,
-          abandonedCount,
-          confidence: closeOutcome.confidence,
-        });
-      } catch (e) {
-        logger.warn(
-          'race_submit_result sid=%s close CAS conflict: %s',
-          sessionId,
-          e instanceof Error ? e.message : String(e),
-        );
-        // Not fatal — the next submit (or the next-chance goroutine)
-        // will retry the close.
-      }
+      logger.info(
+        'race_submit_result sid=%s closed confidence=%s needsReview=%s',
+        sessionId,
+        closeOutcome.confidence,
+        String(closeOutcome.needsReview),
+      );
+      // Synthesize the closed event so the RPC can synchronously
+      // compute the per-player reward summary (Decision 6) without
+      // waiting on the async subscribers. The async subscribers
+      // (economy, progression) also run; their grant() / XP updates
+      // are idempotent via the wallet helper's localcache keys.
+      closedEvent = {
+        schemaVersion: 1,
+        sessionId,
+        mode: updated.session.mode,
+        trackId: updated.session.trackId,
+        size: updated.session.size,
+        results: closeOutcome.results,
+        flags: {
+          needsReview: closeOutcome.needsReview,
+          ...(closeOutcome.reviewReason !== undefined
+            ? { reviewReason: closeOutcome.reviewReason }
+            : {}),
+        },
+        closedAt: serverNowMs(),
+      };
+      const startedAt = updated.session.startedAt;
+      const abandonedCount = closeOutcome.results.filter((r) => r.abandoned === true).length;
+      const finisherCount = closeOutcome.results.length - abandonedCount;
+      const durationMs = typeof startedAt === 'number' ? closedEvent.closedAt - startedAt : 0;
+      emit(nk, logger, 'race_completed', {
+        sessionId: closedEvent.sessionId,
+        mode: closedEvent.mode,
+        size: closedEvent.size,
+        durationMs,
+        finisherCount,
+        abandonedCount,
+        confidence: closeOutcome.confidence,
+      });
+    } catch (e) {
+      logger.warn(
+        'race_submit_result sid=%s close CAS conflict: %s',
+        sessionId,
+        e instanceof Error ? e.message : String(e),
+      );
+      // Not fatal — the next submit (or the next-chance goroutine)
+      // will retry the close.
     }
   }
 
@@ -946,11 +932,11 @@ function race_submit_result_impl(
   let rewardsOut: Record<string, RaceSubmitResultRewardEntry> | undefined = undefined;
   if (closedEvent !== null) {
     const econSummary: RaceCompletedRewardSummary = handleRaceCompletedForEconomy(
-      { logger, nk, bus: raceBus ?? dummyBus },
+      { logger, nk, bus: raceBus },
       closedEvent,
     );
     const progSummary: RaceCompletedProgressionSummary = handleRaceCompletedForProgression(
-      { logger, nk, bus: raceBus ?? dummyBus },
+      { logger, nk, bus: raceBus },
       closedEvent,
     );
     rewardsOut = mergeRewardSummaries(econSummary, progSummary);
@@ -982,14 +968,6 @@ function race_submit_result_impl(
 }
 
 // ─── Reward merging (Phase 3, Decision 6) ────────────────────────────────────
-
-const dummyBus: EventBus = {
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  subscribe: () => {},
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  publish: async () => {},
-  subscriberCount: () => 0,
-} as unknown as EventBus;
 
 function mergeRewardSummaries(
   econ: RaceCompletedRewardSummary,
@@ -1420,20 +1398,21 @@ function race_host_claim_impl(
 // goja resolver first looks the RPC fn up by NAME on the global object after
 // InitModule runs. We export each RPC as a top-level const so the AST
 // scanner sees it as a top-level binding. The names below MUST match the
-// strings passed to `initializer.registerRpc(...)` in main.ts.
+// strings passed to `initializer.registerRpc(...)` in main.ts. `withRuntime`
+// loads the serving VM's catalogs and race bus first (plan T-29, audit N8).
 
-export const config_get: RpcHandler = config_get_impl;
-export const race_session_create: RpcHandler = race_session_create_impl;
-export const race_session_join: RpcHandler = race_session_join_impl;
-export const race_session_start: RpcHandler = race_session_start_impl;
-export const race_session_get: RpcHandler = race_session_get_impl;
+export const config_get: RpcHandler = withRuntime(config_get_impl);
+export const race_session_create: RpcHandler = withRuntime(race_session_create_impl);
+export const race_session_join: RpcHandler = withRuntime(race_session_join_impl);
+export const race_session_start: RpcHandler = withRuntime(race_session_start_impl);
+export const race_session_get: RpcHandler = withRuntime(race_session_get_impl);
 // Chunk 7 lands step-1 + idempotency. Step-2 (clock / min / lap-sum)
 // and the bot-auth gate land in Chunk 8.
-export const race_submit_result: RpcHandler = race_submit_result_impl;
+export const race_submit_result: RpcHandler = withRuntime(race_submit_result_impl);
 // Phase 4 Chunk 3 — quick-mode bot fill.
-export const race_session_quick_bots: RpcHandler = race_session_quick_bots_impl;
+export const race_session_quick_bots: RpcHandler = withRuntime(race_session_quick_bots_impl);
 // Phase 4 Chunk 4 — host claim on disconnect.
-export const race_host_claim: RpcHandler = race_host_claim_impl;
+export const race_host_claim: RpcHandler = withRuntime(race_host_claim_impl);
 
 /**
  * Stable name → handler map for tests. The keys here MUST match the

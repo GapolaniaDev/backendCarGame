@@ -46,6 +46,7 @@ import {
   type RecentRivalsGetOutput,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -108,7 +109,7 @@ function checkRateOrLimit(
  * the code is a deterministic function of userId — re-creating
  * produces the same value).
  */
-export function friend_code_get(
+export function friend_code_get_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -179,7 +180,7 @@ export function friend_code_get(
  *   - CONFLICT:    already friends
  *   - INTERNAL:    storage failure
  */
-export function friend_add_by_code(
+export function friend_add_by_code_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -285,7 +286,7 @@ export function friend_add_by_code(
 
 // ─── friend_list_get ───────────────────────────────────────────────────────────
 
-export function friend_list_get(
+export function friend_list_get_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -317,7 +318,7 @@ export function friend_list_get(
 
 // ─── friend_remove ─────────────────────────────────────────────────────────────
 
-export function friend_remove(
+export function friend_remove_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -363,7 +364,7 @@ export function friend_remove(
 
 // ─── recent_rivals_get ───────────────────────────────────────────────────────────
 
-export function recent_rivals_get(
+export function recent_rivals_get_impl(
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
@@ -400,3 +401,13 @@ export function recent_rivals_get(
   };
   return toJson(ok(result));
 }
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const friend_code_get = withRuntime(friend_code_get_impl);
+export const friend_add_by_code = withRuntime(friend_add_by_code_impl);
+export const friend_list_get = withRuntime(friend_list_get_impl);
+export const friend_remove = withRuntime(friend_remove_impl);
+export const recent_rivals_get = withRuntime(recent_rivals_get_impl);

@@ -14,8 +14,8 @@
 //
 // Pattern matches `admin/rpcs.ts`: each handler exports both
 // `<name>_impl: RpcHandler` (testable directly with a hand-crafted
-// ctx) and a bare `export const <name>: RpcHandler = <name>_impl` for
-// the goja AST scanner (`initializer.registerRpc('report_*', fn)`).
+// ctx) and `export const <name>: RpcHandler = withRuntime(<name>_impl)`
+// for the goja AST scanner (`initializer.registerRpc('report_*', fn)`).
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, toJson, type Resp } from '../core/response';
@@ -44,6 +44,7 @@ import { silenceUser, writeSilencedUpdate } from '../chat/silenced';
 import { readSilenced } from '../chat/silenced';
 import { requireCallerId } from '../core/caller';
 import { listStorage } from '../core/storage';
+import { withRuntime } from '../core/runtime_state';
 
 const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
@@ -267,7 +268,7 @@ export const report_player_impl: RpcHandler = (ctx, logger, nk, body) => {
   };
   return toJson(ok(out));
 };
-export const report_player: RpcHandler = report_player_impl;
+export const report_player: RpcHandler = withRuntime(report_player_impl);
 
 // ─── admin_view_reports ────────────────────────────────────────────────────
 
@@ -352,7 +353,7 @@ export const admin_view_reports_impl: RpcHandler = (_ctx, logger, nk, body) => {
   };
   return JSON.stringify(ok(out));
 };
-export const admin_view_reports: RpcHandler = admin_view_reports_impl;
+export const admin_view_reports: RpcHandler = withRuntime(admin_view_reports_impl);
 
 // ─── admin_silence ─────────────────────────────────────────────────────────
 
@@ -398,7 +399,7 @@ export const admin_silence_impl: RpcHandler = (_ctx, logger, nk, body) => {
   const out: AdminSilenceRpcOutput = { silenced: true, untilUtc };
   return JSON.stringify(ok(out));
 };
-export const admin_silence: RpcHandler = admin_silence_impl;
+export const admin_silence: RpcHandler = withRuntime(admin_silence_impl);
 
 // ─── admin_unsilence ───────────────────────────────────────────────────────
 
@@ -450,7 +451,7 @@ export const admin_unsilence_impl: RpcHandler = (_ctx, logger, nk, body) => {
   const out: AdminUnsilenceRpcOutput = { silenced: false };
   return JSON.stringify(ok(out));
 };
-export const admin_unsilence: RpcHandler = admin_unsilence_impl;
+export const admin_unsilence: RpcHandler = withRuntime(admin_unsilence_impl);
 
 // Type re-export used by the bundle scanner so goja sees the named
 // exports of the response types.

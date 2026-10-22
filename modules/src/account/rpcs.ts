@@ -34,6 +34,7 @@ import {
   type AccountLinkResolveConflictOutput,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -174,8 +175,8 @@ function renderResolveResult(
 }
 
 // Top-level bindings for the goja AST scanner.
-export const account_link: RpcHandler = account_link_impl;
-export const account_link_resolve_conflict: RpcHandler = account_link_resolve_conflict_impl;
+export const account_link: RpcHandler = withRuntime(account_link_impl);
+export const account_link_resolve_conflict: RpcHandler = withRuntime(account_link_resolve_conflict_impl);
 
 // ─── account_delete (Phase 5 Chunk 5) ──────────────────────────────────────
 
@@ -267,7 +268,7 @@ export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
   return JSON.stringify(ok(output));
 };
 
-export const account_delete: RpcHandler = account_delete_impl;
+export const account_delete: RpcHandler = withRuntime(account_delete_impl);
 
 export type {
   AccountLinkInput,

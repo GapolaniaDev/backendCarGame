@@ -30,6 +30,7 @@ import type {
   MissionReward,
 } from './types';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -164,7 +165,7 @@ function checkRateOrLimit(
 
 // ─── achievements_get ────────────────────────────────────────────────────────
 
-export const achievements_get: RpcHandler = (ctx, logger, nk, body) => {
+export const achievements_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<AchievementsGetInput>(body);
   if (!parsed.ok) return parsed.error;
 
@@ -205,7 +206,7 @@ export const achievements_get: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── achievement_claim ──────────────────────────────────────────────────────
 
-export const achievement_claim: RpcHandler = (ctx, logger, nk, body) => {
+export const achievement_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<AchievementClaimInput>(body);
   if (!parsed.ok) return parsed.error;
 
@@ -282,3 +283,10 @@ export const achievement_claim: RpcHandler = (ctx, logger, nk, body) => {
     levelUps: passLevelUps,
   }));
 };
+
+// ─── Top-level bindings ──────────────────────────────────────────────────────
+
+// Global names the 3.27 registration scanner resolves (main.ts). Each one
+// loads the VM's runtime state first (plan T-29, D-11; audit N8).
+export const achievements_get: RpcHandler = withRuntime(achievements_get_impl);
+export const achievement_claim: RpcHandler = withRuntime(achievement_claim_impl);

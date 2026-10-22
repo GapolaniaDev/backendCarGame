@@ -20,6 +20,7 @@ import {
 } from './subscription';
 import { emit } from '../core/admin/analytics';
 import { requireCallerId } from '../core/caller';
+import { withRuntime } from '../core/runtime_state';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -163,5 +164,5 @@ export const iap_subscription_cancel_impl: RpcHandler = (ctx, logger, nk, body) 
   return JSON.stringify(ok(out));
 };
 
-export const iap_subscription_status: RpcHandler = iap_subscription_status_impl;
-export const iap_subscription_cancel: RpcHandler = iap_subscription_cancel_impl;
+export const iap_subscription_status: RpcHandler = withRuntime(iap_subscription_status_impl);
+export const iap_subscription_cancel: RpcHandler = withRuntime(iap_subscription_cancel_impl);
