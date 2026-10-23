@@ -299,18 +299,29 @@ export interface INakama {
     operatorOverride?: 'best' | 'set' | 'incr' | 'decr',
   ): { record: ILeaderboardRecord };
   leaderboardRecordDelete(id: string, ownerId: string): void;
+  /**
+   * 3.27: records come in the table's own sort order with their `rank`.
+   * `limit` 0/absent lists no page (only `ownerRecords`). The 5th
+   * argument is `overrideExpiry` (unix seconds), NOT a sort order.
+   * Throws "leaderboard not found" for an unknown table.
+   */
   leaderboardRecordsList(
     id: string,
     ownerIds: string[],
     limit?: number,
     cursor?: string,
-    sortOrder?: 'asc' | 'desc',
-  ): {
-    records: ILeaderboardRecord[];
-    ownerRecords: ILeaderboardRecord[];
-    nextCursor: string;
-    prevCursor: string;
-  };
+    overrideExpiry?: number,
+  ): ILeaderboardRecordList;
+  /** 3.27: the page around `ownerId` (limit 1-100); empty when the owner has no record. */
+  leaderboardRecordsHaystack(
+    id: string,
+    ownerId: string,
+    limit?: number,
+    cursor?: string,
+    overrideExpiry?: number,
+  ): ILeaderboardRecordList;
+  /** 3.27: definitions of the existing tables among `ids` (unknown ids are skipped). */
+  leaderboardsGetId(ids: string[]): ILeaderboardInfo[];
 
   // ── Matchmaker (programmatic) ──
   matchmakerAdd(
@@ -571,6 +582,29 @@ export interface ILeaderboard {
   size: number;
   startTime: string;
   enableRanks: boolean;
+}
+
+/** `leaderboardsGetId` row (3.27 `leaderboardToJsObject`). */
+export interface ILeaderboardInfo {
+  id: string;
+  /** 0 = ascending, 1 = descending. */
+  sortOrder: number;
+  /** Lower-case operator name: 'best' | 'set' | 'increment' | 'decrement'. */
+  operator: string;
+  metadata: Record<string, unknown>;
+  createTime: number;
+  prevReset?: number;
+  nextReset?: number;
+  authoritative: boolean;
+}
+
+export interface ILeaderboardRecordList {
+  records: ILeaderboardRecord[];
+  ownerRecords: ILeaderboardRecord[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+  /** Ranked records in the table (rank cache count). */
+  rankCount: number;
 }
 
 export interface ILeaderboardRecord {

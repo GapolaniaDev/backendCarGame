@@ -19,6 +19,8 @@ import { FakeLogger as FakeLoggerClass, FakeNakama as FakeNakamaClass } from '..
 import type { RaceCompletedEvent, RaceResult } from '../../modules/src/race/types';
 import type { RankedRecord } from '../../modules/src/ranked/types';
 import seasonsJson from '../../modules/src/catalogs/seasons.json';
+import leaderboardsJson from '../../modules/src/catalogs/leaderboards.json';
+import { loadLeaderboardsCatalog } from '../../modules/src/leaderboards/catalog';
 import rankedConfigJson from '../../modules/src/catalogs/ranked_config.json';
 import liveopsConfigJson from '../../modules/src/catalogs/liveops_config.json';
 
@@ -29,6 +31,8 @@ beforeAll(() => {
   loadSeasonsCatalog(console as never, seasonsJson as never);
   loadRankedConfig(console as never, rankedConfigJson as never);
   loadLiveOpsConfig(console as never, liveopsConfigJson as never);
+  // The ranked table's order comes from leaderboards.json (plan T-13).
+  loadLeaderboardsCatalog(console as never, leaderboardsJson as never);
 });
 
 function makeDeps(): { deps: RankedSubscriberDeps; nak: FakeNakama; logger: FakeLogger } {

@@ -18,7 +18,7 @@ import {
 import {
   loadLeaderboardsCatalog,
 } from '../../modules/src/leaderboards/catalog';
-import { ensureLeaderboards } from '../../modules/src/leaderboards/ensure';
+import { ensureLeaderboards, ensureLeaderboardTable } from '../../modules/src/leaderboards/ensure';
 import {
   hasServerToken,
   stampServerToken,
@@ -30,8 +30,11 @@ const CLASSES = 5;
 const PATTERNS = 3; // tt_all, tt_week, lap_all
 /** Catalog tables (wins_week + track×class×pattern). Excludes club_week. */
 const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + TRACKS * CLASSES * PATTERNS; // = 91
-/** Catalog tables + the standalone club_week table (Phase 7 Chunk 5). */
-const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* club_week */; // = 92
+/**
+ * Catalog tables + the standalone club_week table (Phase 7 Chunk 5) +
+ * the active season's ranked table (`ranked_season_2`, plan T-13).
+ */
+const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* club_week */ + 1 /* ranked */; // = 93
 
 describe('leaderboards boot (Chunk 11)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
@@ -40,7 +43,7 @@ describe('leaderboards boot (Chunk 11)', () => {
     env = loadBundleForTest();
   });
 
-  it('creates every authoritative table from the expanded catalog (91) + club_week', () => {
+  it('creates every authoritative table from the expanded catalog (91) + club_week + ranked', () => {
     // InitModule populated env.fakeNakama.leaderboards (the bundle's nk
     // is the same FakeNakama instance). Confirm the count + a few
     // representative ids.
@@ -52,6 +55,9 @@ describe('leaderboards boot (Chunk 11)', () => {
     expect(created.has('lap_factory_loop_S_all')).toBe(true);
     // Phase 7 Chunk 5: the standalone club_week leaderboard.
     expect(created.has('club_week')).toBe(true);
+    // Plan T-13: the active season's ranked table exists from boot, descending.
+    expect(env.nak.leaderboardsGetId(['ranked_season_2'])[0]?.sortOrder).toBe(1);
+    expect(env.nak.leaderboardsGetId(['wins_week'])[0]?.sortOrder).toBe(1);
     // Every created table must be authoritative.
     for (const lb of created.values()) {
       expect(lb.authoritative).toBe(true);
@@ -62,7 +68,8 @@ describe('leaderboards boot (Chunk 11)', () => {
     // Re-load + re-ensure against the same fakeNakama: every catalog
     // table is already there, so the catalog-summary reports
     // `existing: 91` and `created: 0`. The club_week table is wired
-    // via a separate helper, so the total table count is 92.
+    // via a separate helper and the ranked table is passed by InitModule,
+    // so the total table count is 93.
     loadLeaderboardsCatalog(
       env.fakeLogger,
       leaderboardsJson as unknown as Parameters<typeof loadLeaderboardsCatalog>[1],
@@ -73,6 +80,39 @@ describe('leaderboards boot (Chunk 11)', () => {
     expect(summary.created).toBe(0);
     expect(summary.existing).toBe(EXPECTED_CATALOG_TABLES);
     expect(env.fakeNakama.leaderboards.size).toBe(EXPECTED_TOTAL_TABLES);
+  });
+
+  it('recreates a table whose order differs from the catalog, dropping its records (T-13, R-02)', () => {
+    // A wins_week created ascending (the inverted board) with one record.
+    env.nak.leaderboardDelete('wins_week');
+    env.nak.leaderboardCreate('wins_week', true, 'asc', 'incr', '0 0 * * 1', {}, true);
+    env.nak.leaderboardRecordWrite('wins_week', 'user-a', 'alice', 3, 0, {});
+    loadLeaderboardsCatalog(
+      env.fakeLogger,
+      leaderboardsJson as unknown as Parameters<typeof loadLeaderboardsCatalog>[1],
+      env.nak,
+    );
+    const summary = ensureLeaderboards(env.fakeLogger, env.nak);
+    expect(summary.recreated).toEqual(['wins_week']);
+    expect(env.nak.leaderboardsGetId(['wins_week'])[0]?.sortOrder).toBe(1);
+    expect(env.nak.leaderboardRecordsList('wins_week', [], 10).records).toEqual([]);
+    expect(env.fakeLogger.lines.some((l) => /leaderboard wins_week recreated: .*records are dropped/.test(l))).toBe(true);
+    // A second boot finds the right order and recreates nothing.
+    expect(ensureLeaderboards(env.fakeLogger, env.nak).recreated).toEqual([]);
+  });
+
+  it('outside boot a table with another order is reported, never dropped', () => {
+    env.nak.leaderboardDelete('wins_week');
+    env.nak.leaderboardCreate('wins_week', true, 'asc', 'incr', '0 0 * * 1', {}, true);
+    env.nak.leaderboardRecordWrite('wins_week', 'user-a', 'alice', 3, 0, {});
+    const outcome = ensureLeaderboardTable(
+      env.fakeLogger,
+      env.nak,
+      { id: 'wins_week', operator: 'incr', sortOrder: 'desc', resetSchedule: '0 0 * * 1', description: '', source: 'wins_week' },
+      { recreateOnMismatch: false },
+    );
+    expect(outcome).toBe('mismatch');
+    expect(env.nak.leaderboardRecordsList('wins_week', [], 10).records.length).toBe(1);
   });
 
   it('drop-races the deprecated race_score table when it pre-exists', () => {

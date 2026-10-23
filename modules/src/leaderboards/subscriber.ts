@@ -24,6 +24,10 @@
 //
 // The subscore is the wall-clock timestamp — used as the secondary
 // tiebreaker so that an earlier-set time wins over a later-equal one.
+//
+// Every write carries the owner's account username (HT-65): the Unity
+// client reads `wins_week` with the native `ListLeaderboardRecords`,
+// which returns the stored username and nothing else.
 
 import type { ILogger, INakama } from '../nkruntime';
 import type { CarClassId, RaceCompletedEvent } from '../race/types';
@@ -39,6 +43,7 @@ import {
   getWinsWeekTable,
 } from './catalog';
 import { stampServerToken } from './hooks';
+import { usernamesById } from './usernames';
 
 /** Filter a track-wide table list down to a single class. */
 export function byClass(tables: LeaderboardTableEntry[], cls: CarClassId): LeaderboardTableEntry[] {
@@ -135,6 +140,14 @@ export async function applyRaceCompletedToLeaderboards(
   const allowTimeTableWrite =
     confidence !== 'client' || event.mode === 'time_trial';
 
+  const winner = event.results.find((r) => r.rank === 1 && !r.abandoned && !r.isBot);
+  const usernames = usernamesById(
+    logger,
+    nk,
+    [...humanFinishers.map((e) => e.userId), ...(winner ? [winner.userId] : [])],
+  );
+  const nameOf = (userId: string): string => usernames.get(userId) ?? '';
+
   // Per-finisher writes.
   for (const entry of humanFinishers) {
     if (!entry.totalMs || !entry.laps) continue;
@@ -159,7 +172,7 @@ export async function applyRaceCompletedToLeaderboards(
         ...byClass(getTtWeekTables(event.trackId), entry.loadout.classId),
       ]) {
         if (!getLeaderboardTable(t.id)) continue;
-        writeBest(nk, t.id, entry.userId, totalMs, baseMeta);
+        writeBest(nk, t.id, entry.userId, nameOf(entry.userId), totalMs, baseMeta);
       }
     }
 
@@ -167,14 +180,13 @@ export async function applyRaceCompletedToLeaderboards(
     // metadata captures the confidence flag for audit).
     for (const t of byClass(getLapAllTables(event.trackId), entry.loadout.classId)) {
       if (!getLeaderboardTable(t.id)) continue;
-      writeBest(nk, t.id, entry.userId, bestLap, baseMeta);
+      writeBest(nk, t.id, entry.userId, nameOf(entry.userId), bestLap, baseMeta);
     }
   }
 
   // wins_week: increment by 1 for the rank-1 finisher, but only in
   // quick/ranked (per spec). Bots do NOT increment wins_week, and a
   // humans-vs-bots race does not count (P-01, plan T-09).
-  const winner = event.results.find((r) => r.rank === 1 && !r.abandoned && !r.isBot);
   if (
     winner &&
     event.flags.botSession !== true &&
@@ -186,6 +198,7 @@ export async function applyRaceCompletedToLeaderboards(
         nk,
         winsTable.id,
         winner.userId,
+        nameOf(winner.userId),
         1,
         {
           car: 'unknown',
@@ -217,13 +230,14 @@ function writeBest(
   nk: INakama,
   tableId: string,
   ownerId: string,
+  username: string,
   score: number,
   meta: LeaderboardWriteMeta,
 ): void {
   nk.leaderboardRecordWrite(
     tableId,
     ownerId,
-    /* username */ '',
+    username,
     score,
     /* subscore */ Date.now(),
     stampServerToken({ ...meta }),
@@ -235,6 +249,7 @@ function writeIncr(
   nk: INakama,
   tableId: string,
   ownerId: string,
+  username: string,
   delta: number,
   meta: LeaderboardWriteMeta,
   logger: ILogger,
@@ -243,7 +258,7 @@ function writeIncr(
     nk.leaderboardRecordWrite(
       tableId,
       ownerId,
-      /* username */ '',
+      username,
       delta,
       /* subscore */ Date.now(),
       stampServerToken({ ...meta }),

@@ -1,7 +1,8 @@
 // E2E tests for the Phase 2 `lb_get` RPC. Covers:
 //   - global view (top-N)
 //   - around_me view (band around a known caller)
-//   - friends view (currently returns just the caller)
+//   - friends view (the caller and their friends, plan T-13)
+//   - table order, cursors and usernames (plan T-13)
 //   - profile enrichment batched in the same response
 //   - input validation (unknown table, bad view, missing caller)
 
@@ -201,7 +202,7 @@ describe('lb_get RPC (Chunk 13)', () => {
     expect(resp.data.records[0]?.ownerId).toBe(HOST_ID);
   });
 
-  it('enriches profiles in the same response (falls back to userId when missing)', async () => {
+  it('enriches profiles in the same response (falls back to the username when missing)', async () => {
     await setupPopulatedRace();
     const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
       leaderboardId: 'tt_neon_blvd_B_all',
@@ -211,8 +212,8 @@ describe('lb_get RPC (Chunk 13)', () => {
     expect(resp.ok).toBe(true);
     // One profile entry per unique ownerId in the result.
     expect(Object.keys(resp.data.profiles).sort()).toEqual([HOST_ID, P1, P2, P3].sort());
-    // No real profile records exist → fallback uses userId.
-    expect(resp.data.profiles[HOST_ID]?.displayName).toBe(HOST_ID);
+    // No real profile records exist → fallback uses the account username.
+    expect(resp.data.profiles[HOST_ID]?.displayName).toBe(`name-${HOST_ID}`);
   });
 
   it('uses stored profiles when they exist (displayName from storage)', async () => {
@@ -325,10 +326,9 @@ describe('lb_get RPC (Chunk 13)', () => {
     });
     expect(resp.ok).toBe(true);
     expect(resp.data.ownerRecord?.rank).toBe(global.data.totalCount);
-    // Band overflows the end: the slice is `start..start+limit` and
-    // clamped to the array end, so for last rank we get the trailing
-    // 3 records (4-player board, last at idx=3, half=2, start=1).
-    expect(resp.data.records.length).toBe(3);
+    // Nakama's haystack fills the page from above when the caller is
+    // last, so a 4-record board returns all 4 records.
+    expect(resp.data.records.length).toBe(4);
     // The last record in the slice is the caller (last rank).
     expect(resp.data.records[resp.data.records.length - 1]?.ownerId).toBe(lastOwner);
   });
@@ -351,5 +351,122 @@ describe('lb_get RPC (Chunk 13)', () => {
     // is just missing).
     expect(resp.data.records.length).toBe(3);
     expect(resp.data.records[0]?.rank).toBe(1);
+  });
+
+  // ── Plan T-13 ────────────────────────────────────────────────────────────
+
+  function seedWins(wins: Record<string, number>): void {
+    for (const [userId, n] of Object.entries(wins)) {
+      for (let i = 0; i < n; i += 1) env.nak.leaderboardRecordWrite('wins_week', userId, '', 1, i, {});
+    }
+  }
+
+  it('wins_week is listed from most to fewest wins, rank 1 first (desc table)', () => {
+    seedWins({ [P1]: 1, [P2]: 3, [P3]: 2 });
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'wins_week',
+      view: 'global',
+      limit: 10,
+    });
+    expect(resp.ok).toBe(true);
+    expect(resp.data.records.map((r) => [r.ownerId, r.score, r.rank])).toEqual([
+      [P2, 3, 1],
+      [P3, 2, 2],
+      [P1, 1, 3],
+    ]);
+    expect(resp.data.totalCount).toBe(3);
+  });
+
+  it('records written without a name get the account username', () => {
+    seedWins({ [P1]: 1 });
+    const resp = call<LbGetResponse & { data: { records: Array<{ username: string }> } }>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'wins_week',
+      view: 'global',
+    });
+    expect(resp.data.records[0]?.username).toBe(`name-${P1}`);
+  });
+
+  it('global view pages with nextCursor / prevCursor', () => {
+    seedWins({ [P1]: 1, [P2]: 3, [P3]: 2, [HOST_ID]: 4 });
+    type Paged = LbGetResponse & { data: { nextCursor: string | null; prevCursor: string | null } };
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const resp: Paged = call<Paged>(env, 'lb_get', HOST_ID, {
+        leaderboardId: 'wins_week',
+        view: 'global',
+        limit: 3,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(resp.ok).toBe(true);
+      if (pages > 0) expect(resp.data.prevCursor).not.toBeNull();
+      seen.push(...resp.data.records.map((r) => r.ownerId));
+      cursor = resp.data.nextCursor;
+      pages += 1;
+    } while (cursor !== null && pages < 5);
+    expect(pages).toBe(2);
+    expect(seen).toEqual([HOST_ID, P2, P3, P1]);
+  });
+
+  it('the race writer stores the account username on every record (HT-65)', async () => {
+    await setupPopulatedRace();
+    for (const table of ['tt_neon_blvd_B_all', 'lap_neon_blvd_B_all']) {
+      const rec = env.fakeNakama.leaderboardRecords.get(table)?.get(HOST_ID);
+      expect(rec?.username).toBe(`name-${HOST_ID}`);
+    }
+  });
+
+  it('a malformed cursor is a BAD_REQUEST inside the envelope', () => {
+    seedWins({ [P1]: 1 });
+    const resp = call<ErrResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'wins_week',
+      view: 'global',
+      cursor: 'not-a-cursor',
+    });
+    expect(resp.ok).toBe(false);
+    expect(resp.error.code).toBe('BAD_REQUEST');
+  });
+
+  it('friends view lists the caller and their friends (friends_edge), not strangers', () => {
+    seedWins({ [HOST_ID]: 1, [P1]: 2, [P2]: 5 });
+    env.nak.storageWrite([
+      {
+        collection: 'friends_edge',
+        key: P1,
+        userId: HOST_ID,
+        value: { schemaVersion: 1, userId: HOST_ID, friendId: P1, friendCode: 'ABC123', since: 1 },
+        permissionRead: 0,
+        permissionWrite: 0,
+      },
+    ]);
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'wins_week',
+      view: 'friends',
+    });
+    expect(resp.ok).toBe(true);
+    // P2 (rank 1) is not a friend; ranks stay global.
+    expect(resp.data.records.map((r) => [r.ownerId, r.rank])).toEqual([[P1, 2], [HOST_ID, 3]]);
+  });
+
+  it('accepts the ranked table of a season and ranks the best rating first', () => {
+    env.nak.leaderboardRecordWrite('ranked_season_2', P1, '', 1010, 0, {}, 'set');
+    env.nak.leaderboardRecordWrite('ranked_season_2', P2, '', 1090, 0, {}, 'set');
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'ranked_season_2',
+      view: 'global',
+    });
+    expect(resp.ok).toBe(true);
+    expect(resp.data.records.map((r) => [r.ownerId, r.rank])).toEqual([[P2, 1], [P1, 2]]);
+  });
+
+  it('a season ranked table that does not exist yet is an empty board, not an error', () => {
+    const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'ranked_season_9',
+      view: 'global',
+    });
+    expect(resp.ok).toBe(true);
+    expect(resp.data.records).toEqual([]);
+    expect(resp.data.totalCount).toBe(0);
   });
 });

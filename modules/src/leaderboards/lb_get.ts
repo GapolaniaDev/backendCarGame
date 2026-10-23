@@ -4,49 +4,57 @@
 //
 // Spec (Phase 2 §2.4):
 //   - Input:  leaderboardId, view, limit? (default 20, max 100),
-//             aroundUserId? (default caller)
-//   - Output: records[] (ranked), ownerRecord (the caller's own entry
-//             if it exists), totalCount, profiles{} keyed by userId
-//             (empty objects for users without a profile record yet —
-//             profile creation lands in Chunk 15).
+//             aroundUserId? (default caller), cursor? (plan T-13)
+//   - Output: records[] (ranked), ownerRecord (the around user's own
+//             entry if it exists), totalCount, profiles{} keyed by
+//             userId, nextCursor / prevCursor (plan T-13, additive).
 //
-// The "friends" view returns just the caller + their own record for
-// now; a real friend-graph lookup lands when the friends module is
-// built. The function structure already supports swapping the
-// `collectOwnerIdsForView()` helper later without changing the wire
-// shape.
+// Plan T-13 (audit 05 f5-f6, 06 f4, HT-65):
+//   - Order and rank come from Nakama, i.e. from each table's own sort
+//     order (`leaderboards.json`): `wins_week` and the ranked table are
+//     descending, the time tables ascending. The handler used to sort
+//     every table ascending, which inverted `wins_week`.
+//   - Pages are Nakama cursors: `global` and `around_me` return the
+//     cursors of `leaderboardRecordsList` / `leaderboardRecordsHaystack`
+//     as they are; `friends` pages its (small) list with an offset
+//     cursor of its own.
+//   - `friends` lists the caller and their friends (`friends_edge`,
+//     the graph `friend_list_get` returns), not just the caller.
+//   - Each record carries `username` (written by the server since T-13;
+//     filled from the account for older records), and the profile
+//     fallback is that username instead of the raw user id.
+//   - The ranked table of a season (`ranked_{seasonId}`) is accepted.
 
 import type { IContext, ILogger, ILeaderboardRecord, INakama } from '../nkruntime';
-import {
-  getLeaderboardTable,
-} from './catalog';
+import { resolveLeaderboardTable } from './catalog';
 import { err, ok, type Resp } from '../core/response';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import { requireCaller } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
+import { listFriendEdges } from '../social/friends_repo';
+import { usernamesById } from './usernames';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
 
 export type LbView = 'global' | 'around_me' | 'friends';
 
 export interface LbGetInput {
-  /** Target leaderboard id. Must exist in the catalog. */
+  /** Target leaderboard id. Must exist in the catalog (or be a season's ranked table). */
   leaderboardId: string;
   /** View selection. */
   view: LbView;
   /** Page size (default 20, clamped to [1, 100]). */
   limit?: number;
   /**
-   * User id to center `around_me` on. Defaults to the caller when omitted.
-   * For HTTP gateway calls the caller MUST match this field; we accept
-   * it explicitly so the view can be computed for any user when needed
-   * (e.g. an admin / spectator tool).
+   * User id to center `around_me` on (and whose `ownerRecord` is
+   * returned). Defaults to the caller. Leaderboards are public.
    */
   aroundUserId?: string;
+  /** `nextCursor` / `prevCursor` of a previous page of the same view (plan T-13). */
+  cursor?: string;
   /**
-   * Required when calling via the HTTP gateway (where ctx.userId is
-   * null). Verified against ctx.userId on socket calls.
+   * Optional; when present it must match the session user (D-03).
    */
   callerUserId: string;
   /** Client semver — sent in payload (RPC handler can't read HTTP headers). */
@@ -57,6 +65,8 @@ export interface LbGetInput {
 
 export interface LbRecordWithRank {
   ownerId: string;
+  /** Owner's account username (plan T-13, additive); '' when unknown. */
+  username: string;
   rank: number;
   score: number;
   subscore: number;
@@ -72,15 +82,22 @@ export interface LbProfileView {
 export interface LbGetOutput {
   leaderboardId: string;
   view: LbView;
+  /** Ranked records in the whole table (not just this page). */
   totalCount: number;
   records: LbRecordWithRank[];
   ownerRecord: LbRecordWithRank | null;
-  /** Keyed by ownerId — empty object for users without a profile yet. */
+  /** Keyed by ownerId; falls back to the username for users without a profile. */
   profiles: Record<string, LbProfileView>;
+  /** Cursor of the next page, or null on the last one (plan T-13, additive). */
+  nextCursor: string | null;
+  /** Cursor of the previous page, or null on the first one (plan T-13, additive). */
+  prevCursor: string | null;
 }
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+/** Prefix of the offset cursors the `friends` view hands out. */
+const FRIENDS_CURSOR_PREFIX = 'friends:';
 
 /**
  * RPC handler shape. Defined in this module so we can keep the
@@ -93,6 +110,12 @@ export type LbGetRpc = (
   nk: INakama,
   body: string,
 ) => string;
+
+interface Page {
+  records: ILeaderboardRecord[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+}
 
 export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   let payload: Partial<LbGetInput>;
@@ -122,13 +145,17 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   if (typeof leaderboardId !== 'string' || leaderboardId.length === 0) {
     return toJson(err('BAD_REQUEST', 'leaderboardId is required'));
   }
-  if (!getLeaderboardTable(leaderboardId)) {
+  if (!resolveLeaderboardTable(leaderboardId)) {
     return toJson(err('NOT_FOUND', `unknown leaderboard ${leaderboardId}`));
   }
   const view = payload.view;
   if (view !== 'global' && view !== 'around_me' && view !== 'friends') {
     return toJson(err('BAD_REQUEST', "view must be one of 'global' | 'around_me' | 'friends'"));
   }
+  if (payload.cursor !== undefined && payload.cursor !== null && typeof payload.cursor !== 'string') {
+    return toJson(err('BAD_REQUEST', 'cursor must be a string'));
+  }
+  const cursor = typeof payload.cursor === 'string' ? payload.cursor : '';
   const limit = clampLimit(payload.limit);
 
   const aroundUserId =
@@ -136,53 +163,55 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
       ? payload.aroundUserId
       : callerId;
 
-  // 1) Pull the records list once. We sort and trim here; Nakama's
-  //    leaderboardRecordsList gives us a full sorted slice.
-  const all = nk.leaderboardRecordsList(
-    leaderboardId,
-    /* ownerIds */ [],
-    /* limit */ Math.max(MAX_LIMIT * 5, 200),
-  );
-  const sorted: ILeaderboardRecord[] = all.records.slice().sort(ascendingByScore);
+  // A ranked season's table is created by its first ranked race (or at
+  // boot for the active season): until then the board is empty.
+  if ((nk.leaderboardsGetId([leaderboardId]) ?? []).length === 0) {
+    return toJson(ok(emptyOutput(leaderboardId, view)));
+  }
 
-  // 2) Per-view selection.
-  const records = selectForView(sorted, view, limit, aroundUserId);
+  // 1) The page, in the table's own order with Nakama's ranks, plus
+  //    the around user's own record. The runtime throws on a malformed
+  //    cursor or user id: that is the caller's input, answered as
+  //    BAD_REQUEST inside the envelope.
+  let read: ViewRead | null;
+  try {
+    read = readView(nk, leaderboardId, view, callerId, aroundUserId, limit, cursor);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/cursor|owner id|identifier|user id/i.test(message)) {
+      logger.warn('lb_get rejected input table=%s view=%s: %s', leaderboardId, view, message);
+      return toJson(err('BAD_REQUEST', 'invalid cursor or user id'));
+    }
+    logger.error('lb_get read failed table=%s view=%s: %s', leaderboardId, view, message);
+    return toJson(err('INTERNAL', 'leaderboard read failed'));
+  }
+  if (read === null) return toJson(err('BAD_REQUEST', 'cursor is not a friends-view cursor'));
+  const { page, ownerEntry, totalCount } = read;
 
-  // 3) Rank within the FULL sorted list (matches Nakama's global ranking).
-  const ranked = records.map((r) => ({
-    record: r,
-    rank: sorted.findIndex((x) => x.ownerId === r.ownerId) + 1,
-  }));
-  const ownerEntry = sorted.find((r) => r.ownerId === aroundUserId);
-  const ownerRecord = ownerEntry
-    ? {
-        ownerId: ownerEntry.ownerId,
-        rank: sorted.findIndex((x) => x.ownerId === ownerEntry.ownerId) + 1,
-        score: ownerEntry.score,
-        subscore: ownerEntry.subscore,
-        metadata: ownerEntry.metadata as Record<string, unknown>,
-      }
-    : null;
-
-  // 4) Profile enrichment: read `profiles/{userId}` storage objects.
-  const ownerIds = new Set<string>();
-  for (const r of records) ownerIds.add(r.ownerId);
-  if (ownerRecord) ownerIds.add(ownerRecord.ownerId);
-  const profiles = enrichProfiles(nk, Array.from(ownerIds));
+  // 2) Usernames (records written before T-13 have none) and profiles.
+  const ownerIds = new Set<string>(page.records.map((r) => r.ownerId));
+  if (ownerEntry) ownerIds.add(ownerEntry.ownerId);
+  const missingNames = [...page.records, ...(ownerEntry ? [ownerEntry] : [])]
+    .filter((r) => typeof r.username !== 'string' || r.username.length === 0)
+    .map((r) => r.ownerId);
+  const accountNames = usernamesById(logger, nk, missingNames);
+  const nameOf = (r: ILeaderboardRecord): string =>
+    typeof r.username === 'string' && r.username.length > 0 ? r.username : accountNames.get(r.ownerId) ?? '';
+  const records = page.records.map((r) => toWire(r, nameOf(r)));
+  const ownerRecord = ownerEntry ? toWire(ownerEntry, nameOf(ownerEntry)) : null;
+  const names = new Map<string, string>();
+  for (const r of [...records, ...(ownerRecord ? [ownerRecord] : [])]) names.set(r.ownerId, r.username);
+  const profiles = enrichProfiles(nk, Array.from(ownerIds), names);
 
   const out: LbGetOutput = {
     leaderboardId,
     view,
-    totalCount: sorted.length,
-    records: ranked.map(({ record, rank }) => ({
-      ownerId: record.ownerId,
-      rank,
-      score: record.score,
-      subscore: record.subscore,
-      metadata: record.metadata as Record<string, unknown>,
-    })),
+    totalCount,
+    records,
     ownerRecord,
     profiles,
+    nextCursor: page.nextCursor,
+    prevCursor: page.prevCursor,
   };
   logger.info(
     'lb_get table=%s view=%s limit=%d returned=%d profiles=%d caller=%s',
@@ -196,6 +225,97 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   return toJson(ok(out));
 };
 
+// ─── Views ───────────────────────────────────────────────────────────────────
+
+interface ViewRead {
+  page: Page;
+  ownerEntry: ILeaderboardRecord | undefined;
+  totalCount: number;
+}
+
+/** The view's page and the around user's record; null for a foreign cursor on `friends`. */
+function readView(
+  nk: INakama,
+  leaderboardId: string,
+  view: LbView,
+  callerId: string,
+  aroundUserId: string,
+  limit: number,
+  cursor: string,
+): ViewRead | null {
+  if (view === 'global') {
+    const res = nk.leaderboardRecordsList(leaderboardId, [aroundUserId], limit, cursor);
+    return {
+      page: { records: res.records, nextCursor: res.nextCursor ?? null, prevCursor: res.prevCursor ?? null },
+      ownerEntry: res.ownerRecords.find((r) => r.ownerId === aroundUserId),
+      totalCount: res.rankCount ?? 0,
+    };
+  }
+  const own = nk.leaderboardRecordsList(leaderboardId, [aroundUserId], 0);
+  const ownerEntry = own.ownerRecords.find((r) => r.ownerId === aroundUserId);
+  const totalCount = own.rankCount ?? 0;
+  if (view === 'around_me') {
+    return {
+      page: aroundPage(nk, leaderboardId, aroundUserId, limit, cursor, ownerEntry !== undefined),
+      ownerEntry,
+      totalCount,
+    };
+  }
+  const offset = parseFriendsCursor(cursor);
+  if (offset === null) return null;
+  return { page: friendsPage(nk, leaderboardId, callerId, limit, offset), ownerEntry, totalCount };
+}
+
+/**
+ * Nakama's haystack around the user; a user without a record gets the
+ * top of the table (the haystack is empty for them), as before.
+ */
+function aroundPage(
+  nk: INakama,
+  leaderboardId: string,
+  aroundUserId: string,
+  limit: number,
+  cursor: string,
+  hasRecord: boolean,
+): Page {
+  if (cursor.length > 0 || !hasRecord) {
+    const res = nk.leaderboardRecordsList(leaderboardId, [], limit, cursor);
+    return { records: res.records, nextCursor: res.nextCursor ?? null, prevCursor: res.prevCursor ?? null };
+  }
+  const res = nk.leaderboardRecordsHaystack(leaderboardId, aroundUserId, limit);
+  return { records: res.records, nextCursor: res.nextCursor ?? null, prevCursor: res.prevCursor ?? null };
+}
+
+/**
+ * The caller and their friends, in the table's order with their global
+ * ranks. A friend list is at most a few hundred ids, so it is read in
+ * one call and paged by offset.
+ */
+function friendsPage(
+  nk: INakama,
+  leaderboardId: string,
+  callerId: string,
+  limit: number,
+  offset: number,
+): Page {
+  const ids = [callerId, ...listFriendEdges(nk, callerId).map((e) => e.friendId)];
+  const unique = Array.from(new Set(ids));
+  const all = nk.leaderboardRecordsList(leaderboardId, unique, 0).ownerRecords;
+  const records = all.slice(offset, offset + limit);
+  return {
+    records,
+    nextCursor: offset + limit < all.length ? `${FRIENDS_CURSOR_PREFIX}${offset + limit}` : null,
+    prevCursor: offset > 0 ? `${FRIENDS_CURSOR_PREFIX}${Math.max(0, offset - limit)}` : null,
+  };
+}
+
+function parseFriendsCursor(cursor: string): number | null {
+  if (cursor.length === 0) return 0;
+  if (!cursor.startsWith(FRIENDS_CURSOR_PREFIX)) return null;
+  const n = Number(cursor.slice(FRIENDS_CURSOR_PREFIX.length));
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function clampLimit(raw: number | undefined): number {
@@ -203,40 +323,40 @@ function clampLimit(raw: number | undefined): number {
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(raw)));
 }
 
-function ascendingByScore(a: ILeaderboardRecord, b: ILeaderboardRecord): number {
-  if (a.score !== b.score) return a.score - b.score;
-  return a.subscore - b.subscore;
+function toWire(r: ILeaderboardRecord, username: string): LbRecordWithRank {
+  return {
+    ownerId: r.ownerId,
+    username,
+    rank: typeof r.rank === 'number' ? r.rank : 0,
+    score: r.score,
+    subscore: r.subscore,
+    metadata: r.metadata as Record<string, unknown>,
+  };
 }
 
-function selectForView(
-  sorted: ILeaderboardRecord[],
-  view: LbView,
-  limit: number,
-  aroundUserId: string,
-): ILeaderboardRecord[] {
-  if (view === 'global') {
-    return sorted.slice(0, limit);
-  }
-  if (view === 'friends') {
-    // No friend graph yet (lands in a later chunk). For now friends
-    // means "just the caller".
-    return sorted.filter((r) => r.ownerId === aroundUserId);
-  }
-  // around_me: band of 3 on each side of the caller, clamped to limit.
-  const idx = sorted.findIndex((r) => r.ownerId === aroundUserId);
-  if (idx === -1) return sorted.slice(0, limit);
-  const half = Math.max(1, Math.floor(limit / 2));
-  const start = Math.max(0, idx - half);
-  return sorted.slice(start, start + limit);
+function emptyOutput(leaderboardId: string, view: LbView): LbGetOutput {
+  return {
+    leaderboardId,
+    view,
+    totalCount: 0,
+    records: [],
+    ownerRecord: null,
+    profiles: {},
+    nextCursor: null,
+    prevCursor: null,
+  };
 }
 
 /**
- * Read profile storage objects for the given userIds. Missing objects are
- * returned as empty profile views (displayName=userId, avatarUrl=null). The
- * shape is intentionally tolerant so Chunk 15 (real profile creation) can
- * populate the same key without changing the wire contract.
+ * Read profile storage objects for the given userIds. Users without a
+ * profile get their username (or, without one, their id) as the
+ * display name and no avatar.
  */
-function enrichProfiles(nk: INakama, ownerIds: string[]): Record<string, LbProfileView> {
+function enrichProfiles(
+  nk: INakama,
+  ownerIds: string[],
+  usernames: ReadonlyMap<string, string>,
+): Record<string, LbProfileView> {
   const result: Record<string, LbProfileView> = {};
   if (ownerIds.length === 0) return result;
   const keys = ownerIds.map((id) => ({
@@ -246,18 +366,19 @@ function enrichProfiles(nk: INakama, ownerIds: string[]): Record<string, LbProfi
   }));
   const objs = nk.storageRead(keys);
   for (const id of ownerIds) {
+    const fallbackName = usernames.get(id) || id;
     const obj = objs.find((o) => o.userId === id);
     if (obj) {
       const v = obj.value as Partial<LbProfileView> | null;
       result[id] = {
         userId: id,
-        displayName: typeof v?.displayName === 'string' ? v.displayName : id,
+        displayName: typeof v?.displayName === 'string' ? v.displayName : fallbackName,
         avatarUrl: typeof v?.avatarUrl === 'string' ? v.avatarUrl : null,
       };
     } else {
       result[id] = {
         userId: id,
-        displayName: id,
+        displayName: fallbackName,
         avatarUrl: null,
       };
     }

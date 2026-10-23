@@ -55,6 +55,8 @@ import { divisionForRating } from './division';
 import { ratingChange } from './rating';
 import { recordAbandon } from '../liveops/abandon_tracker';
 import type { RankedRecord } from './types';
+import { ensureRankedTable, rankedTableId } from './leaderboard';
+import { usernamesById } from '../leaderboards/usernames';
 
 export interface RankedSubscriberDeps {
   logger: ILogger;
@@ -228,8 +230,12 @@ export function handleRaceCompletedForRanked(
   );
   const { newRatings, deltas } = ratingChange({ ratings, positions, kFactors });
 
-  // 7. Persist updated records (CAS) + leaderboard writes.
-  ensureRankedLeaderboard(nk, active.id);
+  // 7. Persist updated records (CAS) + leaderboard writes. The table
+  //    order comes from the catalog (`desc`, plan T-13) and every row
+  //    carries the account username (HT-65).
+  ensureRankedTable(logger, nk, active.id);
+  const tableId = rankedTableId(active.id);
+  const usernames = usernamesById(logger, nk, snapshots.map((s) => s.userId));
   const outcomeDeltas: RankedSubscriberOutcome['deltas'] = [];
   for (let i = 0; i < snapshots.length; i += 1) {
     const snap = snapshots[i]!;
@@ -243,9 +249,9 @@ export function handleRaceCompletedForRanked(
     // topThree, racesPlayed++, new rating, etc.).
     updateRankedRecord(nk, nextRecord, snap.version);
     nk.leaderboardRecordWrite(
-      `ranked_${active.id}`,
+      tableId,
       snap.userId,
-      /* username */ '',
+      usernames.get(snap.userId) ?? '',
       newRating,
       /* subscore */ event.closedAt,
       /* meta */ {
@@ -395,28 +401,6 @@ function buildUpdatedRecord(
     lastRatedAt: nowMs,
     divisionId: divisionForRating(cfg, newRating),
   };
-}
-
-/**
- * Make sure the per-season `ranked_{seasonId}` leaderboard exists.
- * The stub throws on unknown leaderboards; production auto-creates
- * on first write but creating up-front keeps the stub happy.
- */
-function ensureRankedLeaderboard(nk: INakama, seasonId: string): void {
-  try {
-    nk.leaderboardCreate(
-      `ranked_${seasonId}`,
-      /* authoritative */ true,
-      /* sortOrder */ 'asc',
-      /* operator */ 'set',
-      /* resetSchedule */ '',
-      /* metadata */ {},
-      /* enableRanks */ true,
-    );
-  } catch {
-    // Already exists — fine. The stub returns no-op for re-creates, but
-    // production is even more permissive.
-  }
 }
 
 /**

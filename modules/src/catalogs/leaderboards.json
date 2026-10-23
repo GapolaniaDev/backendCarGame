@@ -36,6 +36,15 @@
       }
     }
   },
+  "seasonScoped": {
+    "ranked": {
+      "template": "ranked_{season}",
+      "operator": "set",
+      "sortOrder": "desc",
+      "resetSchedule": "",
+      "description": "Ranked rating per season (highest rating = rank 1)"
+    }
+  },
   "deprecated": [
     {
       "id": "race_score",

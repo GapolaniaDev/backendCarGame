@@ -62,6 +62,15 @@ const SAMPLE_CATALOG = {
       },
     },
   },
+  seasonScoped: {
+    ranked: {
+      template: 'ranked_{season}',
+      operator: 'set',
+      sortOrder: 'desc',
+      resetSchedule: '',
+      description: 'Ranked rating per season',
+    },
+  },
   deprecated: [],
 };
 

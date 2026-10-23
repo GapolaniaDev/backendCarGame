@@ -37,6 +37,7 @@ import {
   updateSeasonMeta,
 } from './ranked_repo';
 import { sendReward } from '../liveops/inbox';
+import { rankedStandings } from './leaderboard';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -195,17 +196,14 @@ export function lazyCloseSeason(
     return { closed: false, seasonId, nextSeasonId: null, rewards: [] };
   }
 
-  // (a) Read the leaderboard. The stub returns an empty list when no
-  //     records exist; in production this is the authoritative final
-  //     ranking for the closing season.
-  const lb = nk.leaderboardRecordsList(`ranked_${seasonId}`, [], 10_000);
+  // (a) Read the final standings from the `ranked_{seasonId}` table.
+  //     It is `desc` (plan T-13), so records come best rating first and
+  //     carry their rank; a season without a table has no standings.
   const standings: SeasonStandingRow[] = [];
-  // Records are returned in the leaderboard's sort order (asc score
-  // = ascending time = fastest first = rank 1). The stub already
-  // sorts by score ascending; we mirror that here.
   let rank = 1;
-  for (const rec of lb.records) {
-    standings.push({ userId: rec.ownerId, rating: rec.score, rank: rank++ });
+  for (const rec of rankedStandings(nk, seasonId, 10_000)) {
+    standings.push({ userId: rec.ownerId, rating: rec.score, rank: rec.rank ?? rank });
+    rank += 1;
   }
 
   // (b) Compute reward grants.

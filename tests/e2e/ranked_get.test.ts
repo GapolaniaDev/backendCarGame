@@ -253,4 +253,36 @@ describe('ranked_get (Phase 4 Chunk 6)', () => {
     if (r.ok) return;
     expect(r.error.code).toBe('BAD_REQUEST');
   });
+
+  // ── Plan T-13 ────────────────────────────────────────────────────────────
+
+  it('answers with the envelope (rank null) when the season table does not exist yet', () => {
+    env.nak.leaderboardDelete('ranked_season_2');
+    const r = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.seasonId).toBe('season_2');
+    expect(r.data.rank).toBeNull();
+  });
+
+  it('rank 1 is the best rating (the season table is descending)', () => {
+    call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });
+    call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-b', { callerUserId: 'user-b' });
+    env.nak.leaderboardRecordWrite('ranked_season_2', 'user-a', '', 980, 0, {}, 'set');
+    env.nak.leaderboardRecordWrite('ranked_season_2', 'user-b', '', 1040, 0, {}, 'set');
+    const a = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });
+    const b = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-b', { callerUserId: 'user-b' });
+    expect(a.ok && a.data.rank).toBe(2);
+    expect(b.ok && b.data.rank).toBe(1);
+  });
+
+  it('reading another player who never raced ranked writes nothing', () => {
+    const r = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a', userId: 'user-ghost' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.userId).toBe('user-ghost');
+    expect(r.data.rating).toBe(1000);
+    expect(env.fakeNakama.store.get('ranked/user-ghost/user-ghost')).toBeUndefined();
+  });
 });
+

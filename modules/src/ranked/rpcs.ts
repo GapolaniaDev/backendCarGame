@@ -2,7 +2,9 @@
 //
 // Returns the public ranked summary for `targetUserId` (defaults to
 // the caller). Always permits other-user reads — D11 marks ranked
-// data as public. No FORBIDDEN cross-user path exists.
+// data as public. No FORBIDDEN cross-user path exists. Reading another
+// player never writes: a player without a record gets the default
+// summary (plan T-13; before, the read created their record).
 //
 // Wire contract (matches `RankedGetOutput` in `ranked/types.ts`):
 //   input:  { userId?: string, callerUserId: string }
@@ -22,7 +24,9 @@
 //      carries over, racesPlayed resets).
 //   8. Compute division via `divisionForRating`, divisionProgress
 //      inside the band, daysLeftInSeason.
-//   9. Lookup rank via `leaderboardRecordsList` filtered to the target.
+//   9. Lookup rank via the owner record of `ranked_{seasonId}` (`desc`:
+//      rank 1 = best rating); null while the table or the record is
+//      missing (no HTTP 500 before the season's first ranked race).
 //   10. Return the wire output.
 
 import { err, ok, toJson, type Resp } from '../core/response';
@@ -30,6 +34,7 @@ import { checkRateLimit } from '../core/rate_limit';
 import { assertNotInMaintenance } from '../core/liveops';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { RATE_LIMITS } from './constants';
+import { rankedRankOf } from './leaderboard';
 import { getAbandonsLast24h, isBlocked } from '../liveops/abandon_tracker';
 import {
   findActiveSeason,
@@ -138,14 +143,16 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     );
   }
 
-  // Read or migrate the target's record.
-  const { record } = ensureCurrentRecord(nk, targetUserId, activeId, cfg.initialRating, now);
+  // Read or migrate the caller's record; another player's is only read.
+  const record = targetUserId === callerId
+    ? ensureCurrentRecord(nk, targetUserId, activeId, cfg.initialRating, now).record
+    : peekCurrentRecord(nk, targetUserId, activeId, cfg, now);
 
   // Compute output fields.
   const division = divisionForRating(cfg, record.rating);
   const divisionProgress = divisionProgressFor(cfg, record.rating, division);
   const daysLeft = daysLeftInSeason(active.endsAt, now);
-  const rank = lookupRank(nk, activeId, targetUserId);
+  const rank = lookupRank(logger, nk, activeId, targetUserId);
 
   // Phase 4 Chunk 9 — abandon counter + block status. Both reads are
   // lazy-GC on the abandon record, but they're cheap (a single user
@@ -229,6 +236,31 @@ function ensureCurrentRecord(
   return { record: carried, version: r.version };
 }
 
+/**
+ * Read-only twin of `ensureCurrentRecord` for another player: the
+ * default record when they have none, the season-migrated view when
+ * theirs is from an older season. Nothing is written.
+ */
+function peekCurrentRecord(
+  nk: INakama,
+  userId: string,
+  seasonId: string,
+  cfg: RankedConfig,
+  nowMs: number,
+): RankedRecord {
+  const existing = readRankedRecord(nk, userId);
+  if (existing === null) return defaultRecord(userId, seasonId, cfg, cfg.initialRating, nowMs);
+  if (existing.record.seasonId === seasonId) return existing.record;
+  return {
+    ...existing.record,
+    seasonId,
+    racesPlayed: 0,
+    wins: 0,
+    topThree: 0,
+    divisionId: divisionForRating(cfg, existing.record.rating),
+  };
+}
+
 function defaultRecord(
   userId: string,
   seasonId: string,
@@ -288,19 +320,20 @@ function syntheticSeason(meta: { seasonId: string; startedAt: number; endsAt: nu
 }
 
 /**
- * Look up the target's global rank in the season's leaderboard. The
- * stub returns `null` for owners that haven't been written; the
- * production `leaderboardRecordsList` with a single ownerId returns
- * the entry (or nothing) plus the owner's rank when a fresh ordered
- * list is also available. To keep the stub simple we list up to 10k
- * records and search.
+ * The target's global rank in the season's `desc` table (1 = best
+ * rating), or null without a record or a table. A failed lookup only
+ * costs the rank, never the whole summary.
  */
-function lookupRank(nk: INakama, seasonId: string, userId: string): number | null {
-  const lb = nk.leaderboardRecordsList(`ranked_${seasonId}`, [], 10_000);
-  // Stub returns records sorted by score ascending. Production rank
-  // would come from `leaderboardRecordsList`'s envelope's `rank`
-  // field; the stub doesn't populate that.
-  const sorted = lb.records.slice().sort((a, b) => a.score - b.score);
-  const idx = sorted.findIndex((r) => r.ownerId === userId);
-  return idx === -1 ? null : idx + 1;
+function lookupRank(logger: ILogger, nk: INakama, seasonId: string, userId: string): number | null {
+  try {
+    return rankedRankOf(nk, seasonId, userId);
+  } catch (e) {
+    logger.warn(
+      'ranked_get rank lookup failed season=%s user=%s: %s',
+      seasonId,
+      userId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return null;
+  }
 }

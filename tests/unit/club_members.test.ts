@@ -164,13 +164,17 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
   });
 
   describe('resolveUsername', () => {
-    it('returns "unknown" when usersGetId is unstubbed', () => {
+    it('returns the account username from usersGetId', () => {
       const cache = new Map<string, string>();
-      const u1 = resolveUsername(fake.nakama, 'user-1', cache);
+      expect(resolveUsername(fake.nakama, 'user-1', cache)).toBe('name-user-1');
+      expect(cache.get('user-1')).toBe('name-user-1');
+    });
+
+    it('returns "unknown" when the account is gone', () => {
+      // The stub's usersGetId (like 3.27) skips ids without an account;
+      // the system user has none.
+      const u1 = resolveUsername(fake.nakama, '00000000-0000-0000-0000-000000000000', new Map());
       expect(u1).toBe('unknown');
-      // Cache may or may not be populated depending on whether the
-      // stub throws — both behaviors are acceptable per the contract
-      // ("returns 'unknown' when the account is gone").
     });
 
     it('returns the same value for the same user across calls', () => {

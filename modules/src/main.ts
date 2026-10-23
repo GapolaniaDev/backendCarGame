@@ -27,6 +27,7 @@ import {
   race_submit_result,
 } from './race/rpcs';
 import { ensureLeaderboards } from './leaderboards/ensure';
+import { activeRankedTables } from './ranked/leaderboard';
 import { beforeWriteLeaderboardRecordGuard } from './leaderboards/hooks';
 import { ensureClubWeekLeaderboard } from './clubs/leaderboard_init';
 import { event_list } from './events/rpcs';
@@ -171,10 +172,12 @@ function InitModule(
   ensureRuntimeState(nk, logger, { boot: true });
 
   // Boot-only side effects (storage / leaderboard tables), not per VM.
-  // Ensure every authoritative leaderboard exists and drop the deprecated
-  // client-writable `race_score` table; the client-write guard hook is
-  // registered with the other hooks below.
-  ensureLeaderboards(logger, nk);
+  // Ensure every authoritative leaderboard exists with the catalog's
+  // order (recreating one that differs, plan T-13 / R-02), including the
+  // active season's ranked table, and drop the deprecated client-writable
+  // `race_score` table; the client-write guard hook is registered with
+  // the other hooks below.
+  ensureLeaderboards(logger, nk, activeRankedTables(Date.now()));
   // Phase 7 Chunk 5: ensure the `club_week` authoritative table
   // exists with the Monday 00:00 UTC reset schedule. Idempotent —
   // re-creating an existing table is a no-op.

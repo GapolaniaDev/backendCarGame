@@ -5,6 +5,8 @@ import {
   getLeaderboardTable,
   getLeaderboardTables,
   getLapAllTables,
+  getRankedTable,
+  resolveLeaderboardTable,
   getTtAllTables,
   getTtWeekTables,
   getWinsWeekTable,
@@ -64,6 +66,15 @@ const SAMPLE = {
         resetSchedule: '',
         description: 'Best lap per (track, class)',
       },
+    },
+  },
+  seasonScoped: {
+    ranked: {
+      template: 'ranked_{season}',
+      operator: 'set',
+      sortOrder: 'desc',
+      resetSchedule: '',
+      description: 'Ranked rating per season',
     },
   },
   deprecated: [{ id: 'race_score', reason: 'replaced' }],
@@ -139,6 +150,39 @@ describe('leaderboards catalog', () => {
         ],
       }, FAKE_NK),
     ).toThrow(/table id must match/);
+  });
+
+  it('season-scoped ranked table: id, desc order and set operator come from the catalog (T-13)', () => {
+    loadLeaderboardsCatalog(LOGGER, SAMPLE, FAKE_NK);
+    const t = getRankedTable('season_2');
+    expect(t.id).toBe('ranked_season_2');
+    expect(t.sortOrder).toBe('desc');
+    expect(t.operator).toBe('set');
+    // Season tables are resolved on demand, never expanded at boot.
+    expect(getLeaderboardTables().some((x) => x.id.startsWith('ranked_'))).toBe(false);
+    expect(() => getRankedTable('Bad Season!')).toThrow(/invalid season id/);
+  });
+
+  it('resolveLeaderboardTable accepts catalog tables and season tables only', () => {
+    loadLeaderboardsCatalog(LOGGER, SAMPLE, FAKE_NK);
+    expect(resolveLeaderboardTable('wins_week')?.sortOrder).toBe('desc');
+    expect(resolveLeaderboardTable('ranked_season_3')?.source).toBe('ranked');
+    expect(resolveLeaderboardTable('ranked_')).toBeUndefined();
+    expect(resolveLeaderboardTable('does_not_exist')).toBeUndefined();
+  });
+
+  it('rejects a catalog without the ranked season pattern', () => {
+    expect(() =>
+      loadLeaderboardsCatalog(LOGGER, { ...SAMPLE, seasonScoped: {} }, FAKE_NK),
+    ).toThrow(/seasonScoped.ranked is required/);
+  });
+
+  it('the bundled catalog sorts wins_week and the ranked table descending (T-13)', async () => {
+    const bundled = (await import('../../modules/src/catalogs/leaderboards.json')).default;
+    loadLeaderboardsCatalog(LOGGER, bundled as never, FAKE_NK);
+    expect(getLeaderboardTable('wins_week')?.sortOrder).toBe('desc');
+    expect(getRankedTable('season_2').sortOrder).toBe('desc');
+    expect(getLeaderboardTable('tt_neon_blvd_D_all')?.sortOrder).toBe('asc');
   });
 
   it('throws when getLeaderboardTables is called before load', () => {

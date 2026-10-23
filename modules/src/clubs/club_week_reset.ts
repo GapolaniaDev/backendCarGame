@@ -223,14 +223,14 @@ function awardWeeklyReward(
   oldWeek: string,
   nowMs: number,
 ): WeeklyRewardResult {
-  // 1. Read the leaderboard top-N. Use limit = 1 to identify the
-  //    winner; we'll re-read members below.
+  // 1. Read the leaderboard top-N (the table is `desc`, so the first
+  //    record is the winner); we'll re-read members below. 3.27 takes
+  //    `overrideExpiry` as the 5th argument, not a sort order: the old
+  //    'desc' there made the call throw.
   const top = nk.leaderboardRecordsList(
     CLUB_WEEK_LEADERBOARD_ID,
     /* ownerIds */ [],
     /* limit */ WEEKLY_REWARD_MAX_RECIPIENTS,
-    /* cursor */ '',
-    /* sortOrder */ 'desc',
   );
   const top1 = top.records[0];
   if (top1 === undefined) {

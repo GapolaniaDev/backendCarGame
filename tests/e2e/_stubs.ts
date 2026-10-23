@@ -18,7 +18,9 @@ import type {
   IContext,
   IInitializer,
   ILeaderboard,
+  ILeaderboardInfo,
   ILeaderboardRecord,
+  ILeaderboardRecordList,
   ILogger,
   IMatchmakerMatchedEnvelope,
   IMatchmakerResult,
@@ -522,12 +524,13 @@ class FakeNakamaCore {
     const lb = {
       id,
       authoritative,
-      sortOrder,
+      sortOrder: sortOrder === 'desc' || sortOrder === 'descending' ? 'desc' : 'asc',
       operator,
       resetSchedule,
       metadata,
     } as unknown as ILeaderboard;
     this.leaderboards.set(id, lb);
+    this.deletedLeaderboards.delete(id);
     return { leaderboard: lb, created: true };
   }
 
@@ -542,6 +545,27 @@ class FakeNakamaCore {
 
   leaderboardList(): { leaderboards: ILeaderboard[]; cursor: string } {
     return { leaderboards: Array.from(this.leaderboards.values()), cursor: '' };
+  }
+
+  /** 3.27 shape: sortOrder 0 asc / 1 desc, operator by its proto name. Unknown ids are skipped. */
+  leaderboardsGetId(ids: string[]): ILeaderboardInfo[] {
+    const opName: Record<string, string> = { best: 'best', set: 'set', incr: 'increment', decr: 'decrement' };
+    const out: ILeaderboardInfo[] = [];
+    for (const id of ids) {
+      const lb = this.leaderboards.get(id) as unknown as
+        | { id: string; sortOrder: string; operator: string; metadata: Record<string, unknown>; authoritative: boolean }
+        | undefined;
+      if (!lb) continue;
+      out.push({
+        id,
+        sortOrder: lb.sortOrder === 'desc' ? 1 : 0,
+        operator: opName[lb.operator] ?? lb.operator,
+        metadata: lb.metadata,
+        createTime: 0,
+        authoritative: lb.authoritative,
+      });
+    }
+    return out;
   }
 
   /**
@@ -564,36 +588,40 @@ class FakeNakamaCore {
     score: number,
     subscore: number,
     metadata: Record<string, unknown>,
-    _operatorOverride?: 'best' | 'set' | 'incr' | 'decr',
+    operatorOverride?: 'best' | 'set' | 'incr' | 'decr',
   ): { record: ILeaderboardRecord } {
     const lb = this.leaderboards.get(id);
     if (!lb) {
       throw new Error(`leaderboardRecordWrite: unknown leaderboard "${id}"`);
     }
     const prev = this.leaderboardRecords.get(id)?.get(ownerId);
+    const operator = operatorOverride ?? (lb.operator as unknown as string);
+    const desc = this.isDesc(id);
 
-    // Honor the operator: 'best' keeps the lower score, others set/incr.
+    // Honor the operator: 'best' keeps the better score for the table's
+    // order, 'incr' adds, 'set' replaces.
     let next = score;
-    if (lb.operator === 'best' && prev !== undefined) {
-      const better = lb.sortOrder === 'asc' || lb.sortOrder === 'ascending'
-        ? score < prev.score
-        : score > prev.score;
+    if (operator === 'best' && prev !== undefined) {
+      const better = desc ? score > prev.score : score < prev.score;
       if (!better) {
         return { record: prev };
       }
       next = score;
-    } else if (lb.operator === 'incr' && prev !== undefined) {
+    } else if (operator === 'incr' && prev !== undefined) {
       next = prev.score + score;
+    } else if (operator === 'decr' && prev !== undefined) {
+      next = prev.score - score;
     }
 
     const now = new Date().toISOString();
     const rec: ILeaderboardRecord = {
       leaderboardId: id,
       ownerId,
-      username,
+      // 3.27 stores '' as NULL and keeps the previous name (COALESCE).
+      username: username !== '' ? username : prev?.username ?? null,
       score: next,
       subscore,
-      numScore: 1,
+      numScore: (prev?.numScore ?? 0) + 1,
       metadata,
       createTime: prev?.createTime ?? now,
       updateTime: now,
@@ -614,19 +642,119 @@ class FakeNakamaCore {
     this.leaderboardRecords.get(id)?.delete(ownerId);
   }
 
+  /**
+   * 3.27 semantics: the table's own order (score, subscore, owner id),
+   * ranks from 1, `limit` 0/absent → no page (only `ownerRecords`),
+   * opaque cursors, `rankCount`, and "leaderboard not found" for an
+   * unknown table. The 5th argument is `overrideExpiry` (ignored).
+   */
   leaderboardRecordsList(
     id: string,
-    _ownerIds: string[],
+    ownerIds: string[] | null,
     limit?: number,
-    _cursor?: string,
-    sortOrder?: 'asc' | 'desc',
-  ): { records: ILeaderboardRecord[]; ownerRecords: ILeaderboardRecord[]; nextCursor: string; prevCursor: string } {
-    const bucket = this.leaderboardRecords.get(id);
-    const records = bucket ? Array.from(bucket.values()) : [];
-    const desc = sortOrder === 'desc';
-    records.sort((a, b) => desc ? b.score - a.score : a.score - b.score);
-    const slice = limit !== undefined ? records.slice(0, limit) : records;
-    return { records: slice, ownerRecords: [], nextCursor: '', prevCursor: '' };
+    cursor?: string,
+    _overrideExpiry?: number,
+  ): ILeaderboardRecordList {
+    const sorted = this.rankedRecords(id);
+    let records: ILeaderboardRecord[] = [];
+    let nextCursor: string | null = null;
+    let prevCursor: string | null = null;
+    if (limit !== undefined && limit !== null && limit !== 0) {
+      const start = this.cursorStart(id, cursor ?? '');
+      records = sorted.slice(start, start + limit);
+      nextCursor = start + limit < sorted.length ? this.cursorAt(id, start + limit) : null;
+      prevCursor = start > 0 ? this.cursorAt(id, Math.max(0, start - limit)) : null;
+    }
+    const owners = new Set(ownerIds ?? []);
+    const ownerRecords = sorted.filter((r) => owners.has(r.ownerId));
+    return { records, ownerRecords, nextCursor, prevCursor, rankCount: sorted.length };
+  }
+
+  /** 3.27 `getLeaderboardRecordsHaystack` window (no cursor); empty when the owner has no record. */
+  leaderboardRecordsHaystack(
+    id: string,
+    ownerId: string,
+    limit = 10,
+    cursor?: string,
+    _overrideExpiry?: number,
+  ): ILeaderboardRecordList {
+    if (limit < 1 || limit > 100) throw new TypeError('limit must be 1-100');
+    if (cursor) return this.leaderboardRecordsList(id, [], limit, cursor);
+    const sorted = this.rankedRecords(id);
+    const idx = sorted.findIndex((r) => r.ownerId === ownerId);
+    if (idx === -1) {
+      return { records: [], ownerRecords: [], nextCursor: null, prevCursor: null, rankCount: 0 };
+    }
+    const above = sorted.slice(Math.max(0, idx - limit), idx);
+    let secondLimit = Math.floor(limit / 2);
+    if (above.length < secondLimit) secondLimit = limit - above.length;
+    const below = sorted.slice(idx + 1, idx + 1 + secondLimit);
+    const window = [...above, sorted[idx]!, ...below];
+    let start = window.length - limit;
+    if (start < 0 || above.length < secondLimit) start = 0;
+    const records = window.slice(start, start + limit);
+    const first = sorted.indexOf(records[0]!);
+    const last = sorted.indexOf(records[records.length - 1]!);
+    return {
+      records,
+      ownerRecords: [],
+      nextCursor: last + 1 < sorted.length ? this.cursorAt(id, last + 1) : null,
+      prevCursor: first > 0 ? this.cursorAt(id, Math.max(0, first - limit)) : null,
+      rankCount: sorted.length,
+    };
+  }
+
+  /** 3.27 `usersGetId`: every non-system id is an account named `name-<id>` unless `users` says otherwise. */
+  usersGetId(userIds: string[]): IUser[] {
+    const now = new Date().toISOString();
+    return userIds
+      .filter((id) => id !== SYSTEM_USER_ID)
+      .map((id) => this.users.get(id) ?? {
+        userId: id,
+        username: `name-${id}`,
+        createTime: now,
+        updateTime: now,
+        disableTime: null,
+        metadata: {},
+      } as unknown as IUser);
+  }
+
+  private isDesc(id: string): boolean {
+    const lb = this.leaderboards.get(id) as unknown as { sortOrder: string } | undefined;
+    return lb?.sortOrder === 'desc';
+  }
+
+  /** Every record of `id` in table order with its rank; throws like 3.27 for an unknown table. */
+  private rankedRecords(id: string): ILeaderboardRecord[] {
+    if (!this.leaderboards.has(id)) {
+      throw new Error('error listing leaderboard records: leaderboard not found');
+    }
+    const sign = this.isDesc(id) ? -1 : 1;
+    const records = Array.from(this.leaderboardRecords.get(id)?.values() ?? []);
+    records.sort((a, b) => {
+      if (a.score !== b.score) return sign * (a.score - b.score);
+      if (a.subscore !== b.subscore) return sign * (a.subscore - b.subscore);
+      return sign * (a.ownerId < b.ownerId ? -1 : a.ownerId > b.ownerId ? 1 : 0);
+    });
+    return records.map((r, i) => ({ ...r, rank: i + 1 }));
+  }
+
+  private cursorAt(id: string, index: number): string {
+    return Buffer.from(JSON.stringify({ id, index })).toString('base64');
+  }
+
+  private cursorStart(id: string, cursor: string): number {
+    if (cursor === '') return 0;
+    let parsed: { id?: unknown; index?: unknown };
+    try {
+      parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8')) as { id?: unknown; index?: unknown };
+    } catch {
+      throw new Error('error listing leaderboard records: invalid cursor');
+    }
+    if (parsed.id !== id || typeof parsed.index !== 'number') {
+      throw new Error('error listing leaderboard records: invalid cursor');
+    }
+    return parsed.index;
   }
 
   // ── Groups (for clubs) ──
