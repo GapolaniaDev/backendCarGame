@@ -889,7 +889,7 @@ export function club_promote_impl(
         userId: caller.id,
         value: { ...actor!.record, role: s.to } as unknown as Record<string, unknown>,
         permissionRead: 1,
-        permissionWrite: 1,
+        permissionWrite: 0,
         version: actor!.version,
       };
     }
@@ -899,7 +899,7 @@ export function club_promote_impl(
       userId: targetUserId,
       value: { ...target!.record, role: s.to } as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
       version: target!.version,
     };
   });
@@ -910,7 +910,7 @@ export function club_promote_impl(
     userId: meta.record.leaderId,
     value: { ...meta.record, leaderId: targetUserId } as unknown as Record<string, unknown>,
     permissionRead: 2,
-    permissionWrite: 1,
+    permissionWrite: 0,
     version: meta.version,
   });
 

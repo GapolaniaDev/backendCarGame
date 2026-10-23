@@ -17,6 +17,7 @@ import { walletAdjust } from './wallet_admin';
 import { sendInboxBulk } from './inbox_admin';
 import { sanitizeSession, removePlayer } from './sanitize';
 import { cleanupRaceSessions } from './cleanup';
+import { migrateStoragePermissions } from '../core/storage_permissions';
 import type {
   AdminCleanupRaceSessionsInput,
   AdminCleanupRaceSessionsOutput,
@@ -172,6 +173,38 @@ export const admin_cleanup_race_sessions_impl: RpcHandler = (_ctx, logger, nk, b
   return JSON.stringify(ok(data));
 };
 export const admin_cleanup_race_sessions: RpcHandler = withRuntime(admin_cleanup_race_sessions_impl);
+
+// ─── admin_migrate_permissions ─────────────────────────────────────────────
+
+/**
+ * One-shot rewrite of the objects created before plan T-18 (D-10): write 0
+ * in every server collection, read 0 in `analytics_events`. Resumable:
+ * `{collection, cursor}` from a previous answer's `next`; `maxObjects`
+ * bounds one call (default 2000).
+ */
+export const admin_migrate_permissions_impl: RpcHandler = (_ctx, logger, nk, body) => {
+  const pre = adminPrelude(_ctx, logger, nk, body);
+  if (!pre.ok) return pre.error;
+  const raw = withoutAdminKey(pre.raw);
+  const str = (k: string): string | undefined => (typeof raw[k] === 'string' && (raw[k] as string).length > 0 ? raw[k] as string : undefined);
+  const collection = str('collection');
+  const cursor = str('cursor');
+  const maxObjects = typeof raw['maxObjects'] === 'number' ? raw['maxObjects'] as number : undefined;
+  try {
+    const report = migrateStoragePermissions(nk, logger, {
+      ...(collection !== undefined ? { collection } : {}),
+      ...(cursor !== undefined ? { cursor } : {}),
+      ...(maxObjects !== undefined ? { maxObjects } : {}),
+    });
+    return JSON.stringify(ok(report));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message.startsWith('unknown collection')) return JSON.stringify(err('BAD_REQUEST', message));
+    logger.error('admin_migrate_permissions failed: %s', message);
+    return JSON.stringify(err('INTERNAL', 'permission migration failed; retry with the last next cursor'));
+  }
+};
+export const admin_migrate_permissions: RpcHandler = withRuntime(admin_migrate_permissions_impl);
 
 // Side-effect: keep ADMIN_USER_ID as a compile-time marker so
 // TypeScript complains if every reference is removed (would indicate

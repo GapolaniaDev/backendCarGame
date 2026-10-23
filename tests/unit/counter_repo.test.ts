@@ -156,8 +156,8 @@ describe('counter_repo: readAchievements', () => {
 });
 
 describe('counter_repo: permissions', () => {
-  it('server-owned read/write bits = 1 (Phase 4/5 convention)', () => {
+  it('owner read, server-only write (plan T-18, D-10)', () => {
     expect(SERVER_OWNED_READ).toBe(1);
-    expect(SERVER_OWNED_WRITE).toBe(1);
+    expect(SERVER_OWNED_WRITE).toBe(0);
   });
 });

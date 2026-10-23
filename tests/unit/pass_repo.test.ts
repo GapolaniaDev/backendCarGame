@@ -119,7 +119,7 @@ describe('pass_repo (Phase 6 Chunk 6) — writePassCreate + writePassUpdate', ()
     const stored = fake.store.get(`${PASS_COLLECTION}/u1/u1`)!;
     expect(stored.value).toEqual(rec);
     expect(stored.permissionRead).toBe(1);
-    expect(stored.permissionWrite).toBe(1);
+    expect(stored.permissionWrite).toBe(0);
   });
 
   it('writePassUpdate CAS-updates an existing row (version bumps)', () => {

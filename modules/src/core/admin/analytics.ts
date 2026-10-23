@@ -22,6 +22,11 @@ import { SYSTEM_USER_ID } from '../../race/constants';
 import { loadLiveopsConfig } from '../../liveops/config';
 
 export const ANALYTICS_COLLECTION = 'analytics_events';
+/**
+ * Server-only read (plan T-18, D-10): events such as `friend_added` and
+ * `player_blocked` name other players, so no client may list them.
+ */
+export const ANALYTICS_PERMISSION_READ = 0;
 
 export type AnalyticsEventName =
   | 'admin_action'
@@ -121,7 +126,7 @@ export function emit(
         key,
         userId: ownerId,
         value: value as unknown as Record<string, unknown>,
-        permissionRead: 2,
+        permissionRead: ANALYTICS_PERMISSION_READ,
         permissionWrite: 0,
       },
     ]);
@@ -183,7 +188,7 @@ export function emit(
         key,
         userId: ownerId,
         value: { schemaVersion: 1, id: key, ts, name, props, webhook: webhookBlock } as unknown as Record<string, unknown>,
-        permissionRead: 2,
+        permissionRead: ANALYTICS_PERMISSION_READ,
         permissionWrite: 0,
       },
     ]);

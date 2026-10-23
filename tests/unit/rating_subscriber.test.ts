@@ -215,7 +215,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           divisionId: 'plata',
         } as unknown as Record<string, unknown>,
         permissionRead: 2,
-        permissionWrite: 1,
+        permissionWrite: 0,
       },
       {
         collection: RANKED_COLLECTION,
@@ -235,7 +235,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           divisionId: 'plata',
         } as unknown as Record<string, unknown>,
         permissionRead: 2,
-        permissionWrite: 1,
+        permissionWrite: 0,
       },
     ]);
     const ev = event({
@@ -291,7 +291,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           rating: 1000, peak: 1000, racesPlayed: 5, wins: 0, topThree: 0,
           recentAbandons: 2, lastRatedAt: 1, divisionId: 'plata',
         } as unknown as Record<string, unknown>,
-        permissionRead: 2, permissionWrite: 1,
+        permissionRead: 2, permissionWrite: 0,
       },
       {
         collection: RANKED_COLLECTION,
@@ -304,7 +304,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           rating: 1000, peak: 1000, racesPlayed: 5, wins: 0, topThree: 0,
           recentAbandons: 0, lastRatedAt: 1, divisionId: 'plata',
         } as unknown as Record<string, unknown>,
-        permissionRead: 2, permissionWrite: 1,
+        permissionRead: 2, permissionWrite: 0,
       },
     ]);
     const ev = event({
@@ -330,7 +330,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           rating: 1050, peak: 1050, racesPlayed: 3, wins: 1, topThree: 1,
           recentAbandons: 0, lastRatedAt: 1, divisionId: 'plata',
         } as unknown as Record<string, unknown>,
-        permissionRead: 2, permissionWrite: 1,
+        permissionRead: 2, permissionWrite: 0,
       },
       {
         collection: RANKED_COLLECTION,
@@ -343,7 +343,7 @@ describe('ranked subscriber (Phase 4 Chunk 7) — rating math', () => {
           rating: 950, peak: 950, racesPlayed: 3, wins: 0, topThree: 0,
           recentAbandons: 0, lastRatedAt: 1, divisionId: 'plata',
         } as unknown as Record<string, unknown>,
-        permissionRead: 2, permissionWrite: 1,
+        permissionRead: 2, permissionWrite: 0,
       },
     ]);
     const ev = event({

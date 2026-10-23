@@ -7,8 +7,8 @@
 //   - weekly:   collection `missions_weekly`,   key `${userId}/${weekUtc}`
 //   - achv:     collection `achievements`,      key `${userId}`
 //
-// Permissions: server-owned (PermissionRead=1, PermissionWrite=1 per
-// Phase 4/5 convention — server-side RPC writes via the subscriber).
+// Permissions: owner read, server-only write (PermissionRead=1,
+// PermissionWrite=0, plan T-18 / D-10).
 //
 // Note: schema-version migrators are NOT wired here because Phase 6
 // storage is brand new (no migration history yet). When v2 lands, the
@@ -21,9 +21,9 @@ export const MISSIONS_DAILY_COLLECTION = 'missions_daily';
 export const MISSIONS_WEEKLY_COLLECTION = 'missions_weekly';
 export const ACHIEVEMENTS_COLLECTION = 'achievements';
 
-/** Server-owned permission bits (Phase 4/5 convention). */
+/** Owner may read, only the server writes (plan T-18, D-10: a client write is rejected). */
 export const SERVER_OWNED_READ = 1;
-export const SERVER_OWNED_WRITE = 1;
+export const SERVER_OWNED_WRITE = 0;
 
 export function dailyMissionsKey(userId: string, dateUtc: string): string {
   return `${userId}/${dateUtc}`;

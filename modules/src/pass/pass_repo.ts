@@ -4,7 +4,7 @@
 //   - collection `pass`, key `${userId}`, userId `${userId}`
 //     (single row per player; seasonId is inside the record)
 //
-// Permissions: server-owned (Phase 4/5 convention).
+// Permissions: owner read, server-only write (plan T-18, D-10).
 //
 // The row is LAZY-created by `pass_get` (analog of D13 for
 // achievements): a player who never opened the pass has no row. The

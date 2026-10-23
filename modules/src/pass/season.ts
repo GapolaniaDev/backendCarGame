@@ -23,9 +23,9 @@ import { SYSTEM_USER_ID } from '../race/constants';
 import { getPassCatalog } from './catalog';
 import { readPassRecord, writePassUpdate } from './pass_repo';
 
-/** Server-owned permission bits (Phase 4/5 convention). */
+/** Owner may read, only the server writes (plan T-18, D-10: a client write is rejected). */
 export const SERVER_OWNED_READ = 1;
-export const SERVER_OWNED_WRITE = 1;
+export const SERVER_OWNED_WRITE = 0;
 
 export const SEASON_CLOSE_COLLECTION = 'season_close';
 

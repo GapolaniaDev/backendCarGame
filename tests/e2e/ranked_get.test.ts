@@ -233,7 +233,7 @@ describe('ranked_get (Phase 4 Chunk 6)', () => {
     expect(stored).toBeDefined();
     // Public read = 2, owner write = 1 (per ranked_repo constants).
     expect(stored?.permissionRead).toBe(2);
-    expect(stored?.permissionWrite).toBe(1);
+    expect(stored?.permissionWrite).toBe(0);
   });
 
   it('divisionProgress reflects the position within the band', () => {

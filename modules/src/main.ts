@@ -103,7 +103,9 @@ import {
   admin_sanitize_session,
   admin_remove_player,
   admin_cleanup_race_sessions,
+  admin_migrate_permissions,
 } from './admin/rpcs';
+import { beforeWriteStorageObjectsGuard } from './core/storage_permissions';
 import {
   tournament_list,
   tournament_get,
@@ -160,6 +162,8 @@ import {
 const matchmakerMatched = withRuntimeHook(matchmakerMatchedImpl);
 const afterAuthenticate = withRuntimeHook(afterAuthenticateAutoCreate);
 const beforeWriteLeaderboardRecord = withRuntimeHook(beforeWriteLeaderboardRecordGuard);
+// Plan T-18 (D-10): client storage writes only to the cloud-save collections.
+const beforeWriteStorageObjects = beforeWriteStorageObjectsGuard;
 
 function InitModule(
   _ctx: IContext,
@@ -227,6 +231,7 @@ function InitModule(
     initializer.registerAfterAuthenticateEmail(afterAuthenticate);
     initializer.registerAfterAuthenticateApple(afterAuthenticate);
     initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecord);
+    initializer.registerBeforeWriteStorageObjects(beforeWriteStorageObjects);
     // Periodic jobs (tournaments, events, subscriptions) run in this
     // service match: the runtime has no setInterval (audit PC-09).
     initializer.registerMatch('service_ticker', {
@@ -300,6 +305,7 @@ function InitModule(
     initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);
     initializer.registerRpc('admin_remove_player', admin_remove_player);
     initializer.registerRpc('admin_cleanup_race_sessions', admin_cleanup_race_sessions);
+    initializer.registerRpc('admin_migrate_permissions', admin_migrate_permissions);
     // Phase 8 Chunk 4: anti-cheat admin RPCs (6).
     initializer.registerRpc('admin_marks_list', admin_marks_list);
     initializer.registerRpc('admin_marks_partials_view', admin_marks_partials_view);

@@ -125,7 +125,7 @@ export function writeClubMetadataCreate(
       userId: record.leaderId,
       value: record as unknown as Record<string, unknown>,
       permissionRead: 2,
-      permissionWrite: 1,
+      permissionWrite: 0,
     },
   ]);
   const first = (objs as Array<{ version?: string }>)[0];
@@ -144,7 +144,7 @@ export function writeClubMetadataUpdate(
       userId: record.leaderId,
       value: record as unknown as Record<string, unknown>,
       permissionRead: 2,
-      permissionWrite: 1,
+      permissionWrite: 0,
       version,
     },
   ]);
@@ -163,7 +163,7 @@ export function writeClubCreated(
       userId: record.userId,
       value: record as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
     },
   ]);
   const first = (objs as Array<{ version?: string }>)[0];

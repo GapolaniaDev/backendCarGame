@@ -5,7 +5,7 @@
 // auto-create — a player who never opened the achievements tab has no
 // row, which is exactly what D13 asks for.
 //
-// Permission bits: server-owned (Phase 4/5 convention).
+// Permission bits: owner read, server-only write (plan T-18, D-10).
 // CAS retry budget: 3 attempts, same as `claimDailyMission`.
 
 import type { IStorageObject, ILogger, INakama } from '../nkruntime';

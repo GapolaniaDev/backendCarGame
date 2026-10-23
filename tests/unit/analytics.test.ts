@@ -112,7 +112,7 @@ describe('emit()', () => {
     expect(typeof v['ts']).toBe('number');
     expect(v['name']).toBe('session_started');
     expect((v['props'] as Record<string, unknown>)['sessionId']).toBe('s-1');
-    expect(row!.permissionRead).toBe(2);
+    expect(row!.permissionRead).toBe(0);
     expect(row!.permissionWrite).toBe(0);
     expect(row!.userId).toBe(SYSTEM_USER_ID);
 

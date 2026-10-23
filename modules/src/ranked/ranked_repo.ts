@@ -17,7 +17,7 @@ export const SEASON_META_COLLECTION = 'ranked_seasons_meta';
 /** Public-read for the record so the lb_get profile enrichment can read it
  *  directly when a player inspects another player's rank. */
 export const RANKED_OWNER_READ = 2; // public
-export const RANKED_OWNER_WRITE = 1; // owner-only (server bypasses via storageWrite)
+export const RANKED_OWNER_WRITE = 0; // server-only (plan T-18, D-10)
 
 /** Persisted shape: a RankedRecord whose schemaVersion is locked to 1. */
 export interface PersistedRankedRecord

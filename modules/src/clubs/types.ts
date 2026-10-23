@@ -208,7 +208,7 @@ export function asClubMetadataWrite(rec: ClubMetadata): IStorageObject {
     userId: rec.leaderId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 2, // public
-    permissionWrite: 1, // server-owned write
+    permissionWrite: 0, // server-only write (plan T-18, D-10)
   };
 }
 
@@ -219,6 +219,6 @@ export function asClubCreatedWrite(rec: ClubCreatedRecord): IStorageObject {
     userId: rec.userId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }

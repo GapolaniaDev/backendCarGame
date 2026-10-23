@@ -117,7 +117,7 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
         value: { schemaVersion: 1, clubId: 'club-1', userId: 'bad-user', joinedAt: 0 },
         version: 'v00000001',
         permissionRead: 1,
-        permissionWrite: 1,
+        permissionWrite: 0,
         createTime: new Date(0).toISOString(),
         updateTime: new Date(0).toISOString(),
         expiresAt: null,
@@ -145,7 +145,7 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
           userId: 'user-A',
           value: next1 as unknown as Record<string, unknown>,
           permissionRead: 1,
-          permissionWrite: 1,
+          permissionWrite: 0,
           version: v1,
         },
         {
@@ -154,7 +154,7 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
           userId: 'user-B',
           value: next2 as unknown as Record<string, unknown>,
           permissionRead: 1,
-          permissionWrite: 1,
+          permissionWrite: 0,
           version: v2,
         },
       ]);

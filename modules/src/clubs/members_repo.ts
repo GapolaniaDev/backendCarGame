@@ -105,7 +105,7 @@ export function writeMemberCreate(
       userId: rec.userId,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
     },
   ]);
   const first = (objs as Array<{ version?: string }>)[0];
@@ -127,7 +127,7 @@ export function writeMemberUpdate(
       userId: rec.userId,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
       version,
     },
   ]);

@@ -120,16 +120,29 @@ export type AfterReqFn = (
   envelope: unknown,
 ) => void;
 
+/**
+ * The client `WriteStorageObjects` request as a before-hook receives it
+ * (v3.27.0: `api.WriteStorageObjectsRequest` through protojson, so the
+ * list is `objects` and the value is a JSON string).
+ */
 export interface IStorageObjectEnvelope {
-  writes: IStorageObject[];
+  objects: Array<{
+    collection: string;
+    key: string;
+    value?: string;
+    version?: string;
+    permissionRead?: number;
+    permissionWrite?: number;
+  }>;
 }
 
+/** Returns the (possibly edited) request; throwing rejects it. */
 export type BeforeStorageFnEnvelope = (
   ctx: IContext,
   logger: ILogger,
   nk: INakama,
   envelope: IStorageObjectEnvelope,
-) => void;
+) => IStorageObjectEnvelope | null;
 export type AfterStorageFnEnvelope = (
   ctx: IContext,
   logger: ILogger,

@@ -44,6 +44,27 @@ type LeaderboardWriteRequest = unknown;
 /** Sentinel user ID reserved by Nakama for system actions. */
 export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 
+// ─── Storage permissions (plan T-18, D-10) ──────────────────────────────────
+
+/** The cloud-save collections a client writes itself (`core/storage_permissions.ts`). */
+const CLIENT_WRITABLE = new Set(['save', 'public']);
+
+/**
+ * Every server write must leave its object server-only: `permissionWrite`
+ * 0 (an omitted field is 1 in 3.27, owner-writable). Throwing here makes
+ * every e2e suite a check of D-10.
+ */
+function assertServerOnlyWrite(obj: IStorageObject): void {
+  if (CLIENT_WRITABLE.has(obj.collection)) return;
+  const write = obj.permissionWrite ?? 1;
+  if (write !== 0) {
+    throw new Error(`D-10: server write to ${obj.collection}/${obj.key} with permissionWrite=${String(write)} (must be 0)`);
+  }
+  if (obj.collection === 'analytics_events' && (obj.permissionRead ?? 1) !== 0) {
+    throw new Error(`D-10: analytics_events/${obj.key} written with permissionRead=${String(obj.permissionRead ?? 1)} (must be 0)`);
+  }
+}
+
 // ─── FakeContext ─────────────────────────────────────────────────────────────
 
 /** Constant IContext value — the `_brand` is the only required discriminator. */
@@ -190,6 +211,16 @@ class FakeNakamaCore {
   }
 
   storageWrite(objs: IStorageObject[]): IStorageObjectAck[] {
+    // Like v3.27.0: the batch is one transaction, a `version` must match
+    // (`*` = must not exist), and nothing is written when one fails.
+    for (const obj of objs) {
+      assertServerOnlyWrite(obj);
+      const cur = this.store.get(storageKeyString(obj));
+      const v = obj.version;
+      if (v === '*' ? cur !== undefined : (v !== undefined && v !== '' && cur?.version !== v)) {
+        throw new Error('Storage write rejected - version check failed.');
+      }
+    }
     const acks: IStorageObjectAck[] = [];
     const now = new Date().toISOString();
     for (const obj of objs) {
@@ -201,8 +232,9 @@ class FakeNakamaCore {
         userId: obj.userId,
         value: obj.value,
         version,
-        permissionRead: obj.permissionRead ?? 0,
-        permissionWrite: obj.permissionWrite ?? 0,
+        // v3.27.0 defaults an omitted permission to 1 (owner).
+        permissionRead: obj.permissionRead ?? 1,
+        permissionWrite: obj.permissionWrite ?? 1,
         createTime: now,
         updateTime: now,
         expiresAt: obj.expiresAt ?? null,
@@ -232,8 +264,8 @@ class FakeNakamaCore {
   storageList(
     userId: string | null | undefined,
     collection: string,
-    _limit?: number,
-    _cursor?: string | null,
+    limit?: number,
+    cursor?: string | null,
   ): { objects: IStorageObject[]; cursor: string | null } {
     if (userId !== null && userId !== undefined && typeof userId !== 'string') {
       throw new TypeError('expects string');
@@ -245,7 +277,12 @@ class FakeNakamaCore {
       if (userId !== null && userId !== undefined && obj.userId !== userId) continue;
       objs.push(obj);
     }
-    return { objects: objs, cursor: null };
+    // Pages like v3.27.0 (default limit 100); the cursor is an opaque offset.
+    const size = limit === undefined || limit === null ? 100 : limit;
+    const from = cursor !== undefined && cursor !== null && cursor !== '' ? Number(cursor) : 0;
+    const page = objs.slice(from, from + size);
+    const next = from + size < objs.length ? String(from + size) : null;
+    return { objects: page, cursor: next };
   }
 
   localcacheGet<T>(key: string): T | null {
@@ -330,6 +367,7 @@ class FakeNakamaCore {
     updateLedger: boolean | undefined,
   ): IMultiUpdateResult {
     for (const obj of storageWrites ?? []) {
+      assertServerOnlyWrite(obj);
       const cur = this.store.get(storageKeyString(obj));
       const v = obj.version;
       if (v === '*' ? cur !== undefined : (v !== undefined && v !== '' && cur?.version !== v)) {
@@ -350,8 +388,8 @@ class FakeNakamaCore {
         userId: obj.userId,
         value: obj.value,
         version,
-        permissionRead: obj.permissionRead ?? 0,
-        permissionWrite: obj.permissionWrite ?? 0,
+        permissionRead: obj.permissionRead ?? 1,
+        permissionWrite: obj.permissionWrite ?? 1,
         createTime: now,
         updateTime: now,
         expiresAt: obj.expiresAt ?? null,
@@ -1196,6 +1234,17 @@ class FakeInitializerCore {
     this.afterLeaderboardRecordWrites.push(fn);
   }
 
+  /** Before-hooks of the client `WriteStorageObjects` API (plan T-18). */
+  readonly beforeWriteStorageObjects: Array<
+    (ctx: unknown, logger: ILogger, nk: INakama, envelope: unknown) => unknown
+  > = [];
+
+  registerBeforeWriteStorageObjects(
+    fn: (ctx: unknown, logger: ILogger, nk: INakama, envelope: unknown) => unknown,
+  ): void {
+    this.beforeWriteStorageObjects.push(fn);
+  }
+
   /** Match handlers by module name (`registerMatch`). */
   readonly matches = new Map<string, Record<string, unknown>>();
 
@@ -1257,6 +1306,9 @@ export class FakeInitializer {
       envelope: { username: string; userId: string; vars: Record<string, string> },
     ) => void
   >;
+  readonly beforeWriteStorageObjects: ReadonlyArray<
+    (ctx: unknown, logger: ILogger, nk: INakama, envelope: unknown) => unknown
+  >;
   readonly initializer: IInitializer;
 
   private readonly _core: FakeInitializerCore;
@@ -1270,6 +1322,7 @@ export class FakeInitializer {
     this.afterLeaderboardRecordWrites = core.afterLeaderboardRecordWrites;
     this.afterAuthenticates = core.afterAuthenticates;
     this.beforeAuthenticateDevices = core.beforeAuthenticateDevices;
+    this.beforeWriteStorageObjects = core.beforeWriteStorageObjects;
     this.initializer = wrapWithNotStubbedThrow(core) as IInitializer;
   }
 

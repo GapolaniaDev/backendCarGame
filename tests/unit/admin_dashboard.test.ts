@@ -151,7 +151,7 @@ function seedAnalyticsWalletMoved(nk: INakama, ts: number, reason: string, coins
       name: 'wallet_moved',
       props: { userId: 'u1', kind: 'grant', reason, changeset: { coins } },
     },
-    permissionRead: 2,
+    permissionRead: 0,
     permissionWrite: 0,
   }]);
 }

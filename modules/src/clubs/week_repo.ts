@@ -131,7 +131,7 @@ export function writeClubWeekMetaCreate(
       userId: rec.clubId,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
     },
   ]);
   const first = (objs as Array<{ version?: string }>)[0];
@@ -150,7 +150,7 @@ export function writeClubWeekMetaUpdate(
       userId: rec.clubId,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
-      permissionWrite: 1,
+      permissionWrite: 0,
       version,
     },
   ]);
@@ -173,7 +173,7 @@ export function writeClubWeekResetMarker(
     userId: rec.weekUtc,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
   nk.storageWrite([obj]);
 }

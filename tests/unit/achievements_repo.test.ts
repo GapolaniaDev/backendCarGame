@@ -69,7 +69,7 @@ function seedRecord(
     value: rec,
     version: 'v00000042',
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
     createTime: new Date(0).toISOString(),
     updateTime: new Date(0).toISOString(),
     expiresAt: null,
@@ -102,7 +102,7 @@ describe('achievements_repo (Phase 6 Chunk 5)', () => {
       );
       expect(stored).toBeDefined();
       expect(stored!.permissionRead).toBe(1);
-      expect(stored!.permissionWrite).toBe(1);
+      expect(stored!.permissionWrite).toBe(0);
     });
 
     it('returns created=false on subsequent calls (idempotent)', () => {

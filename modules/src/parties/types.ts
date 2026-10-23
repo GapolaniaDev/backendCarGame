@@ -89,7 +89,7 @@ export function asPartyWrite(rec: PartyRecord): IStorageObject {
     userId: SYSTEM_USER_ID, // system-owned
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 
@@ -100,7 +100,7 @@ export function asActivePartyWrite(rec: ActivePartyRecord): IStorageObject {
     userId: rec.userId, // owner-scoped so storageRead(userId=user) works
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 

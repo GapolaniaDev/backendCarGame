@@ -104,7 +104,7 @@ function seedEvent(
       userId: userId ?? undefined,
       props,
     },
-    permissionRead: 2,
+    permissionRead: 0,
     permissionWrite: 0,
   }]);
 }

@@ -139,7 +139,7 @@ export function asInviteWrite(rec: InviteRecord): IStorageObject {
     userId: rec.targetUserId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 
@@ -150,7 +150,7 @@ export function asBlockWrite(rec: BlockRecord): IStorageObject {
     userId: rec.ownerId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 
@@ -267,7 +267,7 @@ export function asFriendCodeWrite(rec: FriendCodeRecord): IStorageObject {
     userId: rec.userId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 
@@ -278,7 +278,7 @@ export function asFriendEdgeWrite(rec: FriendEdgeRecord): IStorageObject {
     userId: rec.userId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }
 
@@ -289,6 +289,6 @@ export function asRecentRivalsWrite(rec: RecentRivalsRecord): IStorageObject {
     userId: rec.userId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
-    permissionWrite: 1,
+    permissionWrite: 0,
   };
 }

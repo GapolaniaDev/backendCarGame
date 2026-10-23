@@ -3,8 +3,8 @@
 // CAS-safe per Phase 4/5 convention. The shape of the record is owned
 // by the catalog + assignment helpers; this module persists them.
 //
-// Permission bits: `SERVER_OWNED_READ=1`, `SERVER_OWNED_WRITE=1` per
-// the Phase 4/5 server-only convention.
+// Permission bits: `SERVER_OWNED_READ=1` (owner), `SERVER_OWNED_WRITE=0`
+// (server-only, plan T-18 / D-10).
 //
 // Special cases:
 //   - `ensureDailyMissions` resets `rerollsLeftToday` to 1 and clears
