@@ -132,6 +132,30 @@ export function xpToNextLevel(catalog: Readonly<PassCatalog>, xp: number): {
   };
 }
 
+/**
+ * Reward items of the catalog missing from the garage catalogs, as
+ * `car:<id>@<level>/<track>` / `cosmetic:<id>@<level>/<track>` (plan T-19,
+ * HT Prog-1). Missing items are content to add, not to drop: the loader
+ * reports them and a claim returns them in `undelivered`.
+ */
+export function unknownPassItems(
+  catalog: Readonly<PassCatalog>,
+  carIds: ReadonlySet<string>,
+  cosmeticIds: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  for (const lvl of catalog.levels) {
+    for (const track of ['free', 'premium'] as const) {
+      const r = track === 'free' ? lvl.freeReward : lvl.premiumReward;
+      if (r.carId !== undefined && !carIds.has(r.carId)) out.push(`car:${r.carId}@${lvl.level}/${track}`);
+      if (r.cosmeticId !== undefined && !cosmeticIds.has(r.cosmeticId)) {
+        out.push(`cosmetic:${r.cosmeticId}@${lvl.level}/${track}`);
+      }
+    }
+  }
+  return out;
+}
+
 /** Validate a PassRecord (used when reading from storage to detect tampering). */
 export function validatePassRecord(rec: unknown): rec is PassRecord {
   if (typeof rec !== 'object' || rec === null) return false;

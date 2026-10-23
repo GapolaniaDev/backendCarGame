@@ -1,23 +1,25 @@
-// Phase 6 Chunk 6 — 4 RPCs:
+// Phase 6 Chunk 6 — battle pass RPCs:
 //
-//   pass_get            — lazy-create PassRecord, lazy-close the
-//                         season on access post-endUtc, returns
-//                         level/xp/claimed/premium + next-level info.
-//   pass_claim          — claim the reward of a single level (free or
-//                         premium track); idempotent via CAS.
-//   pass_buy_premium    — spend `premiumPriceGems` and unlock the
-//                         premium track (CAS, idempotent).
-//   admin_grant_premium — bypass gem cost, flip the flag (shared-secret
-//                         gated, NOT maintenance-gated).
+//   pass_get                — lazy-create the PassRecord, close the
+//                             season once `endUtc` has passed, return
+//                             level/xp/claimed/premium + next-level info.
+//   pass_claim              — claim the reward of one level (free or
+//                             premium track) in one transaction (T-19).
+//   pass_buy_premium        — charge `premiumPriceGems` and unlock the
+//                             premium track in one transaction (T-19).
+//   admin_grant_premium     — flip the flag without charging (shared-secret
+//                             gated, NOT maintenance-gated).
+//   admin_pass_season_close — settle every record of a closed season,
+//                             resumable (T-19; also run by the ticker).
 //
 // All player-facing RPCs are gated by `assertNotInMaintenance`. The
-// admin RPC bypasses maintenance (same precedent as
-// `account_delete` / `admin_*`).
+// admin RPCs bypass maintenance (same precedent as `account_delete` /
+// `admin_*`).
 //
-// `pass_get` performs the D11 lazy close on every access: if the
-// catalog's `endUtc` is in the past AND the global close marker is
-// absent, it writes the marker + flips every visible player's
-// `seasonClosed` flag via `settleClosedSeasonRewards`.
+// The season close (`season.ts`) settles EVERY player: their unclaimed
+// levels go to the inbox. `pass_get` opens the close when `endUtc` has
+// passed and settles the caller at once; the service ticker settles the
+// rest page by page.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, toJson, type Resp } from '../core/response';
@@ -26,7 +28,7 @@ import { parseInput } from '../core/parse_input';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { assertAdminKey } from '../admin/auth';
-import { findLevel, getPassCatalog, xpToLevel, xpToNextLevel } from './catalog';
+import { getPassCatalog, xpToLevel, xpToNextLevel } from './catalog';
 import {
   ensurePassRecord,
   readPassRecord,
@@ -35,15 +37,14 @@ import {
   passRecordKey,
 } from './pass_repo';
 import {
+  closePassSeason,
   getCurrentSeasonId,
   maybeCloseSeason,
   readSeasonCloseMarker,
   settleClosedSeasonRewards,
 } from './season';
-import { grantPassReward } from './reward_granter';
+import { buyPassPremium, claimPassLevel, type PassGrantResult } from './claim';
 import type { PassLevelReward } from './types';
-import { revert, spend as walletSpend, walletGet } from '../economy/wallet';
-import type { LedgerMetadata } from '../economy/types';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
 
@@ -150,12 +151,12 @@ export const pass_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const catalog = getPassCatalog();
   const now = Date.now();
 
-  // D11 lazy close: if the catalog's endUtc is in the past AND the
-  // global close marker is missing, write it. Then settle the per-user
-  // PassRecord flag.
-  const closeOutcome = maybeCloseSeason(nk, logger, now, catalog.seasonId);
-  if (closeOutcome.closed) {
-    settleClosedSeasonRewards(nk, logger, userId, catalog.seasonId);
+  // Season close (T-19): once endUtc has passed, open the close (once)
+  // and settle the caller now — their unclaimed levels go to the inbox.
+  // The service ticker settles every other player.
+  maybeCloseSeason(nk, logger, now, catalog.seasonId);
+  if (readSeasonCloseMarker(nk, catalog.seasonId) !== null) {
+    settleClosedSeasonRewards(nk, logger, userId, catalog.seasonId, now);
   }
 
   // Re-read AFTER the close check so the response reflects the new
@@ -216,25 +217,28 @@ export interface PassClaimOutput {
   level: number;
   track: 'free' | 'premium';
   reward: PassLevelReward;
-  granted: ReturnType<typeof grantPassReward>;
+  granted: PassGrantResult;
   newXp: number;
   currentLevel: number;
   nextLevel: number | null;
+  /** Additive (T-19): reward items missing from the catalogs, not delivered. */
+  undelivered?: string[];
+  /** Additive (T-19): `{coins, gems}` like every money RPC. */
+  newBalance: { coins: number; gems: number };
 }
 
 /**
  * Claim the reward of `track` at `level`. Validates:
- *   - level ∈ [1, maxLevel]                    → BAD_REQUEST
- *   - track ∈ {'free', 'premium'}              → BAD_REQUEST
- *   - record exists (player called pass_get)   → NOT_FOUND
+ *   - level >= 1 and in the catalog            → BAD_REQUEST / NOT_FOUND
+ *   - track is 'free' or 'premium'             → BAD_REQUEST
  *   - player XP >= level.xpRequired             → INVALID_RESULT
  *   - track === 'premium' && !premiumPurchased → FORBIDDEN
- *   - already claimed (idempotent)             → CONFLICT
- *   - seasonClosed                             → CONFLICT
+ *   - already claimed                          → CONFLICT
+ *   - season closed                            → CONFLICT
  *
- * On success the appropriate `claimedFree` / `claimedPremium` list
- * appends `level` via a CAS write (3 retries on conflict). The reward
- * is then dispatched through `grantPassReward` (never throws).
+ * The claim mark, the currencies and the garage items commit in one
+ * transaction (`claimPassLevel`): two concurrent claims pay once and a
+ * failed payout leaves the level claimable.
  */
 export const pass_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<PassClaimInput>(body);
@@ -259,93 +263,25 @@ export const pass_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
     return toJson(err('BAD_REQUEST', "track must be 'free' or 'premium'"));
   }
 
+  const claimed = claimPassLevel(nk, logger, userId, level, track, Date.now());
+  if (!claimed.ok) return toJson(claimed);
+  const { record, reward, granted, undelivered, newBalance } = claimed.data;
   const catalog = getPassCatalog();
-  const levelDef = findLevel(catalog, level);
-  if (levelDef === null) {
-    return toJson(err('NOT_FOUND', `pass level not in catalog: ${level}`));
-  }
-
-  // Lazy-create so a brand-new user who jumps straight to pass_claim
-  // gets the row (and the resulting "no XP yet" INVALID_RESULT).
-  ensurePassRecord(nk, logger, userId);
-
-  const existing = readPassRecord(nk, userId, catalog.seasonId);
-  if (existing === null) {
-    return toJson(err('NOT_FOUND', 'pass record missing after lazy-create'));
-  }
-
-  const rec = existing.record;
-  if (rec.seasonClosed) {
-    return toJson(err('CONFLICT', 'pass season is closed'));
-  }
-
-  if (rec.xp < levelDef.xpRequired) {
-    return toJson(err(
-      'INVALID_RESULT',
-      `not enough XP for level ${level} (${rec.xp}/${levelDef.xpRequired})`,
-    ));
-  }
-
-  if (track === 'premium' && !rec.premiumPurchased) {
-    return toJson(err('FORBIDDEN', 'premium track not purchased'));
-  }
-
-  const claimedList = track === 'free' ? rec.claimedFree : rec.claimedPremium;
-  if (claimedList.includes(level)) {
-    return toJson(err('CONFLICT', `level ${level} ${track} already claimed`));
-  }
-
-  const reward: PassLevelReward = track === 'free' ? levelDef.freeReward : levelDef.premiumReward;
-  // The season is in the key: wallet keys are durable (T-11), and every
-  // season has the same level ids.
-  const refId = `${rec.seasonId}:lvl${level}-${track}`;
-
-  // CAS-update the record.
-  let version = existing.version;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const next = track === 'free'
-      ? { ...rec, claimedFree: [...rec.claimedFree, level] }
-      : { ...rec, claimedPremium: [...rec.claimedPremium, level] };
-    try {
-      writePassUpdate(nk, next, version);
-      logger.info(
-        'pass claim ok user=%s level=%d track=%s attempt=%d',
-        userId, level, track, attempt + 1,
-      );
-      const granted = grantPassReward(nk, logger, userId, reward, refId);
-      const cur = xpToLevel(catalog, next.xp);
-      const nx = xpToNextLevel(catalog, next.xp);
-      emit(nk, logger, 'pass_claimed', {
-        userId,
-        level,
-        track,
-        reward,
-        granted,
-      });
-      const payload: PassClaimOutput = {
-        level,
-        track,
-        reward,
-        granted,
-        newXp: next.xp,
-        currentLevel: cur,
-        nextLevel: nx.nextLevel,
-      };
-      return toJson(ok(payload));
-    } catch (e) {
-      logger.warn(
-        'pass_claim CAS conflict user=%s level=%d track=%s attempt=%d: %s',
-        userId, level, track, attempt + 1,
-        e instanceof Error ? e.message : String(e),
-      );
-      const fresh = readPassRecord(nk, userId, catalog.seasonId);
-      if (fresh === null) {
-        return toJson(err('CONFLICT', 'pass record vanished during claim retry'));
-      }
-      version = fresh.version;
-    }
-  }
-  return toJson(err('CONFLICT', `pass_claim CAS retries exhausted for level ${level}`));
+  const nx = xpToNextLevel(catalog, record.xp);
+  logger.info('pass claim ok user=%s level=%d track=%s', userId, level, track);
+  emit(nk, logger, 'pass_claimed', { userId, level, track, reward, granted });
+  const payload: PassClaimOutput = {
+    level,
+    track,
+    reward,
+    granted,
+    newXp: record.xp,
+    currentLevel: xpToLevel(catalog, record.xp),
+    nextLevel: nx.nextLevel,
+    ...(undelivered.length > 0 ? { undelivered } : {}),
+    newBalance,
+  };
+  return toJson(ok(payload));
 };
 export const pass_claim: RpcHandler = withRuntime(pass_claim_impl);
 
@@ -366,19 +302,14 @@ export interface PassBuyPremiumOutput {
 }
 
 /**
- * Spend `premiumPriceGems` from the player's wallet and flip the
- * `premiumPurchased` flag. Idempotent: a second call returns the
- * current state without charging gems again.
+ * Charge `premiumPriceGems` and flip `premiumPurchased` in one
+ * transaction (`buyPassPremium`): a failed charge changes nothing, a
+ * lost CAS charges nothing, and a second call returns the current state
+ * without charging again.
  *
  * Errors:
- *   - season closed                              → CONFLICT
- *   - already purchased                          → CONFLICT (200-style payload)
- *   - insufficient gems                          → INSUFFICIENT_FUNDS
- *
- * Wallet ops inside multiUpdate are NOT supported by the JS runtime
- * (Phase 3 Caveat D3) — the helpers run sequentially: spend first
- * (which throws INSUFFICIENT_FUNDS on insufficient balance), then
- * CAS-update the record.
+ *   - season closed       → CONFLICT
+ *   - insufficient gems   → INSUFFICIENT_FUNDS (state unchanged)
  */
 export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseBody<PassBuyPremiumInput>(body);
@@ -396,93 +327,21 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const catalog = getPassCatalog();
   const priceGems = catalog.premiumPriceGems;
-
-  ensurePassRecord(nk, logger, userId);
-  const existing = readPassRecord(nk, userId, catalog.seasonId);
-  if (existing === null) {
-    return toJson(err('NOT_FOUND', 'pass record missing after lazy-create'));
+  const bought = buyPassPremium(nk, logger, userId);
+  if (!bought.ok) return toJson(bought);
+  const { record, charged, newBalance } = bought.data;
+  if (charged) {
+    logger.info('pass premium purchased user=%s seasonId=%s priceGems=%d', userId, record.seasonId, priceGems);
+    emit(nk, logger, 'pass_premium_purchased', { userId, seasonId: record.seasonId, priceGems });
   }
-
-  const rec = existing.record;
-  if (rec.seasonClosed) {
-    return toJson(err('CONFLICT', 'pass season is closed'));
-  }
-  if (rec.premiumPurchased) {
-    // Idempotent success: no charge, just return the current state.
-    return toJson(ok({
-      userId,
-      seasonId: rec.seasonId,
-      premiumPurchased: true as const,
-      priceGems,
-      newGemsBalance: currentGems(nk, userId),
-      newBalance: walletGet(nk, userId),
-    } satisfies PassBuyPremiumOutput));
-  }
-
-  // Spend via the wallet helper. We do NOT use `spend()`'s pre-check
-  // path (it would race); instead, attempt and surface INSUFFICIENT_FUNDS.
-  const idempotencyKey = `pass:premium:${userId}:${catalog.seasonId}`;
-  const spendResult = trySpendGems(nk, userId, priceGems, idempotencyKey);
-  if (!spendResult.ok) {
-    const e = spendResult.error;
-    return toJson(err(e.code as Parameters<typeof err>[0], e.message, e.details));
-  }
-
-  // Flip the flag via CAS.
-  let version = existing.version;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const next: typeof rec = { ...rec, premiumPurchased: true };
-    try {
-      writePassUpdate(nk, next, version);
-      logger.info(
-        'pass premium purchased user=%s seasonId=%s priceGems=%d attempt=%d',
-        userId, rec.seasonId, priceGems, attempt + 1,
-      );
-      emit(nk, logger, 'pass_premium_purchased', {
-        userId,
-        seasonId: rec.seasonId,
-        priceGems,
-      });
-      return toJson(ok({
-        userId,
-        seasonId: rec.seasonId,
-        premiumPurchased: true as const,
-        priceGems,
-        newGemsBalance: spendResult.balance,
-        newBalance: walletGet(nk, userId),
-      } satisfies PassBuyPremiumOutput));
-    } catch (e) {
-      logger.warn(
-        'pass_buy_premium CAS conflict user=%s attempt=%d: %s',
-        userId, attempt + 1,
-        e instanceof Error ? e.message : String(e),
-      );
-      // Compensating refund if the flag CAS keeps failing (rare).
-      const fresh = readPassRecord(nk, userId, catalog.seasonId);
-      if (fresh === null) {
-        return toJson(err('CONFLICT', 'pass record vanished during buy retry'));
-      }
-      if (fresh.record.premiumPurchased) {
-        // Another caller raced us. The gems are gone; report idempotency.
-        return toJson(ok({
-          userId,
-          seasonId: fresh.record.seasonId,
-          premiumPurchased: true as const,
-          priceGems,
-          newGemsBalance: currentGems(nk, userId),
-          newBalance: walletGet(nk, userId),
-        } satisfies PassBuyPremiumOutput));
-      }
-      version = fresh.version;
-    }
-  }
-  // The flag never landed: undo the charge with the compensating movement,
-  // which also frees the key so the retry charges again (plan T-11).
-  const refund = revert(nk, userId, idempotencyKey, { reason: 'store', sourceId: `pass_premium_${userId}:refund` });
-  if (!refund.ok) {
-    logger.error('pass_buy_premium refund failed user=%s: %s', userId, refund.error.message);
-  }
-  return toJson(err('CONFLICT', 'pass_buy_premium CAS retries exhausted — nothing was charged, please retry'));
+  return toJson(ok({
+    userId,
+    seasonId: record.seasonId,
+    premiumPurchased: true as const,
+    priceGems,
+    newGemsBalance: newBalance.gems,
+    newBalance,
+  } satisfies PassBuyPremiumOutput));
 };
 export const pass_buy_premium: RpcHandler = withRuntime(pass_buy_premium_impl);
 
@@ -534,11 +393,13 @@ export const admin_grant_premium_impl: RpcHandler = (_ctx, logger, nk, body) => 
     }));
   }
 
-  let version = existing.version;
+  let current = existing;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const next = { ...existing.record, premiumPurchased: true };
+    // Every attempt writes the record it just read (T-19: a retry with a
+    // stale record would overwrite a concurrent claim or XP grant).
+    const next = { ...current.record, premiumPurchased: true };
     try {
-      writePassUpdate(nk, next, version);
+      writePassUpdate(nk, next, current.version);
       logger.info(
         'admin grant premium user=%s seasonId=%s attempt=%d',
         targetUserId, seasonId, attempt + 1,
@@ -571,59 +432,47 @@ export const admin_grant_premium_impl: RpcHandler = (_ctx, logger, nk, body) => 
           viaAdmin: true,
         }));
       }
-      version = fresh.version;
+      current = fresh;
     }
   }
   return toJson(err('CONFLICT', 'admin_grant_premium CAS retries exhausted'));
 };
 export const admin_grant_premium: RpcHandler = withRuntime(admin_grant_premium_impl);
 
-// ─── Internal helpers ────────────────────────────────────────────────────────
-
-/** Read current wallet gems balance via the wallet helper. */
-function currentGems(nk: INakama, userId: string): number {
-  return walletGet(nk, userId).gems;
-}
+// ─── admin_pass_season_close ─────────────────────────────────────────────────
 
 /**
- * Spend `gems` on the player's wallet. Returns `{ ok, balance }` on
- * success or `{ ok: false, error }` carrying a serialised
- * `err('INSUFFICIENT_FUNDS', ...)` envelope.
+ * Settle a closed pass season for every player (T-19), page by page;
+ * the ticker runs the same close once `endUtc` has passed. Body:
+ * `{adminKey, seasonId?, maxRecords?}`. `seasonId` defaults to the loaded
+ * season, which must have ended (else CONFLICT). Another season id
+ * settles that season's leftover records with the loaded catalog's level
+ * table (one pass catalog exists; meant for stray records and drills).
+ * Call again until `state` is `settled`.
  */
-function trySpendGems(
-  nk: INakama,
-  userId: string,
-  gems: number,
-  idempotencyKey: string,
-):
-  | { ok: true; balance: number }
-  | { ok: false; error: { code: string; message: string; details?: unknown } } {
-  if (!Number.isInteger(gems) || gems <= 0) {
-    return {
-      ok: false,
-      error: { code: 'BAD_REQUEST', message: 'gems must be a positive integer' },
-    };
+export const admin_pass_season_close_impl: RpcHandler = (_ctx, logger, nk, body) => {
+  const parsed = parseInput(body);
+  if (!parsed.ok) return parsed.error;
+  const auth = assertAdminKey(logger, nk, parsed.raw);
+  if (!auth.ok) return auth.error;
+
+  const catalog = getPassCatalog();
+  const raw = parsed.raw;
+  const seasonId = typeof raw['seasonId'] === 'string' && raw['seasonId'].length > 0
+    ? raw['seasonId'] as string
+    : catalog.seasonId;
+  const now = Date.now();
+  if (seasonId === catalog.seasonId && Date.parse(catalog.endUtc) > now) {
+    return toJson(err('CONFLICT', `pass season ${seasonId} is still active (ends ${catalog.endUtc})`));
   }
-  const meta: LedgerMetadata = {
-    reason: 'store',
-    sourceId: `pass_premium_${userId}`,
-  };
-  const result = walletSpend(nk, userId, { gems }, meta, idempotencyKey);
-  if (!result.ok) {
-    const errCode = result.error?.code ?? 'INTERNAL';
-    const errMsg = result.error?.message ?? 'spend failed';
-    const errDetails = result.error?.details;
-    return {
-      ok: false,
-      error: {
-        code: errCode,
-        message: errMsg,
-        ...(errDetails !== undefined ? { details: errDetails } : {}),
-      },
-    };
+  if (seasonId !== catalog.seasonId) {
+    logger.warn('admin_pass_season_close: season %s is not the loaded %s; using the loaded level table', seasonId, catalog.seasonId);
   }
-  return { ok: true, balance: result.data.gems };
-}
+  const maxRecords = typeof raw['maxRecords'] === 'number' ? raw['maxRecords'] as number : 2000;
+  const run = closePassSeason(nk, logger, seasonId, now, { maxRecords });
+  return toJson(ok(run));
+};
+export const admin_pass_season_close: RpcHandler = withRuntime(admin_pass_season_close_impl);
 
 // Re-export the storage key so unit tests can seed it directly without
 // duplicating the schema.

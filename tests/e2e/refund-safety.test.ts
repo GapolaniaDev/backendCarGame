@@ -9,8 +9,9 @@
 //      leave the wallet and the garage exactly as they were.
 //   2. The retry charges once (HT-73: never a free re-delivery).
 //   3. Ten store_buy calls racing on the same offer charge once.
-//   4. pass_buy_premium whose flag write keeps failing is refunded with
-//      the compensating movement, and the next attempt charges again.
+//   4. pass_buy_premium whose flag write keeps losing its CAS charges
+//      nothing (charge and flag are one transaction, T-19), and the next
+//      attempt charges once.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
@@ -183,15 +184,16 @@ describe('refund safety: charge and delivery in one transaction (T-11)', () => {
     expect(ledger).toHaveLength(1);
   });
 
-  it('pass_buy_premium whose flag write keeps failing is refunded, and the retry charges again', () => {
+  it('pass_buy_premium whose flag write keeps losing its CAS charges nothing, and the retry charges once (T-19)', () => {
     setCoins(env, HOST_ID, 0, 5000);
     call<Resp<unknown>>(env, 'pass_get', HOST_ID, { callerUserId: HOST_ID });
     let failures = 3;
-    const restore = wrap(env, 'storageWrite', (original) => (...args: unknown[]) => {
-      const objs = (args[0] as Array<{ collection: string }> | undefined) ?? [];
+    // The charge and the flag are one multiUpdate: a lost CAS rolls both back.
+    const restore = wrap(env, 'multiUpdate', (original) => (...args: unknown[]) => {
+      const objs = (args[1] as Array<{ collection: string }> | undefined) ?? [];
       if (failures > 0 && objs.some((o) => o.collection === 'pass')) {
         failures -= 1;
-        throw new Error('Storage write rejected - version check failed.');
+        throw new Error('error running multi update: Storage write rejected - version check failed.');
       }
       return original(...args);
     });
@@ -199,6 +201,7 @@ describe('refund safety: charge and delivery in one transaction (T-11)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('CONFLICT');
     expect(balance(env, HOST_ID)).toEqual({ coins: 0, gems: 5000 });
+    expect(env.fakeNakama.ledger.get(HOST_ID) ?? []).toHaveLength(0);
     restore();
 
     const retry = call<Resp<{ priceGems: number; premiumPurchased: boolean }>>(env, 'pass_buy_premium', HOST_ID, { callerUserId: HOST_ID });

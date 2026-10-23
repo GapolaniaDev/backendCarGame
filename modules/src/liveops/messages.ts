@@ -31,9 +31,7 @@
 import type { ILogger, IStorageObject, INakama } from '../nkruntime';
 import { listStorage } from '../core/storage';
 import { moveWallet, type WalletMove } from '../economy/wallet';
-import { addCarToGarage, addCosmeticToBag, defaultGarage, garageWrite, readGarageObject } from '../garage/storage';
-import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
-import type { Garage } from '../garage/types';
+import { planGarageDelivery } from '../garage/delivery';
 import type { ErrorCode } from '../core/errors';
 
 export const INBOX_COLLECTION = 'inbox';
@@ -304,41 +302,15 @@ interface DeliveryPlan {
 
 /** Garage items of a reward: the garage CAS write (or create) and what it adds. */
 function planDelivery(nk: INakama, userId: string, reward: InboxRewardPayload | undefined, nowMs: number): DeliveryPlan {
-  const plan: DeliveryPlan = { garageWrite: null, delivered: {}, undelivered: [] };
-  if (reward === undefined) return plan;
+  if (reward === undefined) return { garageWrite: null, delivered: {}, undelivered: [] };
   const cosmetics = reward.cosmeticIds ?? (reward.cosmeticId !== undefined ? [reward.cosmeticId] : []);
   const carId = typeof reward.carId === 'string' && reward.carId.length > 0 ? reward.carId : undefined;
-  if (carId === undefined && cosmetics.length === 0) return plan;
-
-  const read = readGarageObject(nk, userId);
-  let garage: Garage = read?.value ?? defaultGarage(userId, nowMs);
-  const before = garage;
-
-  if (carId !== undefined) {
-    const car = getCarsCatalog().cars.find((c) => c.id === carId);
-    if (!car) plan.undelivered.push(`car:${carId}`);
-    else if (!garage.cars.some((c) => c.carId === carId)) {
-      garage = addCarToGarage(garage, car);
-      plan.delivered.carId = carId;
-    }
-  }
-  const deliveredCosmetics: string[] = [];
-  for (const id of cosmetics) {
-    if (typeof id !== 'string' || id.length === 0) continue;
-    if (!getCosmeticsCatalog().items.some((c) => c.id === id)) {
-      plan.undelivered.push(`cosmetic:${id}`);
-      continue;
-    }
-    if (garage.cosmeticsBag.includes(id)) continue;
-    garage = addCosmeticToBag(garage, id);
-    deliveredCosmetics.push(id);
-  }
-  if (deliveredCosmetics.length > 0) {
-    plan.delivered.cosmeticId = deliveredCosmetics[0] as string;
-    if (deliveredCosmetics.length > 1) plan.delivered.cosmeticIds = deliveredCosmetics;
-  }
-  if (garage !== before) plan.garageWrite = garageWrite(garage, read?.version ?? '*');
-  return plan;
+  const plan = planGarageDelivery(nk, userId, { carIds: carId !== undefined ? [carId] : [], cosmeticIds: cosmetics }, nowMs);
+  const delivered: InboxDelivered = {};
+  if (plan.cars.length > 0) delivered.carId = plan.cars[0] as string;
+  if (plan.cosmetics.length > 0) delivered.cosmeticId = plan.cosmetics[0] as string;
+  if (plan.cosmetics.length > 1) delivered.cosmeticIds = plan.cosmetics;
+  return { garageWrite: plan.garageWrite, delivered, undelivered: plan.undelivered };
 }
 
 // ─── Maintenance helper (admin cleanup) ─────────────────────────────────────

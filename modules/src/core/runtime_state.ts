@@ -41,6 +41,7 @@ import {
   type RawAchievementsFile,
 } from '../missions/catalog';
 import { loadPassCatalog, type RawPassFile } from '../pass/catalog';
+import { reportCatalogContent } from './content_check';
 import { loadEmblemasCatalog } from '../clubs/catalog';
 import type { EmblemDef } from '../clubs/types';
 import { loadBlockedWordsCatalog, type RawBlockedWordsFile } from '../chat/blocked_words';
@@ -229,6 +230,9 @@ export function ensureRuntimeState(
   const startedMs = Date.now();
   const loadLogger = opts?.boot === true ? logger : quietLogger(logger);
   loadRuntimeCatalogs(loadLogger, nk);
+  // Reward items missing from the garage catalogs: logged once, at boot
+  // (plan T-19); every VM would repeat the same line.
+  if (opts?.boot === true) reportCatalogContent(logger);
   const bus = buildRaceBus(logger, nk);
   vmBus = bus;
   logger.info(

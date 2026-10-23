@@ -178,13 +178,18 @@ describe('pass season helpers (Phase 6 Chunk 6)', () => {
       expect(afterRec.seasonClosed).toBe(true);
     });
 
-    it('is a no-op when the record already has seasonClosed=true', () => {
+    it('is a no-op when the record was already settled (T-19)', () => {
       const fake = new FakeNakama();
       loadPassCatalog(silentLogger, buildRaw('unit-s1', '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z'));
       ensurePassRecord(fake.nakama, silentLogger, 'p2');
-      // Force seasonClosed=true via direct store mutation.
+      // A settled record: closed, its end rewards fixed and sent.
       const before = fake.store.get(`pass/p2/p2`)!;
-      const updated = { ...(before.value as PassRecord), seasonClosed: true };
+      const updated = {
+        ...(before.value as PassRecord),
+        seasonClosed: true,
+        endRewards: { free: [], premium: [] },
+        endRewardsSentAt: 1,
+      };
       fake.store.set(`pass/p2/p2`, { ...before, value: updated, version: 'v00000002' });
 
       settleClosedSeasonRewards(fake.nakama, silentLogger, 'p2', 'unit-s1');

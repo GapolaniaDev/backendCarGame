@@ -140,6 +140,7 @@ import {
   pass_claim,
   pass_buy_premium,
   admin_grant_premium,
+  admin_pass_season_close,
 } from './pass/rpcs';
 import { ranked_get } from './ranked/rpcs';
 import { mm_ticket_params, matchmakerMatchedImpl } from './matchmaking/rpcs';
@@ -300,6 +301,7 @@ function InitModule(
     initializer.registerRpc('pass_claim', pass_claim);
     initializer.registerRpc('pass_buy_premium', pass_buy_premium);
     initializer.registerRpc('admin_grant_premium', admin_grant_premium);
+    initializer.registerRpc('admin_pass_season_close', admin_pass_season_close);
     initializer.registerRpc('admin_wallet_adjust', admin_wallet_adjust);
     initializer.registerRpc('admin_send_inbox', admin_send_inbox);
     initializer.registerRpc('admin_sanitize_session', admin_sanitize_session);

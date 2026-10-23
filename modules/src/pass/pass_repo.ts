@@ -77,35 +77,11 @@ export function readPassRecord(
 }
 
 /**
- * Create a new PassRecord in the catalog's current season. Used by
- * `ensurePassRecord` and the subscriber when writing XP for the first
- * time in a new season.
+ * The storage write of `record` at `version` (`*` = must not exist yet),
+ * for callers that commit it inside a wallet movement (plan T-19).
  */
-export function writePassCreate(nk: INakama, record: PassRecord): string {
-  const obj: IStorageObject = {
-    collection: PASS_COLLECTION,
-    key: passRecordKey(record.userId),
-    userId: record.userId,
-    value: record as unknown as Record<string, unknown>,
-    permissionRead: SERVER_OWNED_READ,
-    permissionWrite: SERVER_OWNED_WRITE,
-  };
-  const acks = nk.storageWrite([obj]);
-  const first = (acks as Array<{ version?: string }>)[0];
-  return first?.version ?? '';
-}
-
-/**
- * CAS-update an existing PassRecord. Caller must own the matching
- * `version`; throws (storage layer surfaces as runtime error → caller
- * catches → tries again with bumped version).
- */
-export function writePassUpdate(
-  nk: INakama,
-  record: PassRecord,
-  version: string,
-): string {
-  const obj: IStorageObject = {
+export function passWrite(record: PassRecord, version: string): IStorageObject {
+  return {
     collection: PASS_COLLECTION,
     key: passRecordKey(record.userId),
     userId: record.userId,
@@ -114,7 +90,25 @@ export function writePassUpdate(
     permissionWrite: SERVER_OWNED_WRITE,
     version,
   };
-  const acks = nk.storageWrite([obj]);
+}
+
+/** Create a PassRecord; throws when a row already exists (create-only). */
+export function writePassCreate(nk: INakama, record: PassRecord): string {
+  const acks = nk.storageWrite([passWrite(record, '*')]);
+  const first = (acks as Array<{ version?: string }>)[0];
+  return first?.version ?? '';
+}
+
+/**
+ * CAS-update an existing PassRecord. Caller must own the matching
+ * `version`; throws on a mismatch (the caller re-reads and retries).
+ */
+export function writePassUpdate(
+  nk: INakama,
+  record: PassRecord,
+  version: string,
+): string {
+  const acks = nk.storageWrite([passWrite(record, version)]);
   const first = (acks as Array<{ version?: string }>)[0];
   return first?.version ?? '';
 }
@@ -132,27 +126,36 @@ export function ensurePassRecord(
   const catalog = getPassCatalog();
   const expectedSeasonId = catalog.seasonId;
 
-  const existing = readPassRecord(nk, userId, expectedSeasonId);
-  if (existing !== null) {
-    return { record: existing.record, created: false, version: existing.version };
+  for (let attempt = 0; attempt < ADD_XP_MAX_CAS_RETRIES; attempt += 1) {
+    const existing = readPassRecord(nk, userId, expectedSeasonId);
+    if (existing !== null) {
+      return { record: existing.record, created: false, version: existing.version };
+    }
+    // A row of an older season is replaced (with its version); no row is
+    // created with `*`, so a concurrent create never overwrites progress.
+    const old = nk.storageRead([{ collection: PASS_COLLECTION, key: passRecordKey(userId), userId }])[0];
+    const fresh: PassRecord = {
+      schemaVersion: 1,
+      userId,
+      seasonId: expectedSeasonId,
+      xp: 0,
+      claimedFree: [],
+      claimedPremium: [],
+      premiumPurchased: false,
+      seasonClosed: false,
+    };
+    try {
+      const acks = nk.storageWrite([passWrite(fresh, old?.version ?? '*')]);
+      logger.info('pass lazy-created user=%s seasonId=%s', userId, expectedSeasonId);
+      return { record: fresh, created: true, version: acks[0]?.version ?? '' };
+    } catch (e) {
+      logger.warn(
+        'pass lazy-create lost a race user=%s attempt=%d: %s',
+        userId, attempt + 1, e instanceof Error ? e.message : String(e),
+      );
+    }
   }
-
-  const fresh: PassRecord = {
-    schemaVersion: 1,
-    userId,
-    seasonId: expectedSeasonId,
-    xp: 0,
-    claimedFree: [],
-    claimedPremium: [],
-    premiumPurchased: false,
-    seasonClosed: false,
-  };
-  const version = writePassCreate(nk, fresh);
-  logger.info(
-    'pass lazy-created user=%s seasonId=%s',
-    userId, expectedSeasonId,
-  );
-  return { record: fresh, created: true, version };
+  throw new Error(`pass record for ${userId} could not be created`);
 }
 
 /**
@@ -203,18 +206,14 @@ export function isXpLedgerApplied(
   return objs[0] !== undefined && objs[0] !== null;
 }
 
-/**
- * Write the ledger row (server-owned) marking `userId`/`source`/`dedupeKey`
- * as applied. Returns `true` on success, `false` on storage error.
- */
-function writeXpLedger(
-  nk: INakama,
+/** The ledger row marking `userId`/`source`/`dedupeKey` as applied (create-only). */
+function xpLedgerWrite(
   userId: string,
   source: string,
   dedupeKey: string,
   amount: number,
-): boolean {
-  const obj: IStorageObject = {
+): IStorageObject {
+  return {
     collection: PASS_XP_LEDGER_COLLECTION,
     key: passXpLedgerKey(userId, source, dedupeKey),
     userId,
@@ -228,13 +227,8 @@ function writeXpLedger(
     } as unknown as Record<string, unknown>,
     permissionRead: SERVER_OWNED_READ,
     permissionWrite: SERVER_OWNED_WRITE,
+    version: '*',
   };
-  try {
-    nk.storageWrite([obj]);
-    return true;
-  } catch (e) {
-    return false;
-  }
 }
 
 export function addPassXp(
@@ -301,11 +295,12 @@ export function addPassXp(
     const nextXp = beforeXp + delta;
     const next: PassRecord = { ...existing.record, xp: nextXp };
     try {
-      writePassUpdate(nk, next, existing.version);
-      // 4. After the XP write succeeded, mark the ledger row.
-      if (dedupeKey !== undefined) {
-        writeXpLedger(nk, userId, dedupeKey.source, dedupeKey.id, delta);
-      }
+      // 4. The XP and its ledger row in ONE write (one transaction): a
+      //    crash cannot apply the XP without the mark, and two concurrent
+      //    grants of one key cannot both create the mark.
+      const writes = [passWrite(next, existing.version)];
+      if (dedupeKey !== undefined) writes.push(xpLedgerWrite(userId, dedupeKey.source, dedupeKey.id, delta));
+      nk.storageWrite(writes);
       const newLevel = xpToLevel(catalog, nextXp);
       const levelUps: number[] = [];
       for (let lvl = beforeLevel + 1; lvl <= newLevel; lvl += 1) {
@@ -322,6 +317,11 @@ export function addPassXp(
         userId, attempt + 1,
         e instanceof Error ? e.message : String(e),
       );
+      if (dedupeKey !== undefined && isXpLedgerApplied(nk, userId, dedupeKey.source, dedupeKey.id)) {
+        const now = readPassRecord(nk, userId, catalog.seasonId);
+        const record = now?.record ?? next;
+        return { record, levelUps: [], newLevel: xpToLevel(catalog, record.xp), applied: false };
+      }
     }
   }
   logger.warn('addPassXp retries exhausted user=%s delta=%d', userId, delta);

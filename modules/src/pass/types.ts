@@ -39,6 +39,15 @@ export interface PassRecord {
   claimedPremium: number[];
   /** Whether the player bought the premium track. */
   premiumPurchased: boolean;
-  /** Marked true on lazy close (D11). */
+  /** Marked true when the season close settles this record (plan T-19). */
   seasonClosed: boolean;
+  /**
+   * Levels reached but never claimed when the season closed: they go to
+   * the inbox as one claimable reward (plan T-19, audit 06 6.5.4). Written
+   * in the same CAS as `seasonClosed`, before the inbox message, so a
+   * resumed close sends exactly these.
+   */
+  endRewards?: { free: number[]; premium: number[] };
+  /** Epoch ms when the end-of-season inbox message was sent. */
+  endRewardsSentAt?: number;
 }

@@ -33,17 +33,22 @@ const TITLES: Record<InboxRewardType, string> = {
   subscription_expiring_soon: 'Subscription expiring soon',
   subscription_renewed: 'Subscription renewed',
   ad_reward: 'Ad reward',
+  pass_season_end: 'Battle pass rewards',
 };
 
 export function inboxTitle(type: InboxRewardType): string {
   return TITLES[type] ?? 'Reward';
 }
 
+/** A sender payload: the legacy shape plus gems and one car. */
+export type SenderPayload = LegacyPayload & { gems?: number; carId?: string };
+
 /** A sender payload as an inbox reward (`cosmetics[]` → `cosmeticId` + `cosmeticIds`). */
-export function toInboxReward(payload: LegacyPayload & { gems?: number }): InboxRewardPayload | undefined {
+export function toInboxReward(payload: SenderPayload): InboxRewardPayload | undefined {
   const out: InboxRewardPayload = {};
   if (typeof payload.coins === 'number' && payload.coins > 0) out.coins = payload.coins;
   if (typeof payload.gems === 'number' && payload.gems > 0) out.gems = payload.gems;
+  if (typeof payload.carId === 'string' && payload.carId.length > 0) out.carId = payload.carId;
   const cosmetics = (payload.cosmetics ?? []).filter((c): c is string => typeof c === 'string' && c.length > 0);
   if (cosmetics.length > 0) out.cosmeticId = cosmetics[0] as string;
   if (cosmetics.length > 1) out.cosmeticIds = cosmetics;
@@ -55,7 +60,7 @@ export function sendReward(
   nk: INakama,
   userId: string,
   type: InboxRewardType,
-  payload: LegacyPayload & { gems?: number },
+  payload: SenderPayload,
   rewardId: string,
   nowMs: number,
   expiresAt: number | null = null,
@@ -77,7 +82,7 @@ export function sendNotice(
   nk: INakama,
   userId: string,
   type: InboxRewardType,
-  payload: LegacyPayload & { gems?: number },
+  payload: SenderPayload,
   noticeId: string,
   nowMs: number,
 ): SendInboxResult {
