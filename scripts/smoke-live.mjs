@@ -86,6 +86,20 @@
 //     once (one close log line, ticks after it) and its prize is a
 //     claimable inbox reward; event_list is not empty and the liveops
 //     calendar is the events.json one;
+//   - F7 IAP and ads (plan T-24, T-25), with fresh accounts: on the .env
+//     defaults (IAP_MOCK=false, no store credentials, empty LevelPlay
+//     secret) a forged Apple receipt, a forged Google receipt in both
+//     client formats (UnityPayload, PurchaseJson) and a mock receipt are
+//     rejected and deliver nothing, the client's ad_watched pays nothing and
+//     a LevelPlay callback is rejected. The restart is a recreate (same
+//     compose files) with IAP_MOCK=true and a random LevelPlay key for that
+//     boot only: a mock purchase delivers once, 5 concurrent retries answer
+//     idempotent: true, 5 concurrent first submissions deliver once, another
+//     account gets CONFLICT, a refunded receipt is rejected; a signed GET
+//     callback (http_key, unwrap) pays once with <eventId>:OK, repeats pay
+//     nothing, a bad signature pays nothing, a session gets FORBIDDEN. Then
+//     Nakama is recreated on the .env values and the defaults are checked
+//     again (the delivered purchase stays idempotent, the old key is gone);
 //   - `docker compose logs nakama` since the last boot: no error-level
 //     lines, no "rpc registration failed", no "auto-create failed",
 //     periodic service-ticker ticks, and the cost of loading the runtime
@@ -98,7 +112,7 @@
 // Target: 127.0.0.1 unless --host is given explicitly.
 
 import { execFileSync } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1008,24 +1022,6 @@ async function economyScenario(serverKey, env) {
 }
 
 /** Restart Nakama (same compose files) and wait for the API. */
-async function restartNakama(bin) {
-  docker(bin, [...COMPOSE_ARGS, 'restart', 'nakama']);
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    await sleep(2_000);
-    try {
-      const r = await fetch(`${BASE}/healthcheck`);
-      if (r.ok) {
-        await sleep(2_000);
-        return true;
-      }
-    } catch {
-      // not up yet
-    }
-  }
-  return false;
-}
-
 /** After a restart nothing replays a charge or a payout (durable keys, PC-11). */
 async function afterRestartChecks(econ, f1Retry) {
   const { ct, e, race } = econ;
@@ -1687,6 +1683,195 @@ async function eventChecks(acct) {
     `calendar events=${cal.length} not-ended events=${notEnded.length}`);
 }
 
+// ── F7 IAP and ads (T-24, T-25) ─────────────────────────────────────────────
+const F7_APPLE_PRODUCT = 'com.cvg.coins100';
+const F7_GOOGLE_PRODUCT = 'coins_100';
+/** A base64 blob shaped like an App Store receipt: forged, so it must never pass. */
+const FORGED_APPLE_PAYLOAD = Buffer.from(`forged app store receipt ${'x'.repeat(48)}`).toString('base64');
+
+const appleUnified = (tx, payload = FORGED_APPLE_PAYLOAD) => JSON.stringify({ Store: 'AppleAppStore', TransactionID: tx, Payload: payload });
+const googlePurchaseJson = (tx) => JSON.stringify({
+  orderId: `GPA.${tx}`, packageName: 'com.cvg.game', productId: F7_GOOGLE_PRODUCT,
+  purchaseTime: Date.now(), purchaseState: 0, purchaseToken: tx,
+});
+const googleUnityPayload = (tx) => JSON.stringify({
+  Store: 'GooglePlay', TransactionID: tx, Payload: JSON.stringify({ json: googlePurchaseJson(tx), signature: 'forged' }),
+});
+/** The mock verifier's receipt (only accepted with IAP_MOCK=true), wrapped like Unity does. */
+const mockUnified = (tx, productId = F7_APPLE_PRODUCT, extra = {}) => appleUnified(tx, JSON.stringify({
+  productId, transactionId: tx, originalTransactionId: tx, purchaseDateUtc: Date.now(), ...extra,
+}));
+
+async function buyIap(acct, platform, productId, transactionId, receiptData) {
+  return rpc(acct.token, 'iap_purchase', { platform, productId, transactionId, receiptData });
+}
+
+/** LevelPlay's S2S callback as LevelPlay sends it: a GET with query parameters, http_key, unwrapped body. */
+async function levelPlayCallback(userId, eventId, rewards, privateKey) {
+  const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  const signature = createHash('md5').update(`${timestamp}${eventId}${userId}${rewards}${privateKey}`).digest('hex');
+  const qs = new URLSearchParams({
+    http_key: ENV_HTTP_KEY, unwrap: '', userId, eventId, rewards: String(rewards), timestamp, signature,
+    placementName: 'DefaultRewardedVideo',
+  });
+  const res = await fetch(`${BASE}/v2/rpc/ads_levelplay_callback?${qs}`);
+  const text = await res.text();
+  let envelope = null;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    envelope = null;
+  }
+  return { status: res.status, text, envelope, acked: text.includes(`${eventId}:OK`) };
+}
+
+/** IAP_MOCK=false (the .env default) and no store credentials: forged receipts and ads by the client pay nothing. */
+async function f7DefaultChecks(serverKey, label) {
+  const { F } = await freshAccounts(serverKey, `f7${label.replace(/\W/g, '')}`, ['F']);
+  const before = await walletOf(F);
+  const run = Date.now();
+  const cases = [
+    ['Apple forged receipt (unified)', 'apple', F7_APPLE_PRODUCT, `f7-apple-${run}`, appleUnified(`f7-apple-${run}`)],
+    ['Google forged receipt (UnityPayload)', 'google', F7_GOOGLE_PRODUCT, `f7-gup-${run}`, googleUnityPayload(`f7-gup-${run}`)],
+    ['Google forged receipt (PurchaseJson)', 'google', F7_GOOGLE_PRODUCT, `f7-gpj-${run}`, googlePurchaseJson(`f7-gpj-${run}`)],
+    ['mock receipt with IAP_MOCK off', 'apple', F7_APPLE_PRODUCT, `f7-mock-${run}`, mockUnified(`f7-mock-${run}`)],
+  ];
+  for (const [name, platform, productId, tx, receipt] of cases) {
+    const r = await buyIap(F, platform, productId, tx, receipt);
+    record(`T-24 [${label}] ${name} → rejected`, r.envelope?.ok === false,
+      `${errCode(r)} reason=${r.envelope?.error?.details?.reason ?? '-'}`);
+  }
+  const afterIap = await walletOf(F);
+  record(`T-24 [${label}] rejected receipts deliver nothing`, afterIap?.coins === before?.coins, `coins ${before?.coins} → ${afterIap?.coins}`);
+  const ad = await rpc(F.token, 'ad_watched', {
+    tier: 'xlarge', provider: 'levelplay', adUnitId: 'smoke', impressionId: `f7-imp-${run}`, watchedAtUtc: Date.now(),
+  });
+  const afterAd = await walletOf(F);
+  record(`T-25 [${label}] client ad_watched pays nothing`,
+    ad.envelope?.ok === true && ad.envelope.data.coinsGranted === 0 && ad.envelope.data.granted === false && afterAd?.coins === afterIap?.coins,
+    `${errCode(ad)} coinsGranted=${ad.envelope?.data?.coinsGranted} coins ${afterIap?.coins} → ${afterAd?.coins}`);
+  if (!ENV_HTTP_KEY) {
+    record(`T-25 [${label}] callback with an empty secret is rejected`, null, 'NAKAMA_RUNTIME_HTTP_KEY not in .env');
+    return F;
+  }
+  // This server's secret is empty: no signature (not even one made with an empty key) is accepted.
+  const cb = await levelPlayCallback(F.uid, `f7nokey${run}`, 60, '');
+  const afterCb = await walletOf(F);
+  record(`T-25 [${label}] LevelPlay callback with an empty secret → rejected, nothing paid`,
+    cb.envelope?.ok === false && !cb.acked && afterCb?.coins === afterAd?.coins,
+    `HTTP ${cb.status} ${cb.envelope?.error?.code ?? '-'} reason=${cb.envelope?.error?.details?.reason ?? '-'} acked=${cb.acked}`);
+  return F;
+}
+
+/** With IAP_MOCK=true and a local test signing key (set only for this boot). */
+async function f7MockChecks(serverKey, testKey) {
+  const { M, N } = await freshAccounts(serverKey, 'f7mock', ['M', 'N']);
+  const run = Date.now();
+  const tx = `f7-buy-${run}`;
+  const w0 = await walletOf(M);
+  const first = await buyIap(M, 'apple', F7_APPLE_PRODUCT, tx, mockUnified(tx));
+  const w1 = await walletOf(M);
+  const credited = (w1?.coins ?? 0) - (w0?.coins ?? 0);
+  record('T-24 [IAP_MOCK=true] a mock purchase is delivered (idempotent: false)',
+    first.envelope?.ok === true && first.envelope.data.idempotent === false && credited > 0,
+    `${errCode(first)} +${credited} coins`);
+  const retries = await Promise.all([0, 1, 2, 3, 4].map(() => buyIap(M, 'apple', F7_APPLE_PRODUCT, tx, mockUnified(tx))));
+  const w2 = await walletOf(M);
+  record('T-24 [IAP_MOCK=true] 5 concurrent retries → idempotent: true, no second delivery',
+    retries.every((r) => r.envelope?.ok === true && r.envelope.data.idempotent === true) && w2?.coins === w1?.coins,
+    `${retries.map((r) => (r.envelope?.ok ? `idem=${r.envelope.data.idempotent}` : errCode(r))).join(' ')}; coins ${w1?.coins} → ${w2?.coins}`);
+  const race = `f7-race-${run}`;
+  const wr0 = await walletOf(M);
+  const racing = await Promise.all([0, 1, 2, 3, 4].map(() => buyIap(M, 'apple', F7_APPLE_PRODUCT, race, mockUnified(race))));
+  const wr1 = await walletOf(M);
+  const fresh = racing.filter((r) => r.envelope?.ok === true && r.envelope.data.idempotent === false).length;
+  const base = credited - (first.envelope?.data?.content?.firstTimeBonus ?? 0);
+  record('T-24 [IAP_MOCK=true] 5 concurrent first submissions of one transaction deliver once',
+    fresh === 1 && (wr1?.coins ?? 0) - (wr0?.coins ?? 0) === base,
+    `${fresh} delivered, others ${[...new Set(racing.filter((r) => !(r.envelope?.ok && !r.envelope.data.idempotent)).map((r) => (r.envelope?.ok ? 'idempotent' : errCode(r))))].join(',') || '-'}; +${(wr1?.coins ?? 0) - (wr0?.coins ?? 0)} coins (pack ${base})`);
+  const stolen = await buyIap(N, 'apple', F7_APPLE_PRODUCT, tx, mockUnified(tx));
+  record('T-24 [IAP_MOCK=true] the same transaction on another account → CONFLICT',
+    errCode(stolen) === 'CONFLICT', `${errCode(stolen)} reason=${stolen.envelope?.error?.details?.reason ?? '-'}`);
+  const refundTx = `f7-refund-${run}`;
+  const refunded = await buyIap(M, 'apple', F7_APPLE_PRODUCT, refundTx, mockUnified(refundTx, F7_APPLE_PRODUCT, { RefundTime: Date.now() }));
+  record('T-24 [IAP_MOCK=true] a refunded purchase (RefundTime) → rejected',
+    refunded.envelope?.ok === false && refunded.envelope.error?.details?.reason === 'REFUNDED',
+    `${errCode(refunded)} reason=${refunded.envelope?.error?.details?.reason ?? '-'}`);
+
+  let adEvent = null;
+  if (ENV_HTTP_KEY) {
+    const a0 = await walletOf(M);
+    adEvent = `f7evt${run}`;
+    const ok1 = await levelPlayCallback(M.uid, adEvent, 15, testKey);
+    const a1 = await walletOf(M);
+    record('T-25 [test key] a signed LevelPlay callback pays once and answers <eventId>:OK',
+      ok1.status === 200 && ok1.acked && ok1.envelope?.data?.status === 'granted' && (a1?.coins ?? 0) - (a0?.coins ?? 0) === 15,
+      `HTTP ${ok1.status} status=${ok1.envelope?.data?.status ?? errCode({ envelope: ok1.envelope, status: ok1.status })} +${(a1?.coins ?? 0) - (a0?.coins ?? 0)} coins`);
+    const again = await Promise.all([0, 1, 2].map(() => levelPlayCallback(M.uid, adEvent, 15, testKey)));
+    const a2 = await walletOf(M);
+    record('T-25 [test key] the repeated callback answers OK again and pays nothing',
+      again.every((r) => r.acked && r.envelope?.data?.idempotent === true) && a2?.coins === a1?.coins,
+      `${again.map((r) => `acked=${r.acked}`).join(' ')}; coins ${a1?.coins} → ${a2?.coins}`);
+    const bad = await levelPlayCallback(M.uid, `f7bad${run}`, 60, `${testKey}-wrong`);
+    const a3 = await walletOf(M);
+    record('T-25 [test key] a callback with an invalid signature pays nothing',
+      bad.envelope?.ok === false && !bad.acked && a3?.coins === a2?.coins,
+      `HTTP ${bad.status} ${bad.envelope?.error?.code ?? '-'} reason=${bad.envelope?.error?.details?.reason ?? '-'}`);
+    const viaSession = await rpc(M.token, 'ads_levelplay_callback', {});
+    record('T-25 a player session cannot call the callback → FORBIDDEN', errCode(viaSession) === 'FORBIDDEN', errCode(viaSession));
+    const status = await rpc(M.token, 'ad_reward_status', {});
+    const listed = (status.envelope?.data?.rewards ?? []).filter((r) => r.eventId === adEvent);
+    record('T-25 ad_reward_status lists the paid event once', status.envelope?.ok === true && listed.length === 1 && listed[0].coins === 15,
+      `${errCode(status)} listed=${listed.length} dailyCount=${status.envelope?.data?.dailyCount}`);
+  } else {
+    record('T-25 signed LevelPlay callback', null, 'NAKAMA_RUNTIME_HTTP_KEY not in .env');
+  }
+  return { M, tx, coins: (await walletOf(M))?.coins, adEvent };
+}
+
+/** Back on the .env defaults: what the mock boot delivered stays delivered once, the test key is gone. */
+async function f7AfterDefaultsChecks(mock, testKey) {
+  const retry = await buyIap(mock.M, 'apple', F7_APPLE_PRODUCT, mock.tx, mockUnified(mock.tx));
+  const w = await walletOf(mock.M);
+  record('T-24 [IAP_MOCK=false again] the retry of the delivered purchase → idempotent: true, nothing more',
+    retry.envelope?.ok === true && retry.envelope.data.idempotent === true && w?.coins === mock.coins,
+    `${errCode(retry)} idem=${retry.envelope?.data?.idempotent}; coins ${mock.coins} → ${w?.coins}`);
+  if (mock.adEvent && ENV_HTTP_KEY) {
+    const old = await levelPlayCallback(mock.M.uid, `${mock.adEvent}b`, 15, testKey);
+    const w2 = await walletOf(mock.M);
+    record('T-25 [empty secret again] a callback signed with the old test key → rejected, nothing paid',
+      old.envelope?.ok === false && !old.acked && w2?.coins === w?.coins,
+      `HTTP ${old.status} ${old.envelope?.error?.code ?? '-'} reason=${old.envelope?.error?.details?.reason ?? '-'}`);
+  }
+}
+
+/** Recreate Nakama with the local override; `overrides` apply to this boot only (never written to .env). */
+async function recreateNakama(bin, overrides) {
+  const childEnv = { ...process.env };
+  delete childEnv.IAP_MOCK;
+  delete childEnv.LEVELPLAY_S2S_PRIVATE_KEY;
+  Object.assign(childEnv, overrides);
+  execFileSync(bin, [...COMPOSE_ARGS, 'up', '-d', '--force-recreate', 'nakama'], { cwd: ROOT, env: childEnv, stdio: 'ignore' });
+  return waitHealthy();
+}
+
+async function waitHealthy() {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    await sleep(2_000);
+    try {
+      const r = await fetch(`${BASE}/healthcheck`);
+      if (r.ok) {
+        await sleep(2_000);
+        return true;
+      }
+    } catch {
+      // not up yet
+    }
+  }
+  return false;
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
@@ -1831,6 +2016,9 @@ async function main() {
   }
   await eventChecks(a);
 
+  // F7 (T-24, T-25) on the .env defaults (IAP_MOCK=false, empty LevelPlay secret).
+  await f7DefaultChecks(serverKey, 'defaults');
+
   if (f1) await matchmakerScenario(f1.m);
   if (race) await finishPrivateRace(fresh, race);
   else record('1-player private race closes', null, '--skip-race');
@@ -1860,13 +2048,26 @@ async function main() {
   if (bin && econ && !SKIP_RESTART) {
     // F4 (T-17): legacy inbox entries, migrated by the next boot.
     const seeded = ct4 ? await seedLegacyInbox(ct4, serverKey) : null;
-    const up = await restartNakama(bin);
-    record('Nakama restarted (same compose files) and answering', up, '');
+    // F7: the restart is a recreate with IAP_MOCK=true and a random local
+    // LevelPlay signing key for this boot only (never written to .env).
+    const testKey = randomBytes(16).toString('hex');
+    const up = await recreateNakama(bin, { IAP_MOCK: 'true', LEVELPLAY_S2S_PRIVATE_KEY: testKey });
+    record('Nakama recreated (override, IAP_MOCK=true + test LevelPlay key) and answering', up, '');
     if (up) {
       await afterRestartChecks(econ, f1Retry);
       if (seeded) await inboxChecks(ct4, seeded);
+      const mock = await f7MockChecks(serverKey, testKey);
       const { started, lines } = nakamaLogsSinceBoot(bin);
       recordErrors('logs: no error-level lines since the restart', classifyErrors(parseLogLines(lines)), started);
+      // Back to the .env values (IAP_MOCK=false, empty secret) and check again.
+      const back = await recreateNakama(bin, {});
+      record('Nakama recreated on the .env defaults (IAP_MOCK=false) and answering', back, '');
+      if (back) {
+        await f7DefaultChecks(serverKey, 'defaults again');
+        await f7AfterDefaultsChecks(mock, testKey);
+        const again = nakamaLogsSinceBoot(bin);
+        recordErrors('logs: no error-level lines since the last recreate', classifyErrors(parseLogLines(again.lines)), again.started);
+      }
     }
   } else if (!SKIP_RESTART) {
     record('T-11 after a restart: no second charge, no second delivery', null, bin ? 'F2 checks did not run' : 'docker checks skipped');
