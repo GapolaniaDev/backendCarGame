@@ -7,12 +7,14 @@
 //   a. If `shouldExcludeFromLeaderboards` returns true, skip silently
 //      (the user is already hidden — we still want the analytics
 //      counter to skip them too, and Phase 4/7 subscribers do that).
-//   b. Read `race_partials/{raceId}` — if present, run
-//      `validatePartials` against the track's `minSectionTimeMs`. If
-//      absent, skip the partial check (the race route hasn't
-//      populated the row yet — separate concern).
-//   c. Read `abrupt_history/{userId}` — run `detectAbruptImprovement`
-//      against the result's `totalMs`.
+//   b. Write the finisher's partials (`race_partials/{raceId}:{userId}`,
+//      the race clock at the end of each accepted lap) and run
+//      `validatePartials` against the track's `minSectionTimeMs`
+//      (plan T-23: nothing wrote partials, so this never ran).
+//   c. Read `abrupt_history/{userId}`, run `detectAbruptImprovement`
+//      against the result's `totalMs` over the entries of the same track
+//      and lap count, then append this race to the history (plan T-23:
+//      nothing appended, so the detector never had data).
 //   d. If the race's overall confidence is 'client' (derived from
 //      `flags.needsReview`), append a `quorum_disagreement` event to
 //      the rolling 7d window. Run `detectQuorumDisagreement`; when it
@@ -29,8 +31,8 @@ import { RACE_EVENT_RACE_COMPLETED } from '../race/constants';
 import type { EventBus } from '../core/event_bus';
 import { getTrack } from '../core/catalog';
 import { serverNowMs, utcDate } from '../core/time';
-import { readRacePartials, validatePartials } from './partials';
-import { readAbruptHistory, detectAbruptImprovement } from './abrupt_improvement';
+import { partialsFromLaps, validatePartials, writePlayerPartials, type RacePartial } from './partials';
+import { appendAbruptHistory, comparableHistory, readAbruptHistory, detectAbruptImprovement } from './abrupt_improvement';
 import { readRecentQuorumMarks, detectQuorumDisagreement, appendQuorumMark } from './quorum_disagreement';
 import {
   appendMark,
@@ -100,7 +102,6 @@ export function handleRaceCompletedForAntiCheat(
   const nowUtc = serverNowMs();
   const todayUtc = utcDate(nowUtc);
   const track = safeGetTrack(nk, raceEvent.trackId);
-  const partials = safeReadPartials(nk, raceEvent.sessionId);
   const lowConfidenceRace = raceEvent.flags.needsReview;
 
   const humans = raceEvent.results.filter((r) => !r.isBot);
@@ -127,7 +128,12 @@ export function handleRaceCompletedForAntiCheat(
     let abruptMark = false;
     let quorumMark = false;
 
+    const finished = !r.abandoned && r.totalMs > 0;
+    const laps = Array.isArray(r.laps) ? r.laps : [];
+
     // (b) partial_impossible — sector time below floor.
+    const partials: RacePartial[] = finished && laps.length > 0 ? partialsFromLaps(laps) : [];
+    if (partials.length >= 2) safeWritePartials(nk, logger, raceEvent.sessionId, userId, partials);
     if (track !== undefined && partials.length >= 2) {
       const v = safeValidatePartials(partials, track.minSectionTimeMs);
       if (v && !v.ok) {
@@ -145,9 +151,10 @@ export function handleRaceCompletedForAntiCheat(
       }
     }
 
-    // (c) abrupt_improvement — >30% better than median of last 5.
-    {
-      const history = safeReadAbruptHistory(nk, userId);
+    // (c) abrupt_improvement — >30% better than the median of the last 5
+    //     races on the same track and distance; then record this race.
+    if (finished) {
+      const history = comparableHistory(safeReadAbruptHistory(nk, userId), raceEvent.trackId, laps.length);
       const v = safeDetectAbruptImprovement(history, r.totalMs);
       if (v && !v.ok) {
         const mark = buildMark({
@@ -162,6 +169,13 @@ export function handleRaceCompletedForAntiCheat(
           safeIncrementStats(nk, todayUtc, mark);
         }
       }
+      safeAppendAbruptHistory(nk, logger, userId, {
+        raceId: raceEvent.sessionId,
+        bestTimeMs: r.totalMs,
+        ts: nowUtc,
+        trackId: raceEvent.trackId,
+        laps: laps.length,
+      });
     }
 
     // (d) quorum_disagreement — when the race was low-confidence AND
@@ -223,11 +237,30 @@ function safeGetTrack(nk: INakama, trackId: string) {
   }
 }
 
-function safeReadPartials(nk: INakama, raceId: string) {
+function safeWritePartials(
+  nk: INakama,
+  logger: ILogger,
+  raceId: string,
+  userId: string,
+  partials: ReadonlyArray<RacePartial>,
+): void {
   try {
-    return readRacePartials(nk, raceId);
-  } catch {
-    return [];
+    writePlayerPartials(nk, raceId, userId, partials);
+  } catch (e) {
+    logger.warn('anti_cheat partials write failed sid=%s uid=%s: %s', raceId, userId, e instanceof Error ? e.message : String(e));
+  }
+}
+
+function safeAppendAbruptHistory(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  entry: { raceId: string; bestTimeMs: number; ts: number; trackId: string; laps: number },
+): void {
+  try {
+    appendAbruptHistory(nk, userId, entry);
+  } catch (e) {
+    logger.warn('anti_cheat history append failed uid=%s: %s', userId, e instanceof Error ? e.message : String(e));
   }
 }
 

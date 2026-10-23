@@ -26,9 +26,9 @@ import { RACE_EVENT_RACE_COMPLETED } from '../../modules/src/race/constants';
 import type { RaceCompletedEvent, RaceResult } from '../../modules/src/race/types';
 import type { ILogger, INakama } from '../../modules/src/nkruntime';
 import { FakeNakama } from '../e2e/_stubs';
-import { appendAbruptHistory } from '../../modules/src/anti_cheat/abrupt_improvement';
+import { appendAbruptHistory, readAbruptHistory } from '../../modules/src/anti_cheat/abrupt_improvement';
 import { appendQuorumMark } from '../../modules/src/anti_cheat/quorum_disagreement';
-import { writeRacePartials } from '../../modules/src/anti_cheat/partials';
+import { readPlayerPartials } from '../../modules/src/anti_cheat/partials';
 
 // ─── Test fixtures ─────────────────────────────────────────────────────────
 
@@ -162,18 +162,17 @@ describe('anti_cheat subscriber (Phase 8 Chunk 4)', () => {
     const fake = new FakeNakama();
     const nk = fake.nakama as INakama;
     const deps = mkDeps(fake);
-    // Pre-seed partials: a sector of 800ms vs 2000ms floor.
-    writeRacePartials(nk, 'race-3', [
-      { index: 0, timeMs: 0 },
-      { index: 1, timeMs: 800 }, // sector 0→1 = 800ms, below 2000 floor.
-      { index: 2, timeMs: 4000 },
-      { index: 3, timeMs: 8000 },
-    ]);
+    // Plan T-23: the partials come from the accepted laps: a first lap of
+    // 800ms vs the 2000ms floor.
     const out = handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
       sessionId: 'race-3',
-      results: [mkResult({ userId: 'u-partial', rank: 1, totalMs: 8000 })],
+      results: [mkResult({ userId: 'u-partial', rank: 1, totalMs: 8000, laps: [800, 3200, 4000] })],
     }));
     expect(out.humans[0]?.partialMark).toBe(true);
+    // ... and the subscriber wrote them (per player).
+    expect(readPlayerPartials(nk, 'race-3', 'u-partial')).toEqual([
+      { index: 0, timeMs: 0 }, { index: 1, timeMs: 800 }, { index: 2, timeMs: 4000 }, { index: 3, timeMs: 8000 },
+    ]);
     const marks = readMarks(nk, 'u-partial');
     expect(marks).toHaveLength(1);
     expect(marks[0]?.kind).toBe('partial_impossible');
@@ -190,15 +189,50 @@ describe('anti_cheat subscriber (Phase 8 Chunk 4)', () => {
         raceId: `r-${i}`,
         bestTimeMs: 30_000,
         ts: ts - i * 1_000,
+        trackId: 'track-A',
+        laps: 2,
       });
     }
     const out = handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
       sessionId: 'race-abrupt',
-      results: [mkResult({ userId: 'u-abrupt', rank: 1, totalMs: 15_000 })], // 50% faster
+      results: [mkResult({ userId: 'u-abrupt', rank: 1, totalMs: 15_000, laps: [7_500, 7_500] })], // 50% faster
     }));
     expect(out.humans[0]?.abruptMark).toBe(true);
     const marks = readMarks(nk, 'u-abrupt');
     expect(marks.find((m) => m.kind === 'abrupt_improvement')).toBeDefined();
+    // The race joined the history (plan T-23: nothing appended before).
+    expect(readAbruptHistory(nk, 'u-abrupt').some((e) => e.raceId === 'race-abrupt')).toBe(true);
+  });
+
+  it('abrupt_improvement compares only the same track and distance', () => {
+    const fake = new FakeNakama();
+    const nk = fake.nakama as INakama;
+    const deps = mkDeps(fake);
+    for (let i = 0; i < 5; i += 1) {
+      appendAbruptHistory(nk, 'u-other', { raceId: `o-${i}`, bestTimeMs: 30_000, ts: NOW - 60_000 - i, trackId: 'track-Z', laps: 2 });
+    }
+    const out = handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
+      sessionId: 'race-other',
+      results: [mkResult({ userId: 'u-other', rank: 1, totalMs: 15_000, laps: [7_500, 7_500] })],
+    }));
+    expect(out.humans[0]?.abruptMark).toBe(false);
+  });
+
+  it('five races on a track build the history the detector needs', () => {
+    const fake = new FakeNakama();
+    const nk = fake.nakama as INakama;
+    const deps = mkDeps(fake);
+    for (let i = 0; i < 5; i += 1) {
+      handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
+        sessionId: `race-h${i}`,
+        results: [mkResult({ userId: 'u-hist', rank: 1, totalMs: 30_000, laps: [15_000, 15_000] })],
+      }));
+    }
+    const out = handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
+      sessionId: 'race-h5',
+      results: [mkResult({ userId: 'u-hist', rank: 1, totalMs: 15_000, laps: [7_500, 7_500] })],
+    }));
+    expect(out.humans[0]?.abruptMark).toBe(true);
   });
 
   it('skips partial validation when race_partials row is absent', () => {
@@ -278,15 +312,10 @@ describe('anti_cheat subscriber (Phase 8 Chunk 4)', () => {
     const fake = new FakeNakama();
     const nk = fake.nakama as INakama;
     const deps = mkDeps(fake);
-    // Trigger a partial_impossible mark.
-    writeRacePartials(nk, 'race-stats', [
-      { index: 0, timeMs: 0 },
-      { index: 1, timeMs: 100 }, // below 2000ms floor
-      { index: 2, timeMs: 4000 },
-    ]);
+    // Trigger a partial_impossible mark (a 100ms lap, below the 2000ms floor).
     handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
       sessionId: 'race-stats',
-      results: [mkResult({ userId: 'u-stats', rank: 1, totalMs: 4000 })],
+      results: [mkResult({ userId: 'u-stats', rank: 1, totalMs: 4000, laps: [100, 3900] })],
     }));
     const stats = readDailyStats(nk, new Date(NOW).toISOString().slice(0, 10)); // utcDate(NOW)
     expect(stats.marksTotal).toBeGreaterThanOrEqual(1);
@@ -297,17 +326,12 @@ describe('anti_cheat subscriber (Phase 8 Chunk 4)', () => {
     const fake = new FakeNakama();
     const nk = fake.nakama as INakama;
     const deps = mkDeps(fake);
-    // Set up a partials violation.
-    writeRacePartials(nk, 'race-mix', [
-      { index: 0, timeMs: 0 },
-      { index: 1, timeMs: 100 },
-      { index: 2, timeMs: 4000 },
-    ]);
+    // A partials violation in the human's laps (and the bot's).
     const out = handleRaceCompletedForAntiCheat(deps, mkRaceEvent({
       sessionId: 'race-mix',
       results: [
-        mkResult({ userId: 'bot-1', isBot: true, rank: 1, totalMs: 4000 }),
-        mkResult({ userId: 'u-human', rank: 2, totalMs: 8000 }),
+        mkResult({ userId: 'bot-1', isBot: true, rank: 1, totalMs: 4000, laps: [100, 3900] }),
+        mkResult({ userId: 'u-human', rank: 2, totalMs: 8000, laps: [100, 7900] }),
       ],
     }));
     expect(out.humans).toHaveLength(1);

@@ -2,10 +2,9 @@
 // `store_buy` charges the result of the SAME function, so the price
 // charged is the price shown, special-offer discount included.
 //
-// A discount applies when the player's profile lists an active
-// `special_offer` event (`activeSpecialOffers`, reconciled by the events
-// scanner) whose `payload.sku` is the offer id and whose window contains
-// the server's "now". Unknown SKUs never get here: the events catalog
+// A discount applies when a live `special_offer` event of the events
+// calendar (the one event source, plan T-23) has the offer id as its
+// `payload.sku` and a window that contains the server's "now". Unknown SKUs never get here: the events catalog
 // drops them at load (`loadEventsCatalog`).
 
 import { getEventsCatalog } from '../core/active_events';

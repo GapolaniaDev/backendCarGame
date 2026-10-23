@@ -158,3 +158,48 @@ export function writeRacePartials(
   }
   throw new Error('writeRacePartials: unreachable');
 }
+// ─── Per-player partials (plan T-23; audit 07 f7, 8.4.1) ────────────────────
+//
+// Nothing ever wrote `race_partials`, so the sector check never ran. The
+// anti-cheat subscriber now writes each finisher's partials when a race
+// closes: the cumulative clock at the end of every lap (index 0 = start
+// at 0 ms), from the lap times the server accepted. One row per player:
+// `race_partials/{raceId}:{userId}` (system-owned, `value.userId` names
+// the player so the account purge finds it).
+
+/** Partials of one player: the race clock at the end of each lap. */
+export function partialsFromLaps(laps: ReadonlyArray<number>): RacePartial[] {
+  const out: RacePartial[] = [{ index: 0, timeMs: 0 }];
+  let clock = 0;
+  laps.forEach((lapMs, i) => {
+    clock += lapMs;
+    out.push({ index: i + 1, timeMs: clock });
+  });
+  return out;
+}
+
+export function playerPartialsKey(raceId: string, userId: string): string {
+  return `${raceId}:${userId}`;
+}
+
+/** Write one player's partials (overwrite: the server's laps are final). */
+export function writePlayerPartials(
+  nk: INakama,
+  raceId: string,
+  userId: string,
+  partials: ReadonlyArray<RacePartial>,
+): void {
+  nk.storageWrite([{
+    collection: RACE_PARTIALS_COLLECTION,
+    key: playerPartialsKey(raceId, userId),
+    userId: RACE_PARTIALS_SYSTEM_USER,
+    value: { schemaVersion: 1, raceId, userId, partials: [...partials] } as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+  }]);
+}
+
+/** One player's partials; `[]` when absent. */
+export function readPlayerPartials(nk: INakama, raceId: string, userId: string): RacePartial[] {
+  return readRacePartials(nk, playerPartialsKey(raceId, userId));
+}

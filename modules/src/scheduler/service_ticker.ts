@@ -8,7 +8,7 @@
 // second (`tickRate` 1) for as long as the process lives. The loop runs
 // each job when it is due:
 //   - tournaments: lifecycle + prize payout       every 60 s
-//   - events: special-offer reconciliation        every 5 min
+//   - events: live events of events.json (read-only) every 5 min
 //   - subscriptions: expiry notices + grants      every 5 min
 //   - races: close sessions past their grace       every 15 s (plan T-06)
 //   - pass season: settle every player once the
@@ -115,7 +115,7 @@ export function runServiceTick(
       state.lastEventMs = nowMs;
       result.events = runJob(logger, 'events', () => {
         const r = runEventScannerTick({ logger, nk, nowFn: () => nowMs });
-        return `scanned=${r.scanned}/updated=${r.updated}`;
+        return `live=${r.live}/offers=${r.desired.length}`;
       });
     }
     if (dueSubscription) {

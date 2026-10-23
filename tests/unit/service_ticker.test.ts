@@ -136,7 +136,7 @@ describe('service ticker scheduling', () => {
     const r = runServiceTick(nk, logger, state, NOW, 'match:t');
     expect(r.ran).toBe(true);
     expect(r.tournaments).toMatch(/^scanned=/);
-    expect(r.events).toMatch(/^scanned=/);
+    expect(r.events).toMatch(/^live=/);
     expect(r.subscriptions).toMatch(/^scanned=/);
     expect(logger.errors).toEqual([]);
     expect(logger.infos.filter((l) => l.startsWith('service ticker tick n=1'))).toHaveLength(1);

@@ -28,6 +28,22 @@ export interface AbruptHistoryEntry {
   raceId: string;
   bestTimeMs: number;
   ts: number;
+  /**
+   * Track and lap count of the race (plan T-23, additive): a time only
+   * compares with times of the same track and distance. Entries without
+   * them predate the subscriber writing the history.
+   */
+  trackId?: string;
+  laps?: number;
+}
+
+/** History entries comparable with a race on `trackId` over `laps` laps. */
+export function comparableHistory(
+  history: ReadonlyArray<AbruptHistoryEntry>,
+  trackId: string,
+  laps: number,
+): AbruptHistoryEntry[] {
+  return history.filter((e) => e.trackId === trackId && e.laps === laps);
 }
 
 export interface AbruptHistoryRow {

@@ -28,6 +28,7 @@ import {
 } from './marks';
 import {
   readRacePartials,
+  readPlayerPartials,
   validatePartials,
   type RacePartial,
 } from './partials';
@@ -224,7 +225,12 @@ export const admin_marks_partials_view_impl: RpcHandler = (_ctx, logger, nk, bod
   }
   const raceId = raceIdRaw;
 
-  const partials = readRacePartials(nk, raceId);
+  // Plan T-23: partials are written per finisher (`{raceId}:{userId}`);
+  // without `userId` the legacy race-level row is read.
+  const userIdRaw = raw['userId'];
+  const partials = typeof userIdRaw === 'string' && userIdRaw.length > 0
+    ? readPlayerPartials(nk, raceId, userIdRaw)
+    : readRacePartials(nk, raceId);
   const found = partials.length > 0;
 
   // We can't easily resolve the track from the raceId alone — the

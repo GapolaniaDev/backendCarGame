@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { runScannerTick, TOURNAMENT_RETENTION_MS } from '../../modules/src/tournaments/scanner';
 import { loadTournamentsCatalog, _resetTournamentsCatalogForTests } from '../../modules/src/tournaments/catalog';
 import { upsertBestTime } from '../../modules/src/tournaments/leaderboard';
+import { readTournamentInstance } from '../../modules/src/tournaments/repo';
 import { FakeNakama } from '../e2e/_stubs';
 import type { INakama } from '../../modules/src/nkruntime';
 import type { Tournament, RawTournamentsFile } from '../../modules/src/tournaments/types';
@@ -107,17 +108,69 @@ describe('tournament scanner (Phase 8 Chunk 6)', () => {
     expect(r.scanned).toBe(1);
     expect(r.closed).toBe(1);
 
-    expect(fake.wallets.get('a')?.coins).toBe(1000);
-    expect(fake.wallets.get('b')?.coins).toBe(100);
-    expect(fake.wallets.get('c')?.coins).toBe(100);
-
-    // Inbox entries created.
-    const inbox = fake.store;
-    let inboxCount = 0;
-    inbox.forEach((_v, k) => {
-      if (k.startsWith('inbox/')) inboxCount += 1;
+    // Plan T-23: the prizes are claimable rewards in the single inbox;
+    // nothing is paid until inbox_claim.
+    expect(fake.wallets.get('a')?.coins).toBe(0);
+    const rewards: Array<{ userId: string; coins?: number }> = [];
+    fake.store.forEach((v, k) => {
+      if (!k.startsWith('inbox/')) return;
+      const m = v.value as { kind: string; reward?: { coins?: number }; userId: string };
+      expect(m.kind).toBe('reward');
+      rewards.push({ userId: m.userId, coins: m.reward?.coins });
     });
-    expect(inboxCount).toBe(3);
+    expect(rewards.sort((x, y) => x.userId.localeCompare(y.userId))).toEqual([
+      { userId: 'a', coins: 1000 }, { userId: 'b', coins: 100 }, { userId: 'c', coins: 100 },
+    ]);
+  });
+
+  it('a closed tournament closes once: closedAt stays and nothing is resent', () => {
+    const t: Tournament = {
+      schemaVersion: 1,
+      id: 'once-x',
+      templateId: 'once-x',
+      kind: 'time_trial',
+      trackId: 'tr',
+      startsAt: Date.now() - 3 * 60 * 60 * 1000,
+      endsAt: Date.now() - 60 * 1000,
+      entryFee: 0, maxAttempts: 5, minLevel: 1,
+      prizes: [{ rankFrom: 1, rankTo: 1, rewards: { coins: 1000 } }],
+      createdAt: Date.now() - 4 * 60 * 60 * 1000,
+    };
+    seedInstance(nk, t);
+    upsertBestTime(nk, t.id, 'a', 30000, 1);
+    expect(runScannerTick({ logger: SILENT_LOGGER, nk }).closed).toBe(1);
+    const first = readTournamentInstance(nk, t.id)!;
+    expect(first.state).toBe('closed');
+    expect(first.rewardsDistributed).toBe(true);
+    const firstVersion = fake.store.get(`tournament_instances/${t.id}/00000000-0000-0000-0000-000000000000`)?.version;
+
+    const second = runScannerTick({ logger: SILENT_LOGGER, nk });
+    expect(second.closed).toBe(0);
+    expect(readTournamentInstance(nk, t.id)!.closedAt).toBe(first.closedAt);
+    expect(fake.store.get(`tournament_instances/${t.id}/00000000-0000-0000-0000-000000000000`)?.version).toBe(firstVersion);
+  });
+
+  it('a cancelled tournament closes without prizes', () => {
+    const t: Tournament = {
+      schemaVersion: 1,
+      id: 'cancel-x',
+      templateId: 'cancel-x',
+      kind: 'time_trial',
+      trackId: 'tr',
+      startsAt: Date.now() - 3 * 60 * 60 * 1000,
+      endsAt: Date.now() - 60 * 1000,
+      entryFee: 0, maxAttempts: 5, minLevel: 1,
+      prizes: [{ rankFrom: 1, rankTo: 1, rewards: { coins: 1000 } }],
+      createdAt: Date.now() - 4 * 60 * 60 * 1000,
+      cancelled: true,
+    };
+    seedInstance(nk, t);
+    upsertBestTime(nk, t.id, 'a', 30000, 1);
+    runScannerTick({ logger: SILENT_LOGGER, nk });
+    let inbox = 0;
+    fake.store.forEach((_v, k) => { if (k.startsWith('inbox/')) inbox += 1; });
+    expect(inbox).toBe(0);
+    expect(readTournamentInstance(nk, t.id)!.rewardsDistributed).toBe(true);
   });
 
   it('instance past retention (24h) → deletes the row + leaderboard', () => {

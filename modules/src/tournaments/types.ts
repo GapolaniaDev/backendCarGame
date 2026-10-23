@@ -66,8 +66,10 @@ export interface Tournament {
   /** True after `admin_tournament_void_refund` — refunds distributed, no prizes. */
   voided?: boolean;
   /** UTC epoch-ms when the scanner transitioned the row to 'closed'
-   *  (or when an admin RPC cancelled/voided it). */
+   *  (or when an admin RPC cancelled/voided it). Written once (T-23). */
   closedAt?: number;
+  /** True once the close sent every prize to the inbox (plan T-23). */
+  rewardsDistributed?: boolean;
 }
 
 /**

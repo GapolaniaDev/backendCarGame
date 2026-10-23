@@ -253,7 +253,7 @@ describe('events e2e (Phase 8 Chunk 8)', () => {
 
   // ─── scanner ─────────────────────────────────────────────────────────
 
-  it('scanner tick stamps profile.activeSpecialOffers when an event is live', async () => {
+  it('scanner tick reports the live offer without touching profiles (plan T-23)', async () => {
     // Import the scanner directly so we can drive a tick without
     // starting a setInterval loop in the test.
     const { runEventScannerTick } = await import('../../modules/src/events/scanner');
@@ -277,9 +277,9 @@ describe('events e2e (Phase 8 Chunk 8)', () => {
     loadEventsCatalog(env.logger, eventsFile, env.nak);
     seedProfile(env, 'u1', 1, {});
     const r = runEventScannerTick({ logger: env.logger, nk: env.nak });
-    expect(r.updated).toBeGreaterThanOrEqual(1);
+    expect(r.desired).toEqual(['evt_test_offer']);
     const profile = env.fakeNakama.store.get('profiles/u1/u1')?.value as { activeSpecialOffers?: string[] };
-    expect(profile.activeSpecialOffers).toEqual(['evt_test_offer']);
+    expect(profile.activeSpecialOffers).toBeUndefined();
   });
 
   // ─── integration: store_get + scanner + special offer ───────────────

@@ -142,96 +142,22 @@ describe('events scanner (Phase 8 Chunk 8)', () => {
     expect(ids).toHaveLength(ACTIVE_SPECIAL_OFFERS_CAP);
   });
 
-  // ─── runEventScannerTick ──────────────────────────────────────────────
+  // ─── runEventScannerTick (plan T-23: read-only) ───────────────────────
 
-  it('updates profile.activeSpecialOffers when an event is live', () => {
-    setupCatalogs(EVENTS_ONE_OFFER);
-    const nkNow = Date.parse('2026-10-10T00:00:00Z');
+  it('reports the live events and offers and writes nothing', () => {
+    setupCatalogs(EVENTS_MULTIPLE_OFFERS);
+    const nkNow = Date.parse('2026-10-15T12:00:00Z');
     seedProfile(nk, {
-      schemaVersion: 1,
-      userId: 'u1',
-      displayName: 'u1',
-      avatarUrl: null,
-      createdAt: 0,
-      updatedAt: 0,
+      schemaVersion: 1, userId: 'u1', displayName: 'u1', avatarUrl: null,
+      createdAt: 1, updatedAt: 1,
     });
-    const r = runEventScannerTick({
-      logger: SILENT_LOGGER,
-      nk,
-      nowFn: () => nkNow,
-    });
-    expect(r.scanned).toBe(1);
-    expect(r.updated).toBe(1);
-    expect(r.desired).toEqual(['evt_offer_gem']);
-    const p = readProfile(nk, 'u1');
-    expect(p?.activeSpecialOffers).toEqual(['evt_offer_gem']);
+    const before = fake.store.get('profiles/u1/u1')?.version;
+    const r = runEventScannerTick({ logger: SILENT_LOGGER, nk, nowFn: () => nkNow });
+    expect(r.live).toBe(2);
+    expect(r.desired).toEqual(['evt_offer_b', 'evt_offer_a']);
+    expect(fake.store.get('profiles/u1/u1')?.version).toBe(before);
+    expect(readProfile(nk, 'u1')?.activeSpecialOffers).toBeUndefined();
   });
-
-  it('no-ops when desired == current', () => {
-    setupCatalogs(EVENTS_ONE_OFFER);
-    const nkNow = Date.parse('2026-10-10T00:00:00Z');
-    seedProfile(nk, {
-      schemaVersion: 1,
-      userId: 'u1',
-      displayName: 'u1',
-      avatarUrl: null,
-      createdAt: 0,
-      updatedAt: 0,
-      activeSpecialOffers: ['evt_offer_gem'],
-    });
-    const r = runEventScannerTick({
-      logger: SILENT_LOGGER,
-      nk,
-      nowFn: () => nkNow,
-    });
-    expect(r.updated).toBe(0);
-  });
-
-  it('clears the flag when the offer has expired', () => {
-    setupCatalogs(EVENTS_ONE_OFFER);
-    const nkNow = Date.parse('2026-10-20T00:00:00Z'); // after endsAt
-    seedProfile(nk, {
-      schemaVersion: 1,
-      userId: 'u1',
-      displayName: 'u1',
-      avatarUrl: null,
-      createdAt: 0,
-      updatedAt: 0,
-      activeSpecialOffers: ['evt_offer_gem'],
-    });
-    const r = runEventScannerTick({
-      logger: SILENT_LOGGER,
-      nk,
-      nowFn: () => nkNow,
-    });
-    expect(r.desired).toEqual([]);
-    expect(r.updated).toBe(1);
-    const p = readProfile(nk, 'u1');
-    expect(p?.activeSpecialOffers).toEqual([]);
-  });
-
-  it('skips profiles missing userId (defensive)', () => {
-    setupCatalogs(EVENTS_ONE_OFFER);
-    const nkNow = Date.parse('2026-10-10T00:00:00Z');
-    // Inject a profile without userId via direct store.
-    nk.storageWrite([{
-      collection: 'profiles',
-      key: 'malformed',
-      userId: 'malformed',
-      value: { schemaVersion: 1 } as unknown as Record<string, unknown>,
-      permissionRead: 0,
-      permissionWrite: 0,
-    }]);
-    const r = runEventScannerTick({
-      logger: SILENT_LOGGER,
-      nk,
-      nowFn: () => nkNow,
-    });
-    // The malformed row is visited but not updated (no userId).
-    expect(r.scanned).toBe(1);
-    expect(r.updated).toBe(0);
-  });
-
 });
 
 // Helper to build a RawEventsFile from a list of events.

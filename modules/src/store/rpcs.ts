@@ -10,6 +10,7 @@
 //   - `store_buy` is owner-only (caller identity enforced). Packs
 //     are one-time entitlements; cars and cosmetics are forever.
 
+import { resolveActiveSpecialOfferIds } from '../events/scanner';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import { emit } from '../core/admin/analytics';
@@ -53,7 +54,6 @@ import {
   type OfferPrice,
   type SpecialOfferPricing,
 } from './pricing';
-import { readProfile } from '../profiles/storage';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
 
@@ -157,11 +157,10 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     purchasedPackIds: new Set<string>(garage.purchasedPacks),
   };
 
-  // Phase 8 Chunk 8: read the player's `activeSpecialOffers` so we can
-  // decorate each visible offer with basePrice/finalPrice and an
-  // optional `activeSpecialOfferId`. The list is reconciled by the
-  // events scanner; a profile without the field simply sees no discount.
-  // The server clock decides the discount window, as in store_buy (T-12).
+  // Phase 8 Chunk 8: decorate each visible offer with basePrice/finalPrice
+  // and an optional `activeSpecialOfferId` from the live special offers of
+  // the events calendar. The server clock decides the window, as in
+  // store_buy (T-12).
   const pricingByOffer = playerPricing(nk, userId, Date.now());
 
   const filtered = rotated.map((section) => {
@@ -353,10 +352,13 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Special-offer pricing of the player's active offers at `nowMs`. */
-function playerPricing(nk: INakama, userId: string, nowMs: number): Map<string, SpecialOfferPricing> {
-  const profile = readProfile(nk, userId);
-  return specialOfferPricing(new Set<string>(profile?.activeSpecialOffers ?? []), nowMs);
+/**
+ * Special-offer pricing at `nowMs`: the live `special_offer` events of the
+ * events calendar (plan T-23: one event source; it read a per-profile
+ * copy that a scanner rewrote every 5 minutes).
+ */
+function playerPricing(_nk: INakama, _userId: string, nowMs: number): Map<string, SpecialOfferPricing> {
+  return specialOfferPricing(new Set<string>(resolveActiveSpecialOfferIds(nowMs)), nowMs);
 }
 
 /** The ownership rule of the store filter, for the `owned` flag. */

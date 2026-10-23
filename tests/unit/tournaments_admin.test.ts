@@ -347,8 +347,10 @@ describe('admin_tournament_release_prizes (Phase 8 Chunk 7)', () => {
     call(env, admin_tournament_release_prizes_impl, { adminKey: ADMIN_KEY, tournamentId: 'a' });
     const inbox = env.fake.store.get('inbox/fast/tournament:a:prize:fast:1/fast');
     expect(inbox).toBeDefined();
-    const v = inbox?.value as { granted: { coins?: number }; body: string };
-    expect(v.granted.coins).toBe(100);
+    // Plan T-23: a claimable reward (inbox_claim pays it), not a notice.
+    const v = inbox?.value as { kind: string; reward: { coins?: number }; body: string };
+    expect(v.kind).toBe('reward');
+    expect(v.reward.coins).toBe(100);
     expect(v.body).toContain('rank 1');
   });
 });

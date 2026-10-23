@@ -30,7 +30,7 @@ export const TOURNAMENT_ENTRIES_COLLECTION = 'tournament_entries';
 
 // ─── Instances ────────────────────────────────────────────────────────────
 
-interface InstanceReadResult {
+export interface InstanceReadResult {
   record: Tournament;
   version: string;
 }
@@ -50,6 +50,24 @@ function readInstanceRow(nk: INakama, templateId: string): InstanceReadResult | 
     return null;
   }
   return { record: v as Tournament, version: obj.version ?? '' };
+}
+
+/** An instance with its storage version (for a CAS write). */
+export function readTournamentInstanceRow(nk: INakama, templateId: string): InstanceReadResult | null {
+  return readInstanceRow(nk, templateId);
+}
+
+/** CAS write of an instance; throws when `version` is stale. */
+export function writeTournamentInstanceCas(nk: INakama, t: Tournament, version: string): void {
+  nk.storageWrite([{
+    collection: TOURNAMENT_INSTANCES_COLLECTION,
+    key: t.id,
+    userId: TOURNAMENT_INSTANCES_SYSTEM_USER,
+    value: t as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version,
+  }]);
 }
 
 /** Read a tournament instance by template id. Returns null when absent. */
@@ -218,6 +236,43 @@ export function readEntry(
 ): TournamentEntry | null {
   const row = readEntryRow(nk, tournamentId, userId);
   return row === null ? null : row.record;
+}
+
+/** A fresh entry row. */
+export function newEntry(
+  tournamentId: string,
+  userId: string,
+  paidEntryFee: number,
+  attemptsRemaining: number,
+  nowUtc: number,
+): TournamentEntryRow {
+  return {
+    schemaVersion: 1,
+    tournamentId,
+    userId,
+    attemptsRemaining,
+    bestTimeMs: null,
+    checkpoints: [],
+    createdAt: nowUtc,
+    updatedAt: nowUtc,
+    paidEntryFee,
+  };
+}
+
+/**
+ * Storage object creating an entry (version '*': must not exist), for a
+ * write in the same transaction as the entry fee (plan T-23).
+ */
+export function entryCreateWrite(entry: TournamentEntryRow): IStorageObject {
+  return {
+    collection: TOURNAMENT_ENTRIES_COLLECTION,
+    key: entry.tournamentId,
+    userId: entry.userId,
+    value: entry as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version: '*',
+  };
 }
 
 /**

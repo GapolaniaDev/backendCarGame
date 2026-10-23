@@ -5,7 +5,11 @@
 //   - the per-platform `minClientVersion` (so the client can prompt for
 //     an update before issuing any other RPC)
 //   - the `regions` list (so the client can pick a relay)
-//   - the upcoming `calendar` (for the events screen)
+//   - the upcoming `calendar` (for the events screen): the events of the
+//     ONE event source, `events.json`, that have not ended, plus the
+//     maintenance windows of the liveops config (plan T-23; audit 07 f11).
+//     The config's own `event` / `tournament` entries are ignored: they
+//     were a second, always-empty schedule nothing else read.
 //   - a `configHash` (sha256 of the canonical config minus the hash
 //     itself) so the client can skip a re-render when nothing changed.
 //
@@ -22,6 +26,8 @@ import { claimInbox, listInbox, type InboxDelivered, type InboxMessage } from '.
 import { liveopsGate } from '../core/liveops';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
+import { getEventsCatalog } from '../core/active_events';
+import { serverNowMs } from '../core/time';
 
 export interface LiveopsConfigGetInput {
   /** Required when called via HTTP gateway; the socket path reads it from ctx.userId. */
@@ -54,6 +60,7 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!callerId.ok) return callerId.error;
 
   const cfg = loadLiveopsConfig(nk, logger);
+  const calendar = liveopsCalendar(cfg.calendar, serverNowMs());
 
   // Strip the hash field (if present) before stringifying — the hash
   // can't include itself.
@@ -62,7 +69,7 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     flags: cfg.flags,
     minClientVersion: cfg.minClientVersion,
     regions: cfg.regions,
-    calendar: cfg.calendar,
+    calendar,
   });
   const configHash = nk.sha256Hash(JSON.stringify(hashSource));
 
@@ -85,13 +92,30 @@ export const liveops_config_get_impl: RpcHandler = (ctx, logger, nk, body) => {
       },
       minClientVersion: { ...cfg.minClientVersion },
       regions: cfg.regions.map((r) => ({ ...r })),
-      calendar: cfg.calendar.map((c) => ({ ...c })),
+      calendar,
       configHash,
     }),
   );
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * The calendar the client shows: events of `events.json` that have not
+ * ended (sorted by start) and the config's maintenance windows.
+ */
+export function liveopsCalendar(
+  configured: ReadonlyArray<LiveopsCalendarEntry>,
+  nowMs: number,
+): LiveopsCalendarEntry[] {
+  const events: LiveopsCalendarEntry[] = getEventsCatalog()
+    .filter((e) => Date.parse(e.endsAtUtc) >= nowMs)
+    .map((e) => ({ id: e.id, type: 'event' as const, startUtc: e.startsAtUtc, endUtc: e.endsAtUtc, kind: e.kind }));
+  const maintenance = configured
+    .filter((c) => c.type === 'maintenance' && Date.parse(c.endUtc) >= nowMs)
+    .map((c) => ({ ...c }));
+  return [...events, ...maintenance].sort((a, b) => a.startUtc.localeCompare(b.startUtc));
+}
 
 
 function stripHash<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {

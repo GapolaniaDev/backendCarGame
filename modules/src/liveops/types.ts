@@ -41,6 +41,8 @@ export interface LiveopsCalendarEntry {
   /** ISO-8601 UTC string (e.g. "2026-10-31T12:00:00Z"). */
   startUtc: string;
   endUtc: string;
+  /** Event kind (`xp_double`, `special_offer`, …) for `type: 'event'` (plan T-23, additive). */
+  kind?: string;
 }
 
 export interface LiveopsConfig {

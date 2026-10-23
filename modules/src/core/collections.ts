@@ -64,8 +64,9 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   },
   userOwned('quorum_marks', 'anti_cheat'),
   {
-    name: 'race_partials', module: 'anti_cheat', owner: 'system', purge: [],
-    retained: 'per-race anti-cheat evidence keyed by race id; removed by the race cleanup',
+    name: 'race_partials', module: 'anti_cheat', owner: 'system',
+    // Per-finisher rows since T-23 (`{raceId}:{userId}`, value.userId).
+    purge: [{ kind: 'valueField', field: 'userId' }],
   },
   // chat
   {

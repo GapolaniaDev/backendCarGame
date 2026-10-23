@@ -9,13 +9,15 @@
 //                          cron.
 //   - tournament_get     → single instance + the caller's entry (if
 //                          joined) + the top 10 times from
-//                          `tournament_leaderboard/{id}` (Chunk 6
-//                          populates the leaderboard; this returns []
-//                          when absent).
-//   - tournament_join    → level + state + funds checks, deducts
-//                          `entryFee` from the wallet (idempotency
-//                          key `tournament_join:{tid}:{uid}`), creates
-//                          the entry row.
+//                          `tournament_leaderboard/{id}` with their
+//                          usernames, and the caller's rank (plan T-23;
+//                          `topTimes` was always []).
+//   - tournament_join    → level + state + funds checks, then the
+//                          `entryFee` charge and the entry row in ONE
+//                          transaction (idempotency key
+//                          `tournament_join:{tid}:{uid}`, plan T-23):
+//                          without funds there is no entry, and a lost
+//                          entry write charges nothing.
 //
 // All three are blocked during maintenance via `assertNotInMaintenance`.
 
@@ -27,6 +29,7 @@ import { serverNowMs } from '../core/time';
 import { assertNotInMaintenance } from '../core/liveops';
 import { readProfile } from '../profiles/storage';
 import { spend, walletGet } from '../economy/wallet';
+import { usernamesById } from '../leaderboards/usernames';
 import { emit } from '../core/admin/analytics';
 import {
   ensureTournamentsForWindow,
@@ -36,9 +39,12 @@ import {
 import {
   readTournamentInstance,
   readEntry,
-  createEntry,
   countParticipants,
+  entryCreateWrite,
+  newEntry,
 } from './repo';
+import { readTournamentLeaderboard } from './leaderboard';
+import { rankLeaderboard } from './prizes';
 import type {
   Tournament,
   TournamentType,
@@ -58,7 +64,7 @@ const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
   'RATE_LIMITED', 'INVALID_RESULT', 'INTERNAL', 'CATALOG_INVALID',
   'INSUFFICIENT_FUNDS', 'SERVICE_UNAVAILABLE', 'UPGRADE_REQUIRED',
-  'NOT_IMPLEMENTED',
+  'NOT_IMPLEMENTED', 'CONTENT_REJECTED',
 ]);
 function asCode(code: string | undefined): ErrorCode {
   if (code !== undefined && (ERR_CODES as Set<string>).has(code)) return code as ErrorCode;
@@ -193,15 +199,21 @@ export interface TournamentTopTime {
   userId: string;
   bestTimeMs: number;
   position: number;
+  /** Account username (plan T-23, additive); '' when unknown. */
+  username: string;
 }
+
+/** Entries shown in `topTimes`. */
+export const TOURNAMENT_TOP_TIMES = 10;
 
 export interface TournamentGetOutput {
   tournament: TournamentListEntry;
   /** Player's entry — null when not joined. */
   myEntry: TournamentEntry | null;
-  /** Up to 10 best times for this tournament. Empty when Chunk 6 has
-   *  not yet populated `tournament_leaderboard/{id}`. */
+  /** Up to 10 best times (fastest first) from `tournament_leaderboard/{id}`. */
   topTimes: TournamentTopTime[];
+  /** The caller's position on the board (plan T-23, additive); null when absent. */
+  myRank: number | null;
 }
 
 export const tournament_get_impl: RpcHandler = (ctx, logger, nk, body) => {
@@ -228,11 +240,19 @@ export const tournament_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const entry = readEntry(nk, tournamentId, userId);
   const myEntry: TournamentEntry | null = entry === null ? null : entry;
 
-  // Chunk 5 stub: topTimes[] is empty. The Chunk 6 subscriber writes
-  // to `tournament_leaderboard/{id}`; that RPC will populate this once
-  // wired. The shape is locked now so the Unity client can build
-  // against it.
-  const topTimes: TournamentTopTime[] = [];
+  // The board the race subscriber keeps (best time per player, capped
+  // at 100), ranked like the prize distribution.
+  const board = readTournamentLeaderboard(nk, tournamentId);
+  const ranked = rankLeaderboard(board?.entries ?? []);
+  const top = ranked.slice(0, TOURNAMENT_TOP_TIMES);
+  const names = usernamesById(logger, nk, top.map((e) => e.userId));
+  const topTimes: TournamentTopTime[] = top.map((e) => ({
+    userId: e.userId,
+    bestTimeMs: e.bestTimeMs,
+    position: e.rank,
+    username: names.get(e.userId) ?? '',
+  }));
+  const myRank = ranked.find((e) => e.userId === userId)?.rank ?? null;
 
   emit(nk, logger, 'tournament_viewed', {
     userId, tournamentId, joined: myEntry !== null,
@@ -243,6 +263,7 @@ export const tournament_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     tournament: tournamentListEntry(t, now, nk),
     myEntry,
     topTimes,
+    myRank,
   };
   return JSON.stringify(ok(payload));
 };
@@ -322,28 +343,34 @@ export const tournament_join_impl: RpcHandler = (ctx, logger, nk, body) => {
     }));
   }
 
-  // Deduct entry fee (idempotent on join+join retry).
+  // The entry fee and the entry row in ONE transaction (plan T-23; Soc-7):
+  // the fee used to be charged first and the entry written after, so a
+  // failed write kept the coins without an entry. The row is create-only,
+  // so a concurrent join of the same player loses the CAS and is charged
+  // nothing; a retry with the same key replays without a second charge.
+  const entry = newEntry(tournamentId, userId, t.entryFee, t.maxAttempts, now);
   let newBalance: { coins: number; gems: number };
   if (t.entryFee > 0) {
     const sp = spend(
       nk, userId, { coins: t.entryFee },
       { reason: 'store', sourceId: `tournament:${tournamentId}` },
       `tournament_join:${tournamentId}:${userId}`,
+      { extraWrites: [entryCreateWrite(entry)] },
     );
-    if (!sp.ok) return JSON.stringify(sp);
+    if (!sp.ok) {
+      if (sp.error.code === 'CONFLICT') {
+        return JSON.stringify(err('CONFLICT', 'already joined', { tournamentId }));
+      }
+      return JSON.stringify(sp);
+    }
     newBalance = sp.data;
   } else {
-    // Free tournament — no spend, just report the current balance.
+    try {
+      nk.storageWrite([entryCreateWrite(entry)]);
+    } catch {
+      return JSON.stringify(err('CONFLICT', 'already joined', { tournamentId }));
+    }
     newBalance = walletGet(nk, userId);
-  }
-
-  // Create the entry row.
-  let entry: TournamentEntry;
-  try {
-    entry = createEntry(nk, tournamentId, userId, t.entryFee, t.maxAttempts, now);
-  } catch (e) {
-    // CAS-retry / already-joined race — surface as CONFLICT.
-    return JSON.stringify(err('CONFLICT', (e as Error).message));
   }
 
   emit(nk, logger, 'tournament_joined', {

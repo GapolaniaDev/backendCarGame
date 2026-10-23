@@ -10,11 +10,16 @@
 //
 // On the open→closing and closing→closed transitions we CAS-update
 // the instance row. On the closing→closed transition we additionally
-// call `closeTournament`, which:
-//   1. Reads the leaderboard.
-//   2. Distributes prizes via `distributePrizes` (pure).
-//   3. For each prize: idempotent wallet grant + inbox send.
-//   4. Sets `closedAt` and `rewardsDistributed: true` on the row.
+// call `closeTournament`, which runs ONCE per tournament (plan T-23):
+//   1. Claims the close with a CAS write: `state: 'closed'` and
+//      `closedAt` (kept when already set; it was rewritten every tick).
+//   2. Reads the leaderboard and distributes prizes (`distributePrizes`).
+//   3. Sends each prize as a CLAIMABLE reward to the single inbox
+//      (`sendReward`, id `tournament:{tid}:prize:{uid}:{rank}`): the
+//      player collects it with `inbox_claim` (one transaction). A
+//      cancelled or voided tournament pays nothing.
+//   4. Sets `rewardsDistributed: true`. A crash between 1 and 4 only
+//      repeats steps 2-4 on the next tick (the ids make that a no-op).
 //
 // The scanner is best-effort: every storage call is wrapped in
 // try/catch. A failure on one tournament does not stop the loop —
@@ -23,9 +28,13 @@
 import type { ILogger, INakama } from '../nkruntime';
 import { serverNowMs } from '../core/time';
 import { emit } from '../core/admin/analytics';
-import { grant } from '../economy/wallet';
-import { sendNotice } from '../liveops/inbox';
-import { TOURNAMENT_INSTANCES_COLLECTION, TOURNAMENT_INSTANCES_SYSTEM_USER } from './repo';
+import { sendReward } from '../liveops/inbox';
+import {
+  TOURNAMENT_INSTANCES_COLLECTION,
+  TOURNAMENT_INSTANCES_SYSTEM_USER,
+  readTournamentInstanceRow,
+  writeTournamentInstanceCas,
+} from './repo';
 import {
   distributePrizes,
   type PrizeDistributionRow,
@@ -34,7 +43,7 @@ import {
   readTournamentLeaderboard,
   deleteLeaderboard,
 } from './leaderboard';
-import { readTournamentInstance, writeTournamentInstance } from './repo';
+import { writeTournamentInstance } from './repo';
 import { ensureTournamentsForWindow } from './catalog';
 import type { Tournament } from './types';
 import { listStorage } from '../core/storage';
@@ -75,6 +84,8 @@ export function runScannerTick(deps: TournamentScannerDeps): {
       continue;
     }
     if (t.endsAt <= nowUtc) {
+      // Closed and paid: nothing left to do until the retention GC.
+      if (t.state === 'closed' && t.rewardsDistributed === true) continue;
       if (closeTournament(nk, logger, t, nowUtc)) {
         closedCount += 1;
         transitionCount += 1;
@@ -124,52 +135,74 @@ function transitionToClosing(
   return true;
 }
 
+/**
+ * Close `t` once: claim (CAS), prizes to the inbox, mark paid. Returns
+ * true when this call did the work, false when another close got there.
+ */
 function closeTournament(
   nk: INakama,
   logger: ILogger,
   t: Tournament,
   nowUtc: number,
 ): boolean {
-  // Distribute prizes (best-effort). Prizes are idempotent on the
-  // `(tournamentId, userId, rank)` triple via the wallet grant's
-  // localcache key.
+  // 1. Claim the close (or resume one that stopped before paying).
+  let claimed: Tournament | null = null;
+  for (let attempt = 0; attempt < 3 && claimed === null; attempt++) {
+    const row = readTournamentInstanceRow(nk, t.id);
+    if (row === null) return false;
+    const cur = row.record;
+    if (cur.state === 'closed' && cur.rewardsDistributed === true) return false;
+    const next: Tournament = { ...cur, state: 'closed', closedAt: cur.closedAt ?? nowUtc };
+    try {
+      writeTournamentInstanceCas(nk, next, row.version);
+      claimed = next;
+    } catch (e) {
+      logger.debug('tournament close claim retry tid=%s: %s', t.id, e instanceof Error ? e.message : String(e));
+    }
+  }
+  if (claimed === null) {
+    logger.warn('tournament close claim lost tid=%s (next tick retries)', t.id);
+    return false;
+  }
+
+  // 2-3. Prizes (none for a cancelled or voided tournament).
   const lb = readTournamentLeaderboard(nk, t.id);
   const entries = lb === null ? [] : lb.entries;
-  const distributions = distributePrizes(t, entries, nowUtc);
-
+  const pays = claimed.cancelled !== true && claimed.voided !== true;
+  const distributions = pays ? distributePrizes(claimed, entries, nowUtc) : [];
   let granted = 0;
   for (const row of distributions) {
     granted += grantPrizeRow(nk, logger, t.id, row, nowUtc) ? 1 : 0;
   }
 
-  // Persist the closed state on the row so re-ticks are idempotent and
-  // list/get reflect the transition.
-  try {
-    if (t.state !== 'closed' || t.closedAt !== nowUtc) {
-      const next: Tournament = { ...t, state: 'closed', closedAt: nowUtc };
-      writeTournamentInstance(nk, next);
+  // 4. Mark paid once every prize is in an inbox; otherwise the next tick
+  //    resends (idempotent) and keeps `closedAt`.
+  if (granted === distributions.length) {
+    const row = readTournamentInstanceRow(nk, t.id);
+    if (row !== null) {
+      try {
+        writeTournamentInstanceCas(nk, { ...row.record, rewardsDistributed: true }, row.version);
+      } catch (e) {
+        logger.warn('tournament paid flag write failed tid=%s: %s', t.id, e instanceof Error ? e.message : String(e));
+      }
     }
-  } catch (e) {
-    logger.error(
-      'tournament close write failed tid=%s: %s',
-      t.id, e instanceof Error ? e.message : String(e),
-    );
   }
 
   logger.info(
-    'tournament closed tid=%s entrants=%d prizes=%d granted=%d',
-    t.id, entries.length, distributions.length, granted,
+    'tournament closed tid=%s entrants=%d prizes=%d granted=%d closedAt=%d',
+    t.id, entries.length, distributions.length, granted, claimed.closedAt ?? nowUtc,
   );
   emit(nk, logger, 'tournament_closed', {
     tournamentId: t.id,
     entrants: entries.length,
     prizes: distributions.length,
     granted,
-    closedAt: nowUtc,
+    closedAt: claimed.closedAt ?? nowUtc,
   });
   return true;
 }
 
+/** One prize as a claimable inbox reward (idempotent by id). */
 function grantPrizeRow(
   nk: INakama,
   logger: ILogger,
@@ -177,34 +210,9 @@ function grantPrizeRow(
   row: PrizeDistributionRow,
   nowUtc: number,
 ): boolean {
-  // Idempotency key is stable across re-ticks.
-  const idempKey = `tournament_prize:${tournamentId}:${row.userId}:${row.rank}`;
-  // Cosmetic grants are inbox-only (no wallet grant needed).
-  if (row.rewards.coins !== undefined || row.rewards.gems !== undefined) {
-    const changeset = {
-      ...(row.rewards.coins !== undefined ? { coins: row.rewards.coins } : {}),
-      ...(row.rewards.gems !== undefined ? { gems: row.rewards.gems } : {}),
-    };
-    try {
-      grant(
-        nk, row.userId, changeset,
-        { reason: 'pass', sourceId: `tournament:${tournamentId}` },
-        idempKey,
-      );
-    } catch (e) {
-      logger.error(
-        'tournament prize grant failed tid=%s uid=%s rank=%d: %s',
-        tournamentId, row.userId, row.rank,
-        e instanceof Error ? e.message : String(e),
-      );
-      return false;
-    }
-  }
-  // Inbox notification — always sent (even for cosmetic-only tiers
-  // so the client knows to refresh its loadout).
   const cosmetics = row.rewards.cosmeticId !== undefined ? [row.rewards.cosmeticId] : [];
   try {
-    sendNotice(
+    sendReward(
       nk, row.userId, 'tournament_prize',
       {
         ...(row.rewards.coins !== undefined ? { coins: row.rewards.coins } : {}),
@@ -228,9 +236,9 @@ function grantPrizeRow(
 
 /**
  * Public wrapper: re-export the same `grantPrizeRow` so the admin
- * `admin_tournament_release_prizes` path can reuse the idempotent
- * grant + inbox send (idempotency key `tournament_prize:{tid}:{uid}:{rank}`).
- * Returns true when both the wallet grant and inbox send succeeded.
+ * `admin_tournament_release_prizes` path sends the same claimable reward
+ * (id `tournament:{tid}:prize:{uid}:{rank}`, so re-running is a no-op).
+ * Returns true when the reward is in the player's inbox.
  */
 export function grantTournamentPrize(
   nk: INakama,

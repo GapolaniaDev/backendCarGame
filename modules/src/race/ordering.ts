@@ -103,6 +103,7 @@ export function computeResults(roster: readonly RosterEntry[]): RaceResult[] {
       isBot: e.isBot,
       totalMs: e.totalMs,
       abandoned: false,
+      laps: [...e.laps],
     };
     if (e.tournamentId !== undefined) r.tournamentId = e.tournamentId;
     results.push(r);

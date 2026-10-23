@@ -153,6 +153,11 @@ export interface RaceResult {
   /** True if the player finished but their individual laps failed validation. */
   lapSumInvalid?: boolean;
   /**
+   * Accepted per-lap times in ms (finishers only; plan T-23, additive).
+   * The anti-cheat subscriber turns them into the race's partials.
+   */
+  laps?: number[];
+  /**
    * Phase 8 Chunk 6 — tournament id when this race was a tournament
    * attempt. Carried through from the RosterEntry stamp on
    * `race_submit_result`. Subscribers (the tournament subscriber
