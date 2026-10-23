@@ -44,7 +44,7 @@ something to serve.
     { id: "us-east-1", displayName: "US East",
       relayUrl: "wss://api.gapolaniadev.com" },
   ],
-  calendar: [],               // future: events, tournaments
+  calendar: [],               // only `maintenance` entries are used (T-23)
   adminRpcKey:    "p5v8-admin-key",        // shared secret for admin RPCs
   analyticsWebhook: "https://...",         // optional outbound POST target
 }
@@ -55,7 +55,7 @@ something to serve.
 | `flags.maintenance` | yes | When `true`, gated RPCs return `SERVICE_UNAVAILABLE` (see §2). |
 | `minClientVersion.<platform>` | yes | Semver compare; a request that declares a lower `clientVersion` receives `UPGRADE_REQUIRED` (a request without `clientVersion` passes, plan T-14). `config_get` returns it as `minClientVersion` for the requested platform. |
 | `regions[]` | yes (≥1) | Each region has `id` + `relayUrl`. v1 always returns the first; future: client picks. |
-| `calendar[]` | no | Reserved for Phase 8 events/tournaments. Today: ignored. |
+| `calendar[]` | no | Only its `maintenance` windows are used: the `calendar` served by `liveops_config_get` is the events of `events.json` that have not ended plus these windows (plan T-23); `event` / `tournament` entries here are ignored. |
 | `adminRpcKey` | yes for admin RPCs | Shared secret; see `docs/admin.md`. |
 | `analyticsWebhook` | no | When set, every `emit()` does a best-effort POST. |
 
@@ -138,10 +138,12 @@ Android to update.
 
 ---
 
-## 4. Calendar events (deferred)
+## 4. Calendar
 
-`LiveopsConfig.calendar: CalendarEntry[]` is reserved for Phase 8
-events/tournaments. v1 ships an empty list. The schema is open:
+Events have one source, `catalogs/events.json` (plan T-23):
+`liveops_config_get.calendar` lists its events that have not ended
+(`{id, type: 'event', startUtc, endUtc, kind}`) plus the `maintenance`
+entries of `LiveopsConfig.calendar`. The config entry schema:
 
 ```ts
 interface CalendarEntry {

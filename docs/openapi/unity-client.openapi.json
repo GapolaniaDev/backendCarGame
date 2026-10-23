@@ -4202,6 +4202,90 @@
         }
       }
     },
+    "/v2/rpc/club_join": {
+      "post": {
+        "tags": [
+          "Clubs"
+        ],
+        "summary": "Se une a un club (plan T-21)",
+        "operationId": "club_join",
+        "description": "Reglas (las mismas que aplica el hook de `JoinGroup` nativo, que siempre responde 403): un club por jugador, plazas libres, nivel 8 (sin perfil = nivel 1), división mínima del club y ningún bloqueo con el líder o un admin. El jugador entra como `member` y aparece en `club_members_list`.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (falta `clubId`), `NOT_FOUND` (club inexistente), `CONFLICT` con `details.reason` = `ALREADY_MEMBER` | `ALREADY_IN_CLUB` | `CLUB_FULL`, `FORBIDDEN` con `details.reason` = `BLOCKED` | `MIN_LEVEL` | `MIN_DIVISION`, `RATE_LIMITED` (10/min).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"club_join\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ClubJoinData>>(rpc.Payload)`.",
+        "security": [
+          {
+            "BearerSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/ClubJoinRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/ClubJoinData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/rpc/club_update": {
       "post": {
         "tags": [
@@ -4713,7 +4797,7 @@
         ],
         "summary": "Envía mensaje a club o directo (máx 200 chars, 1/s, 20/min)",
         "operationId": "chat_send",
-        "description": "Errores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `FORBIDDEN` (no permitido), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"chat_send\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ChatSendData>>(rpc.Payload)`.",
+        "description": "Errores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `CONTENT_REJECTED` (palabra bloqueada; plan T-22), `FORBIDDEN` (silenciado —con `details.untilUtc`—, no miembro / no amigo, o un bloqueo entre ambos jugadores en un canal directo —`details.reason = BLOCKED`—), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"chat_send\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ChatSendData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -4797,7 +4881,7 @@
         ],
         "summary": "Historial de chat (7 días)",
         "operationId": "chat_list",
-        "description": "Mantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"chat_list\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ChatListData>>(rpc.Payload)`.",
+        "description": "Historial del canal, del más nuevo al más viejo (plan T-22): `nextCursor` es el siguiente número de mensaje; vacío cuando no hay más. Un cursor mal formado da `BAD_REQUEST`. En un canal de club se ocultan los mensajes de quien tenga un bloqueo con el lector. `senderName` es el nombre de usuario de la cuenta.\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"chat_list\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ChatListData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -5637,7 +5721,7 @@
         ],
         "summary": "Inscribirse (paga entryFee)",
         "operationId": "tournament_join",
-        "description": "Luego enviar `tournamentId` en `race_submit_result`.\n\nErrores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido), `CONFLICT` (estado no permite la acción), `INSUFFICIENT_FUNDS` (saldo insuficiente).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"tournament_join\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<TournamentJoinData>>(rpc.Payload)`.",
+        "description": "La cuota y la inscripción se escriben en una sola transacción (plan T-23): sin saldo (`INSUFFICIENT_FUNDS`) no queda inscripción, y una segunda inscripción da `CONFLICT` sin cobrar. Los premios llegan a la bandeja (`inbox_list`) como recompensas reclamables con `inbox_claim`.\n\nLuego enviar `tournamentId` en `race_submit_result`.\n\nErrores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido), `CONFLICT` (estado no permite la acción), `INSUFFICIENT_FUNDS` (saldo insuficiente).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"tournament_join\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<TournamentJoinData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -6642,7 +6726,8 @@
           "INSUFFICIENT_FUNDS",
           "SERVICE_UNAVAILABLE",
           "UPGRADE_REQUIRED",
-          "NOT_IMPLEMENTED"
+          "NOT_IMPLEMENTED",
+          "CONTENT_REJECTED"
         ],
         "description": "Código de error de dominio. El status HTTP de Nakama es 200 incluso en error; hay que ramificar por `ok`."
       },
@@ -7537,7 +7622,8 @@
             "format": "int64"
           },
           "open": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Siempre `false` desde T-21: el grupo de Nakama es cerrado y se entra con `club_join`."
           }
         }
       },
@@ -7954,8 +8040,34 @@
             "type": "array",
             "items": {
               "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "event",
+                    "tournament",
+                    "maintenance"
+                  ]
+                },
+                "startUtc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "endUtc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "Tipo de evento (`xp_double`, `special_offer`, `featured_track`…) para `type: event`."
+                }
+              },
               "additionalProperties": true
-            }
+            },
+            "description": "Una sola fuente (plan T-23): los eventos de `events.json` que no han terminado (`type: event`, con `kind`) más las ventanas de mantenimiento de la configuración LiveOps."
           },
           "configHash": {
             "type": "string"
@@ -10637,6 +10749,39 @@
           }
         }
       },
+      "ClubJoinRequest": {
+        "type": "object",
+        "properties": {
+          "clubId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clubId"
+        ]
+      },
+      "ClubJoinData": {
+        "type": "object",
+        "properties": {
+          "clubId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "member"
+            ]
+          },
+          "joinedAt": {
+            "type": "integer",
+            "description": "Epoch en milisegundos (UTC)",
+            "format": "int64"
+          }
+        }
+      },
       "ClubUpdateRequest": {
         "type": "object",
         "properties": {
@@ -10763,8 +10908,10 @@
             "type": "string",
             "enum": [
               "admin",
-              "leader"
-            ]
+              "leader",
+              "officer"
+            ],
+            "description": "`officer` es un alias de `admin` (el nombre que usa el adaptador de Unity)."
           }
         },
         "required": [
@@ -10810,8 +10957,10 @@
             "type": "string",
             "enum": [
               "admin",
-              "member"
-            ]
+              "member",
+              "officer"
+            ],
+            "description": "`officer` es un alias de `admin` (el nombre que usa el adaptador de Unity)."
           }
         },
         "required": [
@@ -11286,10 +11435,36 @@
           },
           "topTimes": {
             "type": "array",
+            "description": "Hasta 10 mejores tiempos, del más rápido al más lento (plan T-23; antes siempre vacío).",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "properties": {
+                "userId": {
+                  "type": "string"
+                },
+                "bestTimeMs": {
+                  "type": "integer"
+                },
+                "position": {
+                  "type": "integer"
+                },
+                "username": {
+                  "type": "string",
+                  "description": "Nombre de usuario de la cuenta; vacío si no se conoce."
+                }
+              }
             }
+          },
+          "myRank": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Posición del llamador en el tablero (plan T-23); null si no tiene tiempo."
           }
         }
       },

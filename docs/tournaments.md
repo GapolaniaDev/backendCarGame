@@ -65,8 +65,8 @@ Each template has: `id`, `trackId`, `entryFee`, `minLevel`, `maxAttempts`,
 | RPC | Caller | Maintenance | Description |
 |---|---|---|---|
 | `tournament_list` | any | enforced | list open + closing tournaments |
-| `tournament_get` | any | enforced | get full detail (template + state) |
-| `tournament_join` | any | enforced | spend entry fee, create entry |
+| `tournament_get` | any | enforced | detail + my entry + top 10 times (with usernames) + my rank |
+| `tournament_join` | any | enforced | entry fee + entry row in one transaction |
 | `admin_tournament_list` | admin | bypass | list ALL instances (any state) |
 | `admin_tournament_get` | admin | bypass | full detail + leaderboard + prizes |
 | `admin_tournament_release_prizes` | admin | bypass | re-distribute prizes (idempotent) |
@@ -111,34 +111,47 @@ POST /v2/rpc/tournament_join
 }
 ```
 
-**Side effects** (single RPC):
-
-1. Spend `entryFee` coins (idempotency key `tournament_join:{tid}:{uid}`).
-2. Write `tournament_entries/{tid}/{uid}` row with `paidEntryFee` (preserved
-   for void refund).
-3. Write an inbox message `tournament_joined`.
+**Side effects** (plan T-23): ONE transaction (`spend` with the entry row
+as an extra write, the T-11 wallet helper) charges `entryFee` (idempotency
+key `tournament_join:{tid}:{uid}`) and creates
+`tournament_entries/{tid}/{uid}` (create-only, with `paidEntryFee` kept
+for a void refund). Without funds nothing is written; a concurrent join of
+the same player loses the create-only write and is charged nothing. A free
+tournament only writes the row.
 
 **Errors**:
-- `FORBIDDEN` — cancelled or voided (D47).
-- `CONFLICT` — user already joined (1-join-per-user; D40).
-- `BAD_REQUEST` — `entryFee` insufficient or `minLevel` not met.
+- `FORBIDDEN` — closed, cancelled or voided (D47), or `minLevel` not met.
+- `CONFLICT` — user already joined (1-join-per-user; D40), nothing charged.
+- `INSUFFICIENT_FUNDS` — not enough coins; no entry.
 - `NOT_FOUND` — tournament id not in catalog or window expired.
+
+### `tournament_get` (plan T-23)
+
+Besides the tournament and the caller's entry it returns `topTimes`: up to
+10 best times of `tournament_leaderboard/{tid}` (the board the race
+subscriber keeps, ranked like the prizes) as `{userId, bestTimeMs,
+position, username}`, and `myRank` (the caller's position, or `null`).
+`username` and `myRank` are additive (`topTimes` used to be always `[]`).
 
 ---
 
 ## 6. Race → leaderboard
 
-`tournaments/scanner.ts` runs a 60s `setInterval` tick. On every tick
-the scanner:
+`tournaments/scanner.ts` runs from the service ticker every 60 s (the
+runtime has no `setInterval`, plan T-03). On every tick the scanner:
 
 1. Lists all tournament instances in the catalog window.
-2. Computes state for each (transitions `open → closing → closed`).
-3. For newly-closed tournaments, reads the leaderboard and distributes
-   prizes via `distributePrizes(t, lb, now)` (top-N per `prizeTable`).
-4. For each row, calls `grantTournamentPrize(nk, tid, row, now)`:
-   - `wallet.grant(reason='tournament_prize', idempotencyKey='tournament_prize:{tid}:{uid}:{rank}')`
-   - `inbox.sendNotice(type='tournament_prize', idempotencyKey matches)`: a
-     notice in the player's inbox (`granted`, already paid; plan T-17).
+2. Skips a tournament that is `closed` with `rewardsDistributed: true`.
+3. Moves `open → closing` in the last hour.
+4. Closes an ended tournament ONCE (plan T-23): a CAS write claims the
+   close (`state: 'closed'`, `closedAt` kept when already set — it used to
+   be rewritten on every tick); then the leaderboard is read and
+   `distributePrizes(t, lb, now)` computes the prizes (none for a
+   cancelled or voided tournament); each prize goes to the single inbox as
+   a CLAIMABLE reward (`sendReward`, id `tournament:{tid}:prize:{uid}:{rank}`)
+   that the player collects with `inbox_claim` (one transaction); finally
+   `rewardsDistributed: true` is written. A crash in between only resends
+   on the next tick (the ids make it a no-op).
 
 Players can submit races via the normal `race_submit_result` with an
 optional `tournamentId` field. The race subscriber (chunk-6) updates
@@ -150,8 +163,9 @@ optional `tournamentId` field. The race subscriber (chunk-6) updates
 
 ### `admin_tournament_release_prizes`
 
-Re-runs the prize distribution path. Idempotent — the
-`tournament_prize:{tid}:{uid}:{rank}` key prevents double-grants.
+Re-runs the prize distribution path. Idempotent — the reward id
+`tournament:{tid}:prize:{uid}:{rank}` prevents a second message (and the
+player is paid only by `inbox_claim`).
 
 - `state === 'closed' && !force` → `CONFLICT` (re-distribute requires `force: true`).
 - `state === 'open' || 'closing'` → succeeds with `distributed: 0` (no leaderboard yet).
@@ -191,7 +205,7 @@ CAS-update `endsAtUtc`. Reject when state is `closed`. Reject when
 
 | Collection | Owner | Schema |
 |---|---|---|
-| `tournaments` | system | `{schemaVersion, id, trackId, entryFee, minLevel, maxAttempts, prizeTable, windowStart, windowEnd, state?, cancelled?, voided?, closedAt?}` |
+| `tournament_instances` | system | `{schemaVersion, id, trackId, entryFee, minLevel, maxAttempts, prizes, startsAt, endsAt, state?, cancelled?, voided?, closedAt?, rewardsDistributed?}` |
 | `tournament_entries` | user | `{schemaVersion, tournamentId, userId, paidEntryFee, joinedAt, attempts}` |
 | `tournament_leaderboard` | system (chunk-6) | `{schemaVersion, tournamentId, entries: [{userId, bestTimeMs, attempts}]}` |
 

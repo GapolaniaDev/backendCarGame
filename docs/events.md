@@ -83,20 +83,23 @@ event window.
 
 ---
 
-## 4. Active special offers + `store_get`
+## 4. One event source: `events.json` (plan T-23)
 
-`modules/src/core/active_events.ts` exports the `active_events`
-runtime cache. The 5-minute scanner (chunk 8):
+Events have ONE source, the bundled `catalogs/events.json` calendar,
+loaded per VM by `core/active_events.ts`. Everything that needs "what is
+live now" asks it with the server clock:
 
-1. Walks all `events` with `kind === 'special_offer'`.
-2. For each active offer, finds users whose profile is missing the
-   offer id.
-3. CAS-appends to `profile.activeSpecialOffers` (cap 10, sorted by
-   `endsAtUtc` ascending, oldest dropped first when over cap; D54).
+- `event_list` returns the whole calendar with `isActive`;
+- `liveops_config_get.calendar` is the events that have not ended
+  (`type: 'event'`, plus `kind`, additive) and the maintenance windows of
+  the liveops config; the config's own `event` / `tournament` entries are
+  ignored (they were a second, always-empty schedule);
+- the store pricing applies the live `special_offer` events
+  (`resolveActiveSpecialOfferIds(now)`).
 
-`store_get` (chunk 8) reads `profile.activeSpecialOffers` and decorates
-matching offers with `basePrice` (catalog) and `finalPrice` (after
-`discountPct`). Match key: `event.payload.sku === offer.offerId`.
+`store_get` decorates matching offers with `basePrice` (catalog) and
+`finalPrice` (after `discountPct`). Match key:
+`event.payload.sku === offer.offerId`.
 
 The decorated shape:
 
@@ -114,17 +117,14 @@ When no offer is active, `basePrice === finalPrice` and
 
 ---
 
-## 5. Scanner
+## 5. Service-ticker job
 
-`runEventScannerTick` runs every 5 minutes. Returns
-`{updated: number, removed: number}` (number of profiles whose
-`activeSpecialOffers` was mutated). Safe to call from the cron path
-OR the unit tests (no `setInterval` involvement).
-
-The scanner is **idempotent across ticks** — a profile that already
-has the offer id is a no-op. A profile that has an offer whose event
-has expired has the id removed (and the offer is no longer
-discounted on the next `store_get`).
+`runEventScannerTick` runs every 5 minutes from the service ticker and is
+read-only: it reports the number of live events and the live special
+offers (`events=live=N/offers=M` in the tick line). It used to rewrite
+EVERY profile to cache the live offers in `profile.activeSpecialOffers`
+(a stale second copy of the calendar that also rebuilt each profile from
+a fixed field list); nothing reads that field any more.
 
 ---
 
@@ -133,7 +133,7 @@ discounted on the next `store_get`).
 | Collection | Owner | Schema |
 |---|---|---|
 | `events` | system | `{schemaVersion, events: [{id, kind, startsAtUtc, endsAtUtc, payload}]}` |
-| `profile.activeSpecialOffers` (embedded) | user | `string[]` (max 10, sorted by endsAtUtc asc) |
+| `profile.activeSpecialOffers` (embedded, legacy) | user | no longer written or read (plan T-23) |
 
 There is NO `event_grants` collection — the grant lives in the wallet
 ledger with `reason: 'event:event_xp_double:{sid}'`. Operators query
@@ -145,11 +145,8 @@ the ledger (chunk 9 `admin_events_stats_get`).
 
 - **Bus event name is `RaceCompleted` (capital R)** — D51. Lowercase
   `race_completed` does not fire the subscriber.
-- **`activeSpecialOffers` cap is 10** — when an 11th offer activates,
-  the oldest (by `endsAtUtc`) is evicted (D54).
-- **Scanner only mutates `profile.activeSpecialOffers`** — the actual
-  discount happens lazily in `store_get`. The scanner does NOT pre-write
-  the `finalPrice` to the offer row.
+- **At most 10 live special offers apply at once** — the soonest-ending
+  ones (D54).
 - **The race XP bonus is paid in coins, not XP** — D51. The `wallet.grant`
   call uses `reason: 'event:event_xp_double:{sessionId}'`.
 - **Scanner is safe to call from `setInterval`** — `runEventScannerTick`

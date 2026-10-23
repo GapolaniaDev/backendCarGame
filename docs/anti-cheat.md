@@ -39,7 +39,8 @@ All helpers are pure (no I/O, no clock). The thresholds live in
 | `anti_cheat_marks` | system | `{schemaVersion, userId, marks: [{id, userId, raceId, kind, severity, detectedAt, confirmed, dismissed}]}` |
 | `anti_cheat_stats` | system | `{schemaVersion, utcDate, marksTotal, usersHidden, usersConfirmed, byKind: {abrupt_improvement, partial_impossible, ...}}` |
 | `anti_cheat_sanctions` | system | `{schemaVersion, userId, startedAt, expiresAt, reason, markIds}` |
-| `anti_cheat_partials` | system | `{schemaVersion, userId, raceId, partialsMs, trackId, detectedAt}` |
+| `race_partials/{raceId}:{userId}` | system | `{schemaVersion, raceId, userId, partials: [{index, timeMs}]}`: the race clock at the end of every accepted lap (index 0 = 0 ms); written by the subscriber (plan T-23) |
+| `abrupt_history/{userId}` | user | `{schemaVersion, userId, entries: [{raceId, bestTimeMs, ts, trackId, laps}]}` (last 50); appended by the subscriber (plan T-23) |
 
 `permissionRead=1, permissionWrite=0` — server-only writes; the
 client never reads these directly.
@@ -51,8 +52,15 @@ client never reads these directly.
 `modules/src/anti_cheat/subscriber.ts` subscribes to the in-process
 `RaceCompleted` event. For every closed session:
 
-1. Loads the user's last 5 races (best times by track+class).
-2. Runs all four detectors over the event.
+1. For each human finisher, turns the accepted laps carried by the event
+   (`RaceResult.laps`, additive) into partials, writes them to
+   `race_partials/{raceId}:{userId}` and checks every lap against the
+   track's `minSectionTimeMs` (plan T-23: nothing wrote partials before, so
+   this check never ran).
+2. Compares `totalMs` with the median of the user's last 5 races on the
+   SAME track and lap count (`abrupt_history`), then appends this race
+   (plan T-23: nothing appended, so the detector never had data).
+3. Runs the quorum check for low-confidence races.
 3. For each `DetectedMark`:
    - Appends to `anti_cheat_marks/{userId}/system` (CAS-write, MAX_CAS_RETRIES=3).
    - Updates the daily stats row (`anti_cheat_stats/{utcDate}/system`).
@@ -89,7 +97,7 @@ audit (D35).
 | RPC | Purpose |
 |---|---|
 | `admin_marks_list` | Filter marks by `{userId?, kind?, severity?, status?: 'pending'|'confirmed'|'dismissed'}` |
-| `admin_partials_view` | Read `anti_cheat_partials` for a user or race |
+| `admin_marks_partials_view` | Read `race_partials` for a race (pass `userId` for one finisher's row) |
 | `admin_marks_confirm` | Flip `confirmed: true`; emit `anti_cheat:marks_confirm`; invalidate dashboard cache |
 | `admin_marks_dismiss` | Flip `dismissed: true`; requires `reason` (free text); invalidate cache |
 | `admin_marks_sanction` | Apply a temporary sanction (1h..30d, or `durationHours: 0` to clear) |

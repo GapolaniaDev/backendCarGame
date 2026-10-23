@@ -93,6 +93,7 @@ JSON object. Send `""` (empty) for no payload, or `"<json-stringified-input>"` f
 | `INVALID_RESULT` | `race_submit_result` failed step-2 plausibility (clock, min time, lap sum) |
 | `INTERNAL` | Uncaught server error — message is safe to surface; details may have stack |
 | `CATALOG_INVALID` | **Fatal at boot** — Nakama exits non-zero; the server is unreachable |
+| `CONTENT_REJECTED` | `chat_send`: the message contains a blocked word (plan T-22) |
 
 Nakama's gRPC status stays `OK` on `Err` envelopes — branch on `ok`, not on status code.
 
@@ -1054,10 +1055,15 @@ on every fresh login.
   },
   "regions": [{ "id": "us-east-1", "displayName": "US East",
                 "relayUrl": "wss://api.gapolaniadev.com" }],
-  "calendar": [],
+  "calendar": [{ "id": "evt_xp2_late_oct", "type": "event", "kind": "xp_double",
+                 "startUtc": "2026-10-23T00:00:00Z", "endUtc": "2026-10-30T23:59:59Z" }],
   "configHash": "<sha256-hex>"
 }
 ```
+
+`calendar` comes from the one event source, `events.json` (plan T-23):
+the events that have not ended, plus the maintenance windows of the
+liveops config.
 
 `configHash` is a SHA-256 of the canonicalised payload — clients can
 use it to skip processing when the server config is unchanged.
@@ -1723,17 +1729,18 @@ All Phase 7 RPCs follow the standard `Resp<T> = Ok<T> | Err` envelope
 | `block_add` | owner | YES | `{created: boolean}` |
 | `block_remove` | owner | YES | `{removed: boolean}` |
 | `block_list` | owner | YES | `{items, count}` |
-| `club_create` | owner + level ≥ 8 | YES | `{clubId, costCoins, balanceAfter}` |
-| `club_get` | owner | YES | `{club}` |
-| `club_search` | owner | YES | `{items, count}` |
-| `club_update` | leader | YES | `{updated: true}` |
-| `club_members_list` | owner | YES | `{members, nextCursor}` |
-| `club_kick` | leader | YES | `{kicked: true}` |
-| `club_promote` | leader | YES | `{promoted: true, role: 'admin'}` |
-| `club_demote` | leader | YES | `{demoted: true, role: 'member'}` |
-| `club_leave` | member | YES | `{left: true}` |
-| `chat_send` | owner | YES | `{messageId, sentAt}` |
-| `chat_list` | owner | NO (read) | `{items, count}` |
+| `club_create` | level ≥ 8, not in a club | YES | `{clubId, name, costPaid, newBalance}` |
+| `club_get` | any | YES | `{club, members, weeklyRank}` |
+| `club_search` | any | YES | `{clubs, nextCursor}` |
+| `club_join` | level ≥ 8, not in a club (T-21) | YES | `{clubId, userId, role, joinedAt}` |
+| `club_update` | leader / admin | YES | `{clubId, updatedAt}` |
+| `club_members_list` | any | YES | `{members, nextCursor}` |
+| `club_kick` | leader / admin | YES | `{removed, clubId, targetUserId}` |
+| `club_promote` | leader | YES | `{clubId, userId, role}` |
+| `club_demote` | leader | YES | `{clubId, userId, role}` |
+| `club_leave` | member | YES | `{left, clubId, userId}` |
+| `chat_send` | member / friend | YES | `{messageId, ts, channelId}` |
+| `chat_list` | member / friend | NO (read) | `{messages, nextCursor}` |
 | `report_player` | owner | YES | `{reportId, silenced, untilUtc?, distinctCount, triggeredSilence}` |
 | `admin_view_reports` | adminKey | YES (bypass) | `{reports, count}` |
 | `admin_silence` | adminKey | YES (bypass) | `{silenced: true, untilUtc}` |
@@ -1771,25 +1778,39 @@ Errors do NOT undo the invite acceptance.
 
 ### 20.3 Clubs (Chunks 3-5)
 
-`club_create` spends 5000 coins + requires level ≥ 8 + is a
-Nakama group (NOT a storage collection). Membership rows live in
-`clubs_members` storage (system-owned, public read) — this is the
-authoritative roster because 3.27 JS lacks `groupUsersRemove`. Weekly
-leaderboard + reward via `clubs_week_points` (lazy reset, no
-`registerLeaderboardReset`).
+`club_create` charges 5000 coins (level ≥ 8, not in a club) in the
+transaction that writes the club metadata and the leader's membership.
+A club is a CLOSED Nakama group; the roster is the group joined with one
+membership row per player (`clubs_members/current/{userId}`), which holds
+the role and the weekly contribution (plan T-21).
+
+`club_join { clubId }` is the only way in: one club per player, room
+left, level ≥ 8, the club's minimum division, no block with the leader
+or an admin. Refusals carry `details.reason`: `CONFLICT`
+(`ALREADY_MEMBER` | `ALREADY_IN_CLUB` | `CLUB_FULL`) or `FORBIDDEN`
+(`BLOCKED` | `MIN_LEVEL` | `MIN_DIVISION`). The native `JoinGroup` and the
+other client group calls answer 403. `club_promote` / `club_demote` accept
+`officer` as an alias of `admin`. `club_members_list` pages with an
+offset cursor over leader, admins, then members by join date. Weekly
+points live in the `club_week` leaderboard (lazy reset on the first
+`club_get` / `club_search` of the week); the winners' reward is a
+claimable inbox message.
 
 ### 20.4 Chat (Chunk 6)
 
-`chat_send`: 200 char cap, multi-lang blocked words (es/en/pt)
-leet-normalized, 1 msg/sec + 20/min rate. `chat_list` reads from
-`chat_history/{channel}/{targetId}` with 7-day TTL. Channel types:
-`club` (targetId = clubId), `direct` (targetId = recipientUserId).
+`chat_send`: 200 char cap, 1 msg/sec + 20/min rate. A blocked word
+(es/en/pt, leet-normalized) answers `CONTENT_REJECTED`; a direct message
+to a player with a block either way answers `FORBIDDEN` with
+`details.reason = 'BLOCKED'` (plan T-22). Channel types: `club`
+(targetId = clubId), `direct` (targetId = recipientUserId).
 3 reports in 24h → 1h chat-only silence (auto-triggered by the report
 flow).
 
-`registerBeforeSendChannelMessage` missing in 3.27 JS — the
-`validateChatSend` synchronous helper is called from `chat_send` RPC
-itself. Same semantic, different surface.
+`chat_list { channelType, targetId, limit?, cursor? }` returns the
+history newest first, 7-day retention; pass `nextCursor` back for the
+next (older) page (`''` = no more). `senderName` is the account username.
+A club history hides the messages of senders with a block with the
+reader. `validateChatSend` runs inside the RPC (no native channel).
 
 ### 20.5 Moderation (Chunk 7)
 
@@ -1878,12 +1899,19 @@ POST /v2/rpc/tournament_list
 
 POST /v2/rpc/tournament_get
 { "callerUserId": "<uuid>", "tournamentId": "<tid>" }
-→ { "tournament": {...} }
+→ { "tournament": {...}, "myEntry": {...} | null,
+    "topTimes": [{userId, bestTimeMs, position, username}],   // top 10 (T-23)
+    "myRank": 3 | null }
 
 POST /v2/rpc/tournament_join
 { "callerUserId": "<uuid>", "tournamentId": "<tid>" }
-→ { "joined": true, "entryFee": 100, "paidEntryFee": 100 }
+→ { "entryId", "joinedAt", "attemptsRemaining", "paidEntryFee", "newBalance" }
 ```
+
+`tournament_join` charges the entry fee and writes the entry in one
+transaction (plan T-23): `INSUFFICIENT_FUNDS` leaves no entry. Prizes
+arrive in the inbox as claimable rewards (`inbox_claim` pays them); a
+tournament closes once.
 
 `race_submit_result` accepts an OPTIONAL `tournamentId` field. When
 present, the race subscriber updates the per-user `bestTimeMs` and
@@ -1907,8 +1935,9 @@ Three event kinds: `xp_double`, `featured_track`, `special_offer`. See
 `docs/events.md` for the per-kind semantics.
 
 The `store_get` RPC (chunk 8) decorates matching SKUs with `basePrice`,
-`finalPrice`, and `activeSpecialOfferId?` when the user has an active
-special offer in `profile.activeSpecialOffers`. The client should
+`finalPrice`, and `activeSpecialOfferId?` while a `special_offer` event of
+the calendar is live (one event source, `events.json`, plan T-23; the
+`calendar` of `liveops_config_get` is the same list). The client should
 display `finalPrice` in the store UI; if `activeSpecialOfferId` is
 present, show a "Limited time" badge with the offer id (for analytics
 attribution on the client side). `store_buy` charges exactly that
