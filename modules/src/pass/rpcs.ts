@@ -42,7 +42,7 @@ import {
 } from './season';
 import { grantPassReward } from './reward_granter';
 import type { PassLevelReward } from './types';
-import { spend as walletSpend, walletGet } from '../economy/wallet';
+import { revert, spend as walletSpend, walletGet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
@@ -296,7 +296,9 @@ export const pass_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
 
   const reward: PassLevelReward = track === 'free' ? levelDef.freeReward : levelDef.premiumReward;
-  const refId = `lvl${level}-${track}`;
+  // The season is in the key: wallet keys are durable (T-11), and every
+  // season has the same level ids.
+  const refId = `${rec.seasonId}:lvl${level}-${track}`;
 
   // CAS-update the record.
   let version = existing.version;
@@ -469,7 +471,13 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
       version = fresh.version;
     }
   }
-  return toJson(err('CONFLICT', 'pass_buy_premium CAS retries exhausted'));
+  // The flag never landed: undo the charge with the compensating movement,
+  // which also frees the key so the retry charges again (plan T-11).
+  const refund = revert(nk, userId, idempotencyKey, { reason: 'store', sourceId: `pass_premium_${userId}:refund` });
+  if (!refund.ok) {
+    logger.error('pass_buy_premium refund failed user=%s: %s', userId, refund.error.message);
+  }
+  return toJson(err('CONFLICT', 'pass_buy_premium CAS retries exhausted — nothing was charged, please retry'));
 };
 export const pass_buy_premium: RpcHandler = withRuntime(pass_buy_premium_impl);
 

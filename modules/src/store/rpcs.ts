@@ -1,7 +1,7 @@
 // Phase 3 store RPCs. `store_get` returns the catalog after applying
 // the player's filters (level, ownership, expiry) plus the daily
-// rotation. `store_buy` redeems an offer using the compensating-
-// refund pattern (Decision 3 — see [[carvideogamebackend-phase3-chunk7]]).
+// rotation. `store_buy` charges and delivers an offer in one wallet
+// movement (`economy/wallet.ts` `moveWallet`, plan T-11).
 //
 // All decisions enforced here:
 //   - Daily offer deterministic per UTC day (D4 in the Phase 3 plan).
@@ -32,13 +32,13 @@ import {
   readGarage,
   readGarageObject,
   writeGarageCreate,
-  writeGarageUpdate,
   addCarToGarage,
   addCosmeticToBag,
+  garageWrite,
   markPackPurchased,
 } from '../garage/storage';
 import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
-import { grant, spend, walletGet } from '../economy/wallet';
+import { moveWallet, type WalletMove } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import type {
   StoreSection,
@@ -238,126 +238,78 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     }
   }
 
-  // 6) Spend wallet (filtered for positive values).
+  // 6) Charge and deliver in ONE transaction (plan T-11): the price, the
+  //    pack contents, the idempotency record and the garage CAS write go
+  //    in the same `nk.multiUpdate`. A lost CAS or a short balance leaves
+  //    everything untouched, so there is no refund to undo and a retry
+  //    charges normally (HT-73, audit 05 f11); there is no pack reversal
+  //    to get wrong either (audit 05 f12).
   const grantKey = `store:buy:${offer.kind}:${userId}:${offer.refId}`;
   const metadata: LedgerMetadata = {
     reason: 'store',
     sourceId: offer.offerId,
   };
-  const spendChangeset: { coins?: number; gems?: number } = {};
-  if (typeof offer.priceCoins === 'number' && offer.priceCoins > 0) spendChangeset.coins = offer.priceCoins;
-  if (typeof offer.priceGems === 'number' && offer.priceGems > 0) spendChangeset.gems = offer.priceGems;
-
-  // Capture version BEFORE the spend so we can refund on CAS conflict.
   const garageRead = readGarageObject(nk, userId);
   if (!garageRead) return toJson(err('INTERNAL', 'garage vanished mid-buy'));
   const garageVersion = garageRead.version;
   const currentGarage = garageRead.value;
 
-  if (Object.keys(spendChangeset).length > 0) {
-    const spendResp = spend(nk, userId, spendChangeset, metadata, grantKey);
-    if (!spendResp.ok) {
-      return toJson(err(spendResp.error.code, spendResp.error.message, spendResp.error.details));
-    }
-  }
-
-  // 7) Apply the delivery. Each kind mutates the garage + may also
-  //    call `grant` (for packs). CAS-write the garage; on conflict
-  //    refund the spend via grant.
-  const delivery: StoreBuyOutput['delivery'] = (() => {
-    if (offer.kind === 'car') {
-      return { kind: 'car' as const, refId: offer.refId };
-    }
-    if (offer.kind === 'cosmetic') {
-      return { kind: 'cosmetic' as const, refId: offer.refId };
-    }
-    // pack
-    const pack = resolvePackDelivery(offer.refId);
-    const changeset = pack?.changeset ?? {};
-    return { kind: 'pack' as const, refId: offer.refId, changeset };
-  })();
-
+  // 7) Assemble the delivery before charging: catalog drift fails here,
+  //    with nothing charged.
+  let delivery: StoreBuyOutput['delivery'];
   let nextGarage = currentGarage;
+  let packChangeset: Record<string, number> = {};
   try {
     if (offer.kind === 'car') {
       const car = getCarsCatalog().cars.find((c) => c.id === offer.refId);
-      if (!car) {
-        // Catalog drift — refund.
-        refundSpend(offer, userId, nk, metadata);
-        return toJson(err('INTERNAL', `car not in catalog: ${offer.refId}`));
-      }
+      if (!car) return toJson(err('INTERNAL', `car not in catalog: ${offer.refId}`));
       nextGarage = addCarToGarage(currentGarage, car);
+      delivery = { kind: 'car', refId: offer.refId };
     } else if (offer.kind === 'cosmetic') {
       const cosmetic = getCosmeticsCatalog().items.find((c) => c.id === offer.refId);
-      if (!cosmetic) {
-        refundSpend(offer, userId, nk, metadata);
-        return toJson(err('INTERNAL', `cosmetic not in catalog: ${offer.refId}`));
-      }
+      if (!cosmetic) return toJson(err('INTERNAL', `cosmetic not in catalog: ${offer.refId}`));
       nextGarage = addCosmeticToBag(currentGarage, offer.refId);
+      delivery = { kind: 'cosmetic', refId: offer.refId };
     } else {
-      nextGarage = markPackPurchased(currentGarage, offer.refId);
-    }
-  } catch (e) {
-    logger.warn('store_buy: delivery assembly failed: %s — refunding', JSON.stringify(e));
-    refundSpend(offer, userId, nk, metadata);
-    return toJson(err('CONFLICT', `delivery failed: ${(e as Error).message} — refund issued`));
-  }
-
-  // 8) For packs, grant the pack contents in the SAME spend (so a
-  //    failed CAS refund is the only window where the player gets
-  //    the coins/gems without the pack being marked). On refund,
-  //    we reverse the pack grant.
-  if (offer.kind === 'pack') {
-    const pack = resolvePackDelivery(offer.refId);
-    if (pack) {
-      const grantChangeset: { coins?: number; gems?: number } = {};
-      const c = pack.changeset.coins;
-      const g = pack.changeset.gems;
-      if (typeof c === 'number' && c > 0) grantChangeset.coins = c;
-      if (typeof g === 'number' && g > 0) grantChangeset.gems = g;
-      if (Object.keys(grantChangeset).length > 0) {
-        grant(
-          nk,
-          userId,
-          grantChangeset,
-          { ...metadata, sourceId: `${offer.offerId}:pack` },
-          `${grantKey}:pack`,
-        );
-      }
-    }
-  }
-
-  // 9) CAS-write the garage.
-  try {
-    writeGarageUpdate(nk, nextGarage, garageVersion);
-  } catch (e) {
-    logger.warn('store_buy CAS conflict for %s: %s — refunding spend + pack', userId, JSON.stringify(e));
-    refundSpend(offer, userId, nk, metadata);
-    if (offer.kind === 'pack') {
       const pack = resolvePackDelivery(offer.refId);
-      if (pack) {
-        const reverse: { coins?: number; gems?: number } = {};
-        const c = pack.changeset.coins;
-        const g = pack.changeset.gems;
-        if (typeof c === 'number' && c > 0) reverse.coins = -c;
-        if (typeof g === 'number' && g > 0) reverse.gems = -g;
-        if (Object.keys(reverse).length > 0) {
-          grant(
-            nk,
-            userId,
-            reverse,
-            { ...metadata, sourceId: `${offer.offerId}:pack:reverse` },
-            `${grantKey}:pack:reverse`,
-          );
-        }
-      }
+      const changeset = pack?.changeset ?? {};
+      packChangeset = positiveAmounts(changeset);
+      nextGarage = markPackPurchased(currentGarage, offer.refId);
+      delivery = { kind: 'pack', refId: offer.refId, changeset };
     }
-    return toJson(err('CONFLICT', 'concurrent garage update — refund issued, please retry'));
+  } catch (e) {
+    logger.warn('store_buy: delivery assembly failed: %s — nothing charged', JSON.stringify(e));
+    return toJson(err('CONFLICT', `delivery failed: ${(e as Error).message} — nothing was charged`));
   }
 
-  // 10) Return the post-buy balance (re-read since the pack grant
-  //     may have changed it).
-  const finalBalance = walletGetLocal(nk, userId);
+  const moves: WalletMove[] = [];
+  const priceChangeset: Record<string, number> = {};
+  for (const [k, v] of Object.entries(positiveAmounts({ coins: offer.priceCoins, gems: offer.priceGems }))) {
+    priceChangeset[k] = -v;
+  }
+  if (Object.keys(priceChangeset).length > 0) moves.push({ changeset: priceChangeset, metadata });
+  if (Object.keys(packChangeset).length > 0) {
+    moves.push({ changeset: packChangeset, metadata: { ...metadata, sourceId: `${offer.offerId}:pack` } });
+  }
+  const moved = moveWallet(nk, userId, grantKey, moves, {
+    extraWrites: [garageWrite(nextGarage, garageVersion)],
+    result: { delivery },
+  });
+  if (!moved.ok) {
+    if (moved.error.code === 'CONFLICT') {
+      logger.warn('store_buy CAS conflict for %s offer=%s — nothing charged', userId, offer.offerId);
+      return toJson(err('CONFLICT', 'concurrent garage update — nothing was charged, please retry'));
+    }
+    return toJson(err(moved.error.code, moved.error.message, moved.error.details));
+  }
+  if (moved.data.replayed) {
+    // A concurrent call with the same key bought it: answer what it delivered.
+    const stored = (moved.data.record.result as { delivery?: StoreBuyOutput['delivery'] } | undefined)?.delivery;
+    if (stored) delivery = stored;
+  }
+
+  // 8) The balance after the movement (the pack contents included).
+  const finalBalance = moved.data.balance;
 
   logger.info(
     'store_buy user=%s offer=%s kind=%s refId=%s newBalance.coins=%d',
@@ -430,26 +382,12 @@ function findOffer(offerId: string): StoreOffer | null {
   return null;
 }
 
-function refundSpend(
-  offer: StoreOffer,
-  userId: string,
-  nk: INakama,
-  metadata: LedgerMetadata,
-): void {
-  const refund: { coins?: number; gems?: number } = {};
-  const c = offer.priceCoins;
-  const g = offer.priceGems;
-  if (typeof c === 'number' && c > 0) refund.coins = c;
-  if (typeof g === 'number' && g > 0) refund.gems = g;
-  if (Object.keys(refund).length > 0) {
-    grant(
-      nk,
-      userId,
-      refund,
-      { ...metadata, sourceId: `${offer.offerId}:refund` },
-      `store:buy:${offer.kind}:${userId}:${offer.refId}:refund`,
-    );
-  }
+/** The strictly positive whole amounts of a `{coins, gems}` price/changeset. */
+function positiveAmounts(c: { coins?: number | undefined; gems?: number | undefined }): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (typeof c.coins === 'number' && c.coins > 0) out['coins'] = c.coins;
+  if (typeof c.gems === 'number' && c.gems > 0) out['gems'] = c.gems;
+  return out;
 }
 
 function readLevelFromProfile(nk: INakama, userId: string): number {
@@ -458,11 +396,6 @@ function readLevelFromProfile(nk: INakama, userId: string): number {
   const v = profile.value as Record<string, unknown>;
   const prog = v['progression'] as { level?: number } | undefined;
   return typeof prog?.level === 'number' ? prog.level : 1;
-}
-
-function walletGetLocal(nk: INakama, userId: string): { coins: number; gems: number } {
-  const view = walletGet(nk, userId);
-  return { coins: view.coins, gems: view.gems };
 }
 
 interface ParseOk<T> {

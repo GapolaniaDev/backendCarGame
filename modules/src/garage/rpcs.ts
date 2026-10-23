@@ -18,6 +18,7 @@ import {
   applyUpgrade,
   defaultGarage,
   equipCosmetic,
+  garageWrite,
   readGarage,
   readGarageObject,
   setActiveCar,
@@ -25,7 +26,7 @@ import {
   writeGarageUpdate,
 } from './storage';
 import { getCarsCatalog, getCosmeticsCatalog, getUpgradesCatalog } from './catalog';
-import { grant, spend, walletGet } from '../economy/wallet';
+import { moveWallet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import type {
   CosmeticSlot,
@@ -210,13 +211,10 @@ export interface CarBuyOutput {
  *   1. Caller identity resolved + garage read.
  *   2. Player must meet `car.requiredLevel` (FORBIDDEN if not).
  *   3. Player must not already own the car (CONFLICT if so).
- *   4. Wallet spend() — INSUFFICIENT_FUNDS if balance too low.
- *   5. Garage CAS write — on version conflict, refund via grant().
- *
- * The "atomic" guarantee (Decision 3) is approximated via the
- * compensating-write pattern: spend first, then CAS write, refund on
- * CAS conflict. Nakama 3.27 JS runtime doesn't expose wallet ops in
- * multiUpdate, so a true single-transaction commit isn't available.
+ *   4+5. Wallet spend() with the garage CAS write in the same
+ *      `nk.multiUpdate` (plan T-11): INSUFFICIENT_FUNDS or a lost CAS
+ *      (CONFLICT) leave both the wallet and the garage untouched, so no
+ *      refund exists and a retry charges normally (audit 05 f11).
  */
 export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput<CarBuyInput>(body);
@@ -261,28 +259,15 @@ export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     }));
   }
 
-  // 5) Spend wallet.
+  // 5) Spend and deliver in one transaction.
   const grantKey = `garage:buy:${userId}:${car.id}`;
   const metadata: LedgerMetadata = {
     reason: 'store',
     sourceId: car.id,
   };
-  const spendChangeset: { coins?: number; gems?: number } = {};
-  if (car.priceCoins > 0) spendChangeset.coins = car.priceCoins;
-  if (car.priceGems !== undefined && car.priceGems > 0) spendChangeset.gems = car.priceGems;
-  // Free car (priceCoins === 0 && priceGems === 0) → no spend call.
-  let postBuyBalance: { coins: number; gems: number } | undefined;
-  if (Object.keys(spendChangeset).length > 0) {
-    const spendResp = spend(nk, userId, spendChangeset, metadata, grantKey);
-    if (!spendResp.ok) {
-      return toJson(err(spendResp.error.code, spendResp.error.message, spendResp.error.details));
-    }
-    postBuyBalance = spendResp.data;
-  } else {
-    postBuyBalance = walletGetLocal(nk, userId);
-  }
-
-  // 6) Mutate garage and CAS-write. On version conflict, refund.
+  const spendChangeset: Record<string, number> = {};
+  if (car.priceCoins > 0) spendChangeset['coins'] = -car.priceCoins;
+  if (car.priceGems !== undefined && car.priceGems > 0) spendChangeset['gems'] = -car.priceGems;
   let next: GarageRecord;
   try {
     next = addCarToGarage(garage, car);
@@ -291,17 +276,20 @@ export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     logger.error('car_buy: addCarToGarage threw for %s: %s', car.id, JSON.stringify(e));
     return toJson(err('INTERNAL', 'failed to assemble new garage'));
   }
-  try {
-    writeGarageUpdate(nk, next, version);
-  } catch (e) {
-    logger.warn('car_buy CAS conflict for %s: %s — refunding', userId, JSON.stringify(e));
-    const refundChangeset: { coins?: number; gems?: number } = {};
-    if (car.priceCoins > 0) refundChangeset.coins = car.priceCoins;
-    if (car.priceGems !== undefined && car.priceGems > 0) refundChangeset.gems = car.priceGems;
-    if (Object.keys(refundChangeset).length > 0) {
-      grant(nk, userId, refundChangeset, metadata, `garage:buy:refund:${userId}:${car.id}`);
+  // A free car (no price) still records the key and writes the garage.
+  const moves = Object.keys(spendChangeset).length > 0 ? [{ changeset: spendChangeset, metadata }] : [];
+  const moved = moveWallet(nk, userId, grantKey, moves, { extraWrites: [garageWrite(next, version)] });
+  if (!moved.ok) {
+    if (moved.error.code === 'CONFLICT') {
+      logger.warn('car_buy CAS conflict for %s — nothing charged', userId);
+      return toJson(err('CONFLICT', 'concurrent garage update — nothing was charged, please retry'));
     }
-    return toJson(err('CONFLICT', 'concurrent garage update — refund issued, please retry'));
+    return toJson(moved);
+  }
+  const postBuyBalance = moved.data.balance;
+  if (moved.data.replayed) {
+    // A concurrent call with the same key bought it: report that garage.
+    next = readGarageObject(nk, userId)?.value ?? next;
   }
 
   logger.info('car_buy user=%s car=%s priceCoins=%d newBalance.coins=%d', userId, car.id, car.priceCoins, postBuyBalance.coins);
@@ -380,23 +368,16 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!entry) return toJson(err('INTERNAL', 'upgrade entry missing'));
   const cost = entry.cost;
 
-  // Spend.
+  // Spend and apply in one transaction (plan T-11): a lost CAS charges
+  // nothing, so there is no refund and the retry charges normally.
   const idempKey = `garage:upgrade:${userId}:${car.id}:${parsed.value.line}:${newLevel}`;
   const metadata: LedgerMetadata = {
     reason: 'store',
     sourceId: `${car.id}:${parsed.value.line}`,
   };
-  const spendChangeset: { coins?: number; gems?: number } = {};
-  if (cost > 0) spendChangeset.coins = cost;
-  if (spendChangeset.coins === undefined && spendChangeset.gems === undefined) {
+  if (!(cost > 0)) {
     return toJson(err('INTERNAL', 'upgrade cost is zero — refusing free spend'));
   }
-  const spendResp = spend(nk, userId, spendChangeset, metadata, idempKey);
-  if (!spendResp.ok) {
-    return toJson(err(spendResp.error.code, spendResp.error.message, spendResp.error.details));
-  }
-
-  // Mutate + CAS.
   let next: GarageRecord;
   try {
     next = applyUpgrade(garage, car.id, parsed.value.line, newLevel);
@@ -404,14 +385,18 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
     logger.error('car_upgrade: applyUpgrade threw for %s: %s', car.id, JSON.stringify(e));
     return toJson(err('INTERNAL', 'failed to apply upgrade'));
   }
-  try {
-    writeGarageUpdate(nk, next, version);
-  } catch (e) {
-    logger.warn('car_upgrade CAS conflict for %s: %s — refunding', userId, JSON.stringify(e));
-    if (cost > 0) {
-      grant(nk, userId, { coins: cost }, metadata, `garage:upgrade:refund:${userId}:${car.id}:${parsed.value.line}:${newLevel}`);
+  const moved = moveWallet(nk, userId, idempKey, [{ changeset: { coins: -cost }, metadata }], {
+    extraWrites: [garageWrite(next, version)],
+  });
+  if (!moved.ok) {
+    if (moved.error.code === 'CONFLICT') {
+      logger.warn('car_upgrade CAS conflict for %s — nothing charged', userId);
+      return toJson(err('CONFLICT', 'concurrent garage update — nothing was charged, please retry'));
     }
-    return toJson(err('CONFLICT', 'concurrent garage update — refund issued, please retry'));
+    return toJson(moved);
+  }
+  if (moved.data.replayed) {
+    next = readGarageObject(nk, userId)?.value ?? next;
   }
 
   logger.info(
@@ -585,11 +570,6 @@ function readLevelFromProfile(profile: { value?: unknown } | undefined): number 
   const v = profile.value as Record<string, unknown>;
   const prog = v['progression'] as { level?: number } | undefined;
   return typeof prog?.level === 'number' ? prog.level : 1;
-}
-
-function walletGetLocal(nk: INakama, userId: string): { coins: number; gems: number } {
-  const view = walletGet(nk, userId);
-  return { coins: view.coins, gems: view.gems };
 }
 
 // Top-level bindings for the goja AST scanner.

@@ -86,7 +86,16 @@ export function writeGarageUpdate(
   garage: Garage,
   expectedVersion: string,
 ): void {
-  const obj: IStorageObject = {
+  nk.storageWrite([garageWrite(garage, expectedVersion)]);
+}
+
+/**
+ * The CAS write of `garage` at `expectedVersion`, for a caller that
+ * commits it inside a wallet movement (`MoveOptions.extraWrites`): the
+ * charge and the delivery then share one transaction (plan T-11).
+ */
+export function garageWrite(garage: Garage, expectedVersion: string): IStorageObject {
+  return {
     collection: GARAGE_COLLECTION,
     key: garage.userId,
     userId: garage.userId,
@@ -95,7 +104,6 @@ export function writeGarageUpdate(
     permissionWrite: 0,
     version: expectedVersion,
   };
-  nk.storageWrite([obj]);
 }
 
 // ─── Default garage (first auth) ─────────────────────────────────────────────
