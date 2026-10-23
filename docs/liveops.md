@@ -53,7 +53,7 @@ something to serve.
 | Field | Required | Notes |
 |---|---|---|
 | `flags.maintenance` | yes | When `true`, gated RPCs return `SERVICE_UNAVAILABLE` (see §2). |
-| `minClientVersion.<platform>` | yes | Semver compare; stale clients receive `UPGRADE_REQUIRED`. |
+| `minClientVersion.<platform>` | yes | Semver compare; a request that declares a lower `clientVersion` receives `UPGRADE_REQUIRED` (a request without `clientVersion` passes, plan T-14). `config_get` returns it as `minClientVersion` for the requested platform. |
 | `regions[]` | yes (≥1) | Each region has `id` + `relayUrl`. v1 always returns the first; future: client picks. |
 | `calendar[]` | no | Reserved for Phase 8 events/tournaments. Today: ignored. |
 | `adminRpcKey` | yes for admin RPCs | Shared secret; see `docs/admin.md`. |

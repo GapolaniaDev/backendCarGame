@@ -141,8 +141,8 @@ Public catalog + clock sync. **No auth required for the payload**, but the HTTP
 gateway still requires `Authorization` (use the session Bearer, or any token).
 
 ```json
-// body
-" ""  (empty string — RPC takes no input)
+// body (optional; any body is accepted)
+"{\"platform\":\"android\",\"clientVersion\":\"0.3.0\"}"
 
 // response.data
 {
@@ -150,12 +150,17 @@ gateway still requires `Authorization` (use the session Bearer, or any token).
   "catalogsHash":     "sha256-of-catalogs-blob",
   "tracks":           [ ... track objects ... ],
   "modes":            [ ... mode objects ... ],
-  "minClientVersion": "1.0.0"
+  "minClientVersion": "0.1.0"
 }
 ```
 
 `serverTimeMs` is used by the client to compute its clock offset vs the server
-(median of N samples). `minClientVersion` lets the server force client upgrades.
+(median of N samples). `minClientVersion` is the LiveOps
+`minClientVersion[platform]` (`platform` optional, default `ios`; plan T-14 —
+it was a hard-coded `"1.0.0"`). A body that declares a `clientVersion` below it
+gets `UPGRADE_REQUIRED`; without `clientVersion` the call always answers.
+`config_get` is not maintenance-gated, so the client can still read the clock
+and the minimum version to show the maintenance or update screen.
 
 ### 6.2 `race_session_create`
 
@@ -291,9 +296,11 @@ same response.
 
 ```json
 // body
-"{\"leaderboardId\":\"tt_neon_blvd_B_all\",\"view\":\"global\",\"limit\":20,\"callerUserId\":\"<uuid>\"}"
+"{\"leaderboardId\":\"tt_neon_blvd_B_all\",\"view\":\"global\",\"limit\":20,\"cursor\":\"<nextCursor of the previous page>\"}"
 // view ∈ { "global", "around_me", "friends" }
 // aroundUserId optional — defaults to caller. Used by `around_me` to center.
+// cursor optional (plan T-13) — nextCursor / prevCursor of a previous page of the same view.
+// leaderboardId may also be a season's ranked table, e.g. "ranked_season_2".
 
 // response.data
 {
@@ -303,6 +310,7 @@ same response.
   "records": [
     {
       "ownerId":  "<uuid>",
+      "username": "player_123",
       "rank":     1,
       "score":    87420,
       "subscore": 1740000000000,
@@ -320,8 +328,10 @@ same response.
   "ownerRecord": { /* same shape as a record; null when caller has no record */ },
   "profiles": {
     "<uuid>": { "userId": "<uuid>", "displayName": "Hugo", "avatarUrl": "https://cdn/avatar.png" }
-    // users without a profile fall back to { userId, displayName: userId, avatarUrl: null }
-  }
+    // users without a profile fall back to { userId, displayName: <username>, avatarUrl: null }
+  },
+  "nextCursor": "<opaque>",   // null on the last page
+  "prevCursor": null          // null on the first page
 }
 ```
 
@@ -329,9 +339,12 @@ same response.
 
 | View | Returns | Notes |
 |---|---|---|
-| `global` | top-N sorted by `score asc, subscore asc` | `ownerRecord` = caller's own row or `null` |
-| `around_me` | band of `limit/2` on each side of the caller | clamped to array bounds; falls back to top-N when caller has no record (NOT a 404) |
-| `friends` | stub: just the caller | real friend graph lands in a later phase |
+| `global` | the page in the table's own order (`wins_week` and ranked: most first; times: fastest first), Nakama's ranks | `ownerRecord` = `aroundUserId`'s row or `null` |
+| `around_me` | Nakama's haystack around `aroundUserId` | falls back to the top page when that user has no record (NOT a 404) |
+| `friends` | the caller and their friends (`friend_list_get`'s graph) that have a record, with global ranks | paged with `friends:<n>` cursors |
+
+`totalCount` counts the whole table. A malformed `cursor` → `BAD_REQUEST`. A
+season's ranked table that does not exist yet → an empty board.
 
 **`limit`**: clamped to `[1, 100]`, default 20.
 
@@ -345,6 +358,10 @@ Errors: `BAD_REQUEST` (missing leaderboardId / unknown view), `UNAUTHENTICATED`
 
 Returns the caller's profile. Auto-creates a default profile (`displayName =
 "Racer"`, `avatarUrl = null`) on first read.
+
+With `userId` of **another** player (plan T-14) it returns only the public
+projection `{ userId, displayName, avatarUrl, progression: { level } }` and never
+creates anything: `NOT_FOUND` when that player has no profile.
 
 ```json
 // body
@@ -365,7 +382,8 @@ Returns the caller's profile. Auto-creates a default profile (`displayName =
 **Authz**: `callerUserId` MUST match `ctx.userId` on socket; mismatch →
 `FORBIDDEN`.
 
-Errors: `FORBIDDEN`, `UNAUTHENTICATED`.
+Errors: `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` (another player without a
+profile).
 
 ### 6.9 `profile_update` — Phase 2
 
@@ -988,9 +1006,10 @@ contract, decision matrix, and the E2E test coverage.
 Phase 5 adds 7 player-facing RPCs + 5 admin RPCs + 1 relay-token RPC.
 Every RPC in this section accepts the optional `clientVersion` (semver
 string) and `platform` (`'ios'|'android'|'windows'|'macos'|'linux'`)
-fields. When either is present, the server enforces a min-version gate
-(`UPGRADE_REQUIRED`) plus the maintenance gate
-(`SERVICE_UNAVAILABLE`) — see `docs/liveops.md` §2 and §3.
+fields. The maintenance gate (`SERVICE_UNAVAILABLE`) always applies; the
+min-version gate (`UPGRADE_REQUIRED`) applies only when `clientVersion` is
+present and below `minClientVersion[platform]` — a request without it passes
+(plan T-14, D-05) — see `docs/liveops.md` §2 and §3.
 
 **Maintenance gate summary** (which RPCs are gated vs which are exempt):
 
@@ -1256,7 +1275,7 @@ Each call writes an `admin_action` analytics row.
 
 | Field | Where it appears | Notes |
 |---|---|---|
-| `clientVersion` | every Phase 5 RPC body | semver string; triggers `UPGRADE_REQUIRED` when stale |
+| `clientVersion` | every Phase 5 RPC body | optional semver string; triggers `UPGRADE_REQUIRED` when present and stale (absent = passes, plan T-14) |
 | `platform` | every Phase 5 RPC body | `ios` \| `android` \| `windows` \| `macos` \| `linux` |
 | `region` | server-stamped on `mm_ticket_params` | defaults to home region (e.g. `us-east-1`); client can override in a future iteration |
 | `http_key` query | every admin RPC | defense-in-depth; see `docs/admin.md` §1 |

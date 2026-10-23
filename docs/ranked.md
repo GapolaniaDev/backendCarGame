@@ -25,7 +25,7 @@ closed.
 |---|---|---|---|---|
 | `ranked/{userId}` | `userId` | 2/1 (public read, owner write) | 1 | Publicly readable. D11. |
 | `ranked_seasons_meta/{seasonId}` | `SYSTEM_USER_ID` | 0/0 | 1 | Server-owned. One per season. |
-| `ranked_{seasonId}` leaderboard | server | n/a | n/a | One per season; asc by rating. |
+| `ranked_{seasonId}` leaderboard | server | n/a | n/a | One per season; **desc** by rating (rank 1 = best rating), `set`, from `leaderboards.json` `seasonScoped.ranked` (plan T-13). The active season's table is ensured at boot (recreated there if it was created `asc`, R-02); a season minted by a lazy close gets it on its first ranked write. |
 | `abandons/{userId}` | `userId` | 0/0 (server-managed) | 1 | Abandon counter + block stamp. D6. |
 | `inbox/{rewardId}` | `userId` | 0/0 (server-managed) | 1 | Season rewards + future give-backs. |
 
@@ -121,7 +121,8 @@ Triggered on every `ranked_get` call:
 2. If `status === 'closed'` → no-op.
 3. If `now < endsAt` → no-op.
 4. Otherwise:
-   a. Read final standings from `ranked_{seasonId}` leaderboard.
+   a. Read final standings from `ranked_{seasonId}` leaderboard
+      (best rating first; no standings when the table does not exist).
    b. Compute tier rewards via `computeSeasonRewards` (gold / silver
       / bronze tiers by final rank).
    c. Send every grant via `sendReward` to `inbox/{rewardId}`.
@@ -294,3 +295,16 @@ abandon block lifecycle (3 abandons → blocked; expiry; bot filter;
 24h rolling window; per-user independence). `tests/unit/rating.test.ts`,
 `tests/unit/division.test.ts`, and `tests/unit/season-config.test.ts`
 cover the pure helpers.
+
+---
+
+## `ranked_get` and the season table (plan T-13)
+
+- `rank` is the owner record's rank in `ranked_{seasonId}` (desc, so 1 =
+  best rating); `null` while the player has no record **or the table
+  does not exist yet**. Before T-13 the read threw "leaderboard not
+  found" (HTTP 500) until the season's first ranked race.
+- Reading another player (`userId`) never writes: a player without a
+  record gets the default summary (rating 1000), and a record from an
+  older season is shown migrated without being saved. The caller's own
+  record is still created / migrated on read.

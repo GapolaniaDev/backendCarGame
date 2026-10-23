@@ -4,7 +4,17 @@
 
 ## TL;DR
 
-91 tables, three classes (`wins_week`, `tt_*`, `lap_*`). The server is the only writer. Clients read through `lb_get` and never write directly. Every server-written record carries a `__server_token__` metadata stamp and the session id of the race that produced it.
+91 tables, three classes (`wins_week`, `tt_*`, `lap_*`), plus one ranked rating table per season (`ranked_{seasonId}`, see `docs/ranked.md`). The server is the only writer. Clients read through `lb_get` (or Nakama's native `ListLeaderboardRecords`, which the Unity client uses for `wins_week`) and never write directly. Every server-written record carries a `__server_token__` metadata stamp, the session id of the race that produced it and the owner's account username.
+
+## Table order (plan T-13)
+
+The sort order and operator of every table come from `leaderboards.json`: `wins_week` and `ranked_{season}` (`seasonScoped.ranked`) are `desc`, the time and lap tables `asc`. `nk.leaderboardCreate` never changes an existing table, so at boot `ensureLeaderboards` reads every catalog table (and the active season's ranked table) with `leaderboardsGetId` and **deletes and creates again** any table whose order or operator differs. That drops its records (plan R-02, accepted: no real players yet) and logs at warn level:
+
+```
+leaderboard <id> recreated: found sortOrder=<n> operator=<op>, catalog wants <order>/<op>; its records are dropped (plan R-02)
+```
+
+Outside boot (the ranked subscriber creating a new season's table) a mismatch is only logged, never dropped.
 
 ## Taxonomy
 
@@ -129,22 +139,24 @@ The `__server_token__` field is the only authoritative marker. Client writers th
 
 ## Read pipeline
 
-Source: `modules/src/leaderboards/lb_get.ts`. Single RPC, three views, one profile-enrichment pass.
+Source: `modules/src/leaderboards/lb_get.ts`. Single RPC, three views, one profile-enrichment pass. Order and `rank` are Nakama's, i.e. each table's own sort order (until plan T-13 the handler re-sorted every table ascending, so `wins_week` listed the fewest wins first).
 
 ```
-global      → sorted slice of [0, limit)         → ownerRecord = caller's own row
-around_me   → band of limit/2 on each side       → ownerRecord = caller's own row
-friends     → stub: just the caller              → ownerRecord = caller's own row
+global      → leaderboardRecordsList(limit, cursor)   → ownerRecord = aroundUserId's row
+around_me   → leaderboardRecordsHaystack(limit)       → ownerRecord = aroundUserId's row
+friends     → caller + friends_edge friends            → ownerRecord = aroundUserId's row
 ```
 
 ### View semantics in detail
 
-| View | Selection | Owner record |
+| View | Selection | Cursor |
 |---|---|---|
-| `global` | top-N by `score asc, subscore asc` | caller's row in the full table (or `null`) |
-| `around_me` | `slice(max(0, idx - limit/2), min(len, idx + limit/2))` around the caller's rank | caller's row |
-| `around_me` (no record) | falls back to `slice(0, limit)` — **NOT a 404**; the leaderboard exists, the user is just missing | `null` |
-| `friends` | stub: filter to the caller's row only | caller's row |
+| `global` | the page in table order | Nakama's `nextCursor` / `prevCursor` |
+| `around_me` | Nakama's haystack around `aroundUserId` (default the caller) | Nakama's; a cursor continues as a plain page |
+| `around_me` (no record) | falls back to the top page — **NOT a 404**; the leaderboard exists, the user is just missing | as `global` |
+| `friends` | the caller and every `friends_edge` friend that has a record, in table order, with their **global** ranks | offset cursor `friends:<n>` |
+
+Input `cursor` (optional) is the `nextCursor` / `prevCursor` of a previous page of the same view; a malformed one is `BAD_REQUEST`. Output adds `nextCursor`, `prevCursor` (null at either end) and `records[].username`; `totalCount` is the number of ranked records in the whole table. A `ranked_{seasonId}` id is accepted; while that table does not exist the answer is an empty board.
 
 ### Clamping
 
@@ -152,7 +164,11 @@ friends     → stub: just the caller              → ownerRecord = caller's ow
 
 ### Profile enrichment
 
-`lb_get` reads `profiles/{userId}` storage objects in a single batch (one `storageRead` per response). Missing profiles fall back to `{ userId, displayName: userId, avatarUrl: null }`. The fallback is intentional: `lb_get` works for users who haven't customized one yet.
+`lb_get` reads `profiles/{userId}` storage objects in a single batch (one `storageRead` per response). Missing profiles fall back to `{ userId, displayName: <username>, avatarUrl: null }` (the raw user id only when the account has no username). The fallback is intentional: `lb_get` works for users who haven't customized one yet.
+
+### Usernames (HT-65)
+
+Writers pass the owner's account username (`leaderboards/usernames.ts`, one `usersGetId` per race) on every `leaderboardRecordWrite`; before plan T-13 they passed `''`, which Nakama stores as NULL, so the native `ListLeaderboardRecords` showed no names. Records written before the fix get the name on their next write (Nakama keeps the stored name when it receives an empty one); `lb_get` fills them from the account meanwhile.
 
 ## Reset / clear path
 
@@ -185,7 +201,5 @@ Tests covering the reset behavior live in `tests/e2e/leaderboards-reset.test.ts`
 
 ## Future work
 
-- **Friends graph** — when the friends module lands, swap `friends` view from "just the caller" to a real `storageList(['follows/caller/{friendId}'])`.
 - **Tournaments** — Phase 6+ likely wants a per-tournament leaderboard (`t_{tournamentId}_time`, `incr desc`). The catalog expansion pattern (`pattern.template` × tracks × classes) extends naturally; add a top-level table entry alongside `wins_week`.
-- **Page tokens** — currently `limit` caps at 100 and clients page linearly. If a leaderboard grows past that we'll need a real cursor (Nakama's `cursor` field on `leaderboardRecordsList`).
 - **Anti-cheat** — the `__server_token__` marker is the server's stamp. The `beforeLeaderboardRecordWrite` hook is the place to add per-mode score sanity checks (currently unused; the writer-side validation in `race_submit_result` is the only guard).

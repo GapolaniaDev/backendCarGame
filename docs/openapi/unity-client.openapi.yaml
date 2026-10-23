@@ -50,7 +50,7 @@ paths:
         - "Config & LiveOps"
       summary: "Catálogo público + sincronización de reloj"
       operationId: "config_get"
-      description: "Úsalo al arrancar para calcular el offset de reloj (mediana de N muestras) y validar la versión mínima.\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"config_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ConfigGetData>>(rpc.Payload)`."
+      description: "T-14: not maintenance-gated (the client needs the clock and minClientVersion to show the maintenance or update screen); the only error is `UPGRADE_REQUIRED` for a declared clientVersion below the minimum.\n\nÚsalo al arrancar para calcular el offset de reloj (mediana de N muestras) y validar la versión mínima.\n\nUnity: `await client.RpcAsync(session, \"config_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ConfigGetData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -1274,7 +1274,7 @@ paths:
         - "Leaderboards"
       summary: "Lee un leaderboard (global / around_me / friends)"
       operationId: "lb_get"
-      description: "El cliente NUNCA escribe leaderboards: lo hace el servidor al cerrar la carrera.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"lb_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LbGetData>>(rpc.Payload)`."
+      description: "T-13: order and rank come from each table (wins_week and ranked_* descending). `global` and `around_me` page with Nakama cursors; `friends` lists the caller and their friends (friends_edge) with global ranks and pages with `friends:<n>` cursors. A season's ranked table that does not exist yet answers an empty board.\n\nEl cliente NUNCA escribe leaderboards: lo hace el servidor al cerrar la carrera.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"lb_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LbGetData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -1376,7 +1376,7 @@ paths:
         - "Matchmaking"
       summary: "Resumen ranked público de un jugador"
       operationId: "ranked_get"
-      description: "Errores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"ranked_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RankedGetData>>(rpc.Payload)`."
+      description: "T-13: reading another player (`userId`) never writes; a player without a record gets the default summary.\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"ranked_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RankedGetData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -4429,8 +4429,12 @@ components:
       properties:
         ownerId:
           type: "string"
+        username:
+          type: "string"
+          description: "Owner's account username (T-13, additive); '' when unknown."
         rank:
           type: "integer"
+          description: "Nakama's rank in the table's own order: wins_week and ranked_* are descending (most first), time tables ascending."
         score:
           type: "integer"
         subscore:
@@ -4810,7 +4814,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -4821,6 +4825,7 @@ components:
             - "macos"
             - "linux"
           description: "Plataforma del cliente (gate de versión mínima)."
+      description: "Optional (T-14): any body is accepted. A declared clientVersion below the platform's minimum -> UPGRADE_REQUIRED; without clientVersion the call always answers."
     ConfigGetData:
       type: "object"
       properties:
@@ -4838,6 +4843,7 @@ components:
             "$ref": "#/components/schemas/Mode"
         minClientVersion:
           type: "string"
+          description: "LiveOps minClientVersion[platform] (platform from the request, default ios). Was a hard-coded '1.0.0' until T-14."
     LiveopsConfigGetRequest:
       type: "object"
       properties:
@@ -4847,7 +4853,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -4899,7 +4905,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -4942,7 +4948,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -4978,7 +4984,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5027,7 +5033,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5118,7 +5124,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5129,11 +5135,16 @@ components:
             - "macos"
             - "linux"
           description: "Plataforma del cliente (gate de versión mínima)."
+        userId:
+          type: "string"
+          description: "Another player's id (T-14): returns only PublicProfile and never creates anything; NOT_FOUND when that player has no profile. Omitted or the caller's own id: the full Profile."
     ProfileGetData:
       type: "object"
       properties:
         profile:
-          "$ref": "#/components/schemas/Profile"
+          oneOf:
+            - "$ref": "#/components/schemas/Profile"
+            - "$ref": "#/components/schemas/PublicProfile"
     ProfileUpdateRequest:
       type: "object"
       description: "NO enviar `userId` distinto del caller (spoof -> FORBIDDEN)."
@@ -5144,7 +5155,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5177,7 +5188,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5227,7 +5238,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5256,7 +5267,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5287,7 +5298,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5325,7 +5336,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5360,7 +5371,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5389,7 +5400,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5461,7 +5472,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5820,7 +5831,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5834,6 +5845,7 @@ components:
         leaderboardId:
           type: "string"
           example: "tt_neon_blvd_B_all"
+          description: "A catalog table (wins_week, tt_*, lap_*) or a season's ranked table, e.g. ranked_season_2 (T-13)."
         view:
           type: "string"
           enum:
@@ -5848,6 +5860,10 @@ components:
         aroundUserId:
           type: "string"
           format: "uuid"
+          description: "Centers around_me and selects ownerRecord. Defaults to the caller."
+        cursor:
+          type: "string"
+          description: "Additive (T-13): nextCursor / prevCursor of a previous page of the same view. Malformed -> BAD_REQUEST."
       required:
         - "leaderboardId"
         - "view"
@@ -5860,6 +5876,7 @@ components:
           type: "string"
         totalCount:
           type: "integer"
+          description: "Ranked records in the whole table."
         records:
           type: "array"
           items:
@@ -5881,6 +5898,17 @@ components:
                 oneOf:
                   - type: "string"
                   - type: "null"
+          description: "Keyed by ownerId; without a profile, displayName falls back to the username."
+        nextCursor:
+          oneOf:
+            - type: "string"
+            - type: "null"
+          description: "Additive (T-13). Null on the last page."
+        prevCursor:
+          oneOf:
+            - type: "string"
+            - type: "null"
+          description: "Additive (T-13). Null on the first page."
     MmTicketParamsRequest:
       type: "object"
       properties:
@@ -5890,7 +5918,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -5962,7 +5990,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6001,7 +6029,10 @@ components:
         recentAbandons:
           type: "integer"
         rank:
-          type: "integer"
+          oneOf:
+            - type: "integer"
+            - type: "null"
+          description: "Rank in ranked_{seasonId} (descending: 1 = best rating). Null without a record or while the season table does not exist (T-13; before, HTTP 500)."
         daysLeftInSeason:
           type: "integer"
         abandonsLast24h:
@@ -6019,7 +6050,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6051,7 +6082,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6101,7 +6132,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6136,7 +6167,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6166,7 +6197,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6207,7 +6238,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6257,7 +6288,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -6305,7 +6336,7 @@ components:
           format: "uuid"
         clientVersion:
           type: "string"
-          description: "semver del cliente (Application.version). Activa UPGRADE_REQUIRED si es menor al mínimo."
+          description: "Client semver (Application.version). Optional: when present and below the platform minimum -> UPGRADE_REQUIRED; when absent the version gate passes (T-14, D-05)."
           example: "1.2.0"
         platform:
           type: "string"
@@ -7416,3 +7447,27 @@ components:
       required:
         - "coins"
         - "gems"
+    PublicProfile:
+      type: "object"
+      description: "What any player sees of another one (T-14): no timestamps, XP, unlocked levels or daily-win clock."
+      properties:
+        userId:
+          type: "string"
+        displayName:
+          type: "string"
+        avatarUrl:
+          oneOf:
+            - type: "string"
+            - type: "null"
+        progression:
+          type: "object"
+          properties:
+            level:
+              type: "integer"
+          required:
+            - "level"
+      required:
+        - "userId"
+        - "displayName"
+        - "avatarUrl"
+        - "progression"
