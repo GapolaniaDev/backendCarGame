@@ -164,3 +164,42 @@ export function joinParty(
   }
   throw new Error('CAS retries exhausted');
 }
+// ─── Account deletion ───────────────────────────────────────────────────────
+
+/**
+ * Take a player who is being deleted out of their party (plan T-21 /
+ * T-16 pending): the party document kept them until it disbanded. A
+ * leader hands the party to the oldest remaining member; the last
+ * member disbands it. Returns the party id, or null when not in one.
+ */
+export function leavePartyOnAccountDelete(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+): string | null {
+  const active = readActiveParty(nk, userId);
+  if (active === null) return null;
+  const partyId = active.record.partyId;
+  for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt += 1) {
+    const row = readParty(nk, partyId);
+    if (row === null || !row.record.members.some((m) => m.userId === userId)) break;
+    const members = row.record.members.filter((m) => m.userId !== userId);
+    try {
+      if (members.length === 0) {
+        deleteParty(nk, partyId);
+      } else {
+        const oldest = [...members].sort((a, b) => a.joinedAt - b.joinedAt)[0]!;
+        const leaderUserId = row.record.leaderUserId === userId ? oldest.userId : row.record.leaderUserId;
+        writePartyUpdate(nk, { ...row.record, members, leaderUserId }, row.version);
+      }
+      break;
+    } catch (e) {
+      logger.warn(
+        'party leave on account delete: CAS retry attempt=%d party=%s: %s',
+        attempt, partyId, e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  try { deleteActiveParty(nk, userId); } catch { /* purged with the account */ }
+  return partyId;
+}

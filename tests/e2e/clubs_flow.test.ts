@@ -246,22 +246,17 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
       }
     });
 
-    it('CONFLICT on duplicate name', () => {
+    it('CONFLICT on duplicate name (case-insensitive), nothing charged', () => {
       const first = callClubCreate(env, LEADER, { name: 'Speed Demons' });
       expect(first.ok).toBe(true);
-      // Refund + clear lifetime cap so the duplicate-name check is the only gate.
-      setCoins(env, LEADER, 10_000);
-      fake.store.delete(`clubs_created/${LEADER}/${LEADER}`);
-      fake.groups.delete(first.data!.clubId);
-      fake.groupMembers.delete(first.data!.clubId);
-      // Re-create with a different name, then attempt to clone it.
-      const setup = callClubCreate(env, LEADER, { name: 'Speed Demons' });
-      expect(setup.ok).toBe(true);
-      setCoins(env, LEADER, 10_000);
-      fake.store.delete(`clubs_created/${LEADER}/${LEADER}`);
-      const dup = callClubCreate(env, LEADER, { name: 'Speed Demons' });
+      const OTHER = 'user-other-founder';
+      seedProfile(env, OTHER, 8);
+      setCoins(env, OTHER, 10_000);
+      const dup = callClubCreate(env, OTHER, { name: 'speed demons' });
       expect(dup.ok).toBe(false);
       if (!dup.ok) expect(dup.error.code).toBe('CONFLICT');
+      expect(fake.wallets.get(OTHER)?.coins).toBe(10_000);
+      expect(fake.groups.size).toBe(1);
     });
 
     it('BAD_REQUEST on unknown emblemId', () => {
@@ -318,7 +313,8 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
       expect(res.data.club.emblemId).toBe('emblem_default');
       expect(res.data.club.region).toBe('us');
       expect(res.data.club.maxMembers).toBe(30);
-      expect(res.data.club.open).toBe(true);
+      // Closed group: the way in is club_join (plan T-21).
+      expect(res.data.club.open).toBe(false);
       expect(res.data.members).toHaveLength(1);
       expect(res.data.members[0].userId).toBe(LEADER);
       expect(res.data.members[0].isLeader).toBe(true);

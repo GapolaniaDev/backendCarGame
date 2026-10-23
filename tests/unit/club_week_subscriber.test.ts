@@ -64,10 +64,11 @@ function seedClubMeta(fake: FakeNakamaType, clubId: string, leaderId: string, we
     weeklyPoints,
     createdAt: NOW,
   };
-  fake.store.set(`${CLUBS_METADATA_COLLECTION}/${clubId}/${leaderId}`, {
+  // System-owned since plan T-21.
+  fake.store.set(`${CLUBS_METADATA_COLLECTION}/${clubId}/00000000-0000-0000-0000-000000000000`, {
     collection: CLUBS_METADATA_COLLECTION,
     key: clubId,
-    userId: leaderId,
+    userId: '00000000-0000-0000-0000-000000000000',
     value: rec as unknown as Record<string, unknown>,
     version: 'v00000001',
     permissionRead: 2,
@@ -93,9 +94,10 @@ function seedMember(
     joinedAt: NOW + Math.floor(Math.random() * 10000),
     weeklyContribution,
   };
-  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`, {
+  // Plan T-21: the player's single membership row.
+  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`, {
     collection: CLUBS_MEMBERS_COLLECTION,
-    key: clubId,
+    key: 'current',
     userId,
     value: rec as unknown as Record<string, unknown>,
     version: 'v00000001',
@@ -131,8 +133,8 @@ function readMeta(fake: FakeNakamaType, clubId: string): ClubMetadata | null {
 }
 
 function readMemberRow(fake: FakeNakamaType, clubId: string, userId: string): MemberRecord | null {
-  const obj = fake.store.get(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`);
-  if (obj === undefined) return null;
+  const obj = fake.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`);
+  if (obj === undefined || (obj.value as unknown as MemberRecord).clubId !== clubId) return null;
   return obj.value as unknown as MemberRecord;
 }
 

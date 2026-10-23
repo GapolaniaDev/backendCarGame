@@ -121,15 +121,15 @@ function callGet(env: LoadedBundle, userId: string, clubId: string): Resp<ClubGe
 }
 
 function seedMeta(env: LoadedBundle, clubId: string, currentWeek: string): void {
-  env.fakeNakama.store.set(`${CLUBS_WEEK_META_COLLECTION}/${clubId}/${clubId}`, {
+  env.fakeNakama.store.set(`${CLUBS_WEEK_META_COLLECTION}/${clubId}/${SYSTEM_USER_ID}`, {
     collection: CLUBS_WEEK_META_COLLECTION,
     key: clubId,
-    userId: clubId,
+    userId: SYSTEM_USER_ID,
     value: {
       schemaVersion: 1, clubId, currentWeek, lastResetAt: 1,
     } as unknown as Record<string, unknown>,
     version: 'v00000001',
-    permissionRead: 1, permissionWrite: 1,
+    permissionRead: 1, permissionWrite: 0,
     createTime: new Date(0).toISOString(),
     updateTime: new Date(0).toISOString(),
     expiresAt: null,
@@ -155,28 +155,31 @@ function seedLb(env: LoadedBundle, clubId: string, score: number): void {
   env.fakeNakama.leaderboardRecords.set(CLUB_WEEK_LEADERBOARD_ID, bucket);
 }
 
-function setWeeklyPoints(env: LoadedBundle, clubId: string, value: number, userId: string): void {
-  const obj = env.fakeNakama.store.get(`${CLUBS_METADATA_COLLECTION}/${clubId}/${userId}`);
+function setWeeklyPoints(env: LoadedBundle, clubId: string, value: number, _userId: string): void {
+  // System-owned since T-21.
+  const obj = env.fakeNakama.store.get(`${CLUBS_METADATA_COLLECTION}/${clubId}/${SYSTEM_USER_ID}`);
+  if (obj === undefined) throw new Error('no club metadata');
   if (obj === undefined) return;
   const v = obj.value as ClubMetadata;
   obj.value = { ...v, weeklyPoints: value };
 }
 
-function setMemberContribution(env: LoadedBundle, clubId: string, userId: string, value: number): void {
-  const obj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`);
+function setMemberContribution(env: LoadedBundle, _clubId: string, userId: string, value: number): void {
+  const obj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`);
+  if (obj === undefined) throw new Error('no membership row');
   if (obj === undefined) return;
   const v = obj.value as MemberRecord;
   obj.value = { ...v, weeklyContribution: value };
 }
 
 function readMeta(env: LoadedBundle, clubId: string): { currentWeek: string; lastResetAt: number } | null {
-  const obj = env.fakeNakama.store.get(`${CLUBS_WEEK_META_COLLECTION}/${clubId}/${clubId}`);
+  const obj = env.fakeNakama.store.get(`${CLUBS_WEEK_META_COLLECTION}/${clubId}/${SYSTEM_USER_ID}`);
   if (obj === undefined) return null;
   return obj.value as { currentWeek: string; lastResetAt: number };
 }
 
 function readResetMarker(env: LoadedBundle, weekUtc: string): { winnerClubId: string | null; rewardedUserIds: string[] } | null {
-  const obj = env.fakeNakama.store.get(`${CLUBS_WEEK_RESET_COLLECTION}/${weekUtc}/${weekUtc}`);
+  const obj = env.fakeNakama.store.get(`${CLUBS_WEEK_RESET_COLLECTION}/${weekUtc}/${SYSTEM_USER_ID}`);
   if (obj === undefined) return null;
   return obj.value as { winnerClubId: string | null; rewardedUserIds: string[] };
 }
@@ -202,26 +205,7 @@ describe('club_week flow e2e (Phase 7 Chunk 5)', () => {
     const created = callCreate(env, LEADER);
     if (!created.ok) throw new Error('seed: club_create failed: ' + JSON.stringify(created));
     clubId = created.data.clubId;
-    // club_create doesn't seed members; do it manually.
-    const memberRec: MemberRecord = {
-      schemaVersion: 1,
-      clubId,
-      userId: LEADER,
-      role: 'leader',
-      joinedAt: 1_700_000_000_000,
-      weeklyContribution: 0,
-    };
-    env.fakeNakama.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${LEADER}`, {
-      collection: CLUBS_MEMBERS_COLLECTION,
-      key: clubId,
-      userId: LEADER,
-      value: memberRec as unknown as Record<string, unknown>,
-      version: 'v00000001',
-      permissionRead: 1, permissionWrite: 1,
-      createTime: new Date(0).toISOString(),
-      updateTime: new Date(0).toISOString(),
-      expiresAt: null,
-    });
+    // club_create writes the leader's membership row (plan T-21).
   });
 
   it('boot creates the club_week leaderboard', () => {
@@ -262,7 +246,7 @@ describe('club_week flow e2e (Phase 7 Chunk 5)', () => {
     expect(res.data!.club.weeklyPoints).toBe(0);
 
     // Member contribution zeroed.
-    const memberObj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${LEADER}`);
+    const memberObj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/${LEADER}`);
     expect((memberObj!.value as MemberRecord).weeklyContribution).toBe(0);
 
     // Marker written.
@@ -306,7 +290,7 @@ describe('club_week flow e2e (Phase 7 Chunk 5)', () => {
     if (!res.ok) expect(res.error.code).toBe('SERVICE_UNAVAILABLE');
 
     // Reset did not happen — weeklyPoints still 30.
-    const memberObj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${LEADER}`);
+    const memberObj = env.fakeNakama.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/${LEADER}`);
     expect((memberObj!.value as MemberRecord).weeklyContribution).toBe(12);
   });
 });

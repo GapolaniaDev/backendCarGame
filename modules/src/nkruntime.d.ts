@@ -70,6 +70,20 @@ export interface IInitializer {
 
   registerMatchmakerMatched(fn: MatchmakerMatchedFn): void;
 
+  // Client group APIs (v3.27.0 `registerHook` names). The request arrives
+  // through protojson with camelCase fields (`{groupId}` …); a throw of
+  // `{message, code}` rejects it with that gRPC code.
+  registerBeforeJoinGroup(fn: BeforeReqFn): void;
+  registerBeforeCreateGroup(fn: BeforeReqFn): void;
+  registerBeforeUpdateGroup(fn: BeforeReqFn): void;
+  registerBeforeDeleteGroup(fn: BeforeReqFn): void;
+  registerBeforeLeaveGroup(fn: BeforeReqFn): void;
+  registerBeforeAddGroupUsers(fn: BeforeReqFn): void;
+  registerBeforeBanGroupUsers(fn: BeforeReqFn): void;
+  registerBeforeKickGroupUsers(fn: BeforeReqFn): void;
+  registerBeforePromoteGroupUsers(fn: BeforeReqFn): void;
+  registerBeforeDemoteGroupUsers(fn: BeforeReqFn): void;
+
   // ── Match lifecycle ──
   registerMatch(name: string, handler: IMatchHandler): void;
 
@@ -432,28 +446,54 @@ export interface INakama {
   usersGetUsername(username: string[]): unknown;
   usersGetRandom(count: number): unknown;
 
-  // ── Group CRUD (for clubs) ──
+  // ── Groups (clubs) — v3.27.0 signatures (runtime_javascript_nakama.go) ──
+  /** Creates the group with `userId` as its superadmin. Throws on a duplicate name. */
   groupCreate(
+    userId: string,
     name: string,
-    description: string,
-    lang: string,
-    metadata: Record<string, unknown>,
-    maxCount: number,
-    open: boolean,
-  ): { group: IGroup; creator: IUser };
+    creatorId?: string | null,
+    langTag?: string | null,
+    description?: string | null,
+    avatarUrl?: string | null,
+    open?: boolean | null,
+    metadata?: Record<string, unknown> | null,
+    maxCount?: number | null,
+  ): IGroup;
+  /** `userId` null = system user (no permission check). */
   groupUpdate(
     groupId: string,
-    name: string,
-    description: string,
-    lang: string,
-    metadata: Record<string, unknown>,
-    open: boolean,
+    userId: string | null,
+    name?: string | null,
+    creatorId?: string | null,
+    langTag?: string | null,
+    description?: string | null,
+    avatarUrl?: string | null,
+    open?: boolean | null,
+    metadata?: Record<string, unknown> | null,
+    maxCount?: number | null,
   ): void;
   groupDelete(groupId: string): void;
-  groupUsersList(groupId: string, limit?: number, cursor?: string): unknown;
-  groupUserJoin(groupId: string, userId: string): void;
-  groupUsersAdd(groupId: string, userIds: string[]): void;
-  groupsList(limit?: number, cursor?: string, name?: string): unknown;
+  groupsGetId(groupIds: string[]): IGroup[];
+  /** Limit 1-10000; `state` null = every state (0 superadmin … 3 join request, 4 banned). */
+  groupUsersList(groupId: string, limit?: number, state?: number | null, cursor?: string | null): IGroupUserList;
+  /** Without `callerId` the system user adds them: no permission check, `maxCount` still enforced. */
+  groupUsersAdd(groupId: string, userIds: string[], callerId?: string | null): void;
+  groupUsersKick(groupId: string, userIds: string[], callerId?: string | null): void;
+  /** One state step per call (member → admin → superadmin). */
+  groupUsersPromote(groupId: string, userIds: string[], callerId?: string | null): void;
+  groupUsersDemote(groupId: string, userIds: string[], callerId?: string | null): void;
+  /**
+   * Limit 1-100. `name` is an ILIKE pattern (append `%` for a prefix) and
+   * cannot be combined with the other filters.
+   */
+  groupsList(
+    name?: string | null,
+    langTag?: string | null,
+    open?: boolean | null,
+    edgeCount?: number | null,
+    limit?: number,
+    cursor?: string | null,
+  ): IGroupList;
 
   // ── Auth helpers ──
   authenticateDevice(
@@ -503,6 +543,8 @@ export interface IStorageKey {
   collection: string;
   key: string;
   userId: string;
+  /** `storageDelete` only: delete only when the stored version matches. */
+  version?: string;
 }
 
 export interface IStorageObject {
@@ -644,13 +686,28 @@ export interface IUser {
 }
 
 export interface IGroup {
-  groupId: string;
-  creatorUserId: string;
+  id: string;
+  creatorId: string;
   name: string;
   description: string;
+  avatarUrl: string;
+  langTag: string;
   metadata: Record<string, unknown>;
-  maxCount: number;
   open: boolean;
+  edgeCount: number;
+  maxCount: number;
+  createTime: number;
+  updateTime: number;
+}
+
+export interface IGroupList {
+  groups: IGroup[];
+  cursor: string | null;
+}
+
+export interface IGroupUserList {
+  groupUsers: Array<{ user: { userId: string; username: string; displayName?: string; avatarUrl?: string }; state: number }>;
+  cursor: string | null;
 }
 
 // ─── Global function injected by the runtime ─────────────────────────────────

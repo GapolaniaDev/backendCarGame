@@ -1,9 +1,10 @@
-// Phase 7 Chunk 3 — Clubs RPCs (3):
+// Phase 7 Chunk 3 — Clubs RPCs:
 //   - club_create  — spend 5000 coins, create Nakama group + metadata
 //   - club_get     — fetch club + member preview
 //   - club_search  — paginated search by name prefix
+//   - club_join    — join a club through its rules (plan T-21)
 //
-// All 3 RPCs are gated by `assertNotInMaintenance`.
+// All are gated by `assertNotInMaintenance`.
 //
 // Errors (per peer spec):
 //   - club_create: BAD_REQUEST, FORBIDDEN (level<8), INSUFFICIENT_FUNDS,
@@ -13,9 +14,10 @@
 //
 // Blocked-words check on motto is a placeholder list (defer real
 // moderation to Chunk 5/6). Name uniqueness is checked via
-// `nk.groupsList(name)` which scans all groups server-side.
+// `nk.groupsList(name)` (case-insensitive exact match) and enforced again
+// by `groupCreate`, which refuses a duplicate name.
 
-import type { IContext, ILogger, INakama, IGroup, IStorageObject } from '../nkruntime';
+import type { IContext, ILogger, INakama, IGroup, IGroupList } from '../nkruntime';
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
 import { parseInput } from '../core/parse_input';
@@ -25,27 +27,27 @@ import { spend } from '../economy/wallet';
 import { readProfile } from '../profiles/storage';
 import {
   buildClubView,
-  buildMemberView,
   checkClubJoinGate,
+  clubCreatedWrite,
+  clubMetadataWrite,
   readClubCreated,
   readClubGroup,
   readClubMetadata,
-  writeClubCreated,
-  writeClubMetadataCreate,
+  readClubMetadataMany,
   writeClubMetadataUpdate,
 } from './clubs_repo';
 import { ensureWeekBoundary } from './club_week_reset';
 import {
-  CLUBS_MEMBERS_COLLECTION,
   MAX_CAS_RETRIES,
-  deleteMember,
+  memberWrite,
   multiUpdateMembers,
   readClubMembers,
   readMember,
+  readMembership,
   resolveUsername,
-  writeMemberCreate,
   writeMemberUpdate,
 } from './members_repo';
+import { joinClub, removeClubMember, syncGroupLeader, type ClubJoinOutput } from './join';
 import {
   applyTransfer,
   canDemoteTo,
@@ -73,6 +75,7 @@ import {
   type ClubKickOutput,
   type ClubLeaveOutput,
   type ClubMembersListOutput,
+  type ClubMemberView,
   type ClubMemberViewV2,
   type ClubMetadata,
   type ClubPromoteOutput,
@@ -89,6 +92,7 @@ const CLUB_RATE_LIMITS = {
   club_create: { maxPerWindow: 5, windowSec: 60 },
   club_get: { maxPerWindow: 60, windowSec: 60 },
   club_search: { maxPerWindow: 30, windowSec: 60 },
+  club_join: { maxPerWindow: 10, windowSec: 60 },
   // Chunk 4
   club_update: { maxPerWindow: 30, windowSec: 60 },
   club_members_list: { maxPerWindow: 60, windowSec: 60 },
@@ -258,22 +262,32 @@ export function club_create_impl(
     ? minDivisionRaw
     : CLUB_DEFAULT_MIN_DIVISION;
 
-  // Name uniqueness scan via nk.groupsList(name).
+  // One club per player: a member of another club cannot found one.
+  if (readMembership(nk, caller.id) !== null) {
+    return toJson(err('CONFLICT', 'already in a club; leave it first', { reason: 'ALREADY_IN_CLUB' }));
+  }
+
+  // Name uniqueness via nk.groupsList(name); groupCreate refuses a
+  // duplicate too (a concurrent create of the same name).
   const dup = findGroupByName(nk, nameRes.value);
   if (dup !== null) {
     return toJson(err('CONFLICT', 'a club with that name already exists'));
   }
 
-  // Create the Nakama group FIRST. The caller is auto-joined as
-  // superadmin by Nakama on creation. We need a real `groupId` before
-  // we can persist metadata, so we must do this before any spend.
+  // Create the Nakama group FIRST (we need its id for the metadata): the
+  // caller is its superadmin. It is CLOSED: the client JoinGroup API would
+  // only file a join request, and the before-hook refuses it anyway; the
+  // way in is `club_join` (plan T-21).
   let group: IGroup;
-  let groupCreateSucceeded = false;
   try {
-    const created = nk.groupCreate(
+    group = nk.groupCreate(
+      caller.id,
       nameRes.value,
-      mottoRes.value,
+      caller.id,
       'es',
+      mottoRes.value,
+      '',
+      false, // closed
       {
         emblemId,
         region,
@@ -281,21 +295,42 @@ export function club_create_impl(
         createdBy: caller.id,
       },
       CLUB_MAX_MEMBERS,
-      true, // open
     );
-    group = created.group;
-    groupCreateSucceeded = true;
   } catch (e) {
-    logger.error(
-      'club_create: groupCreate failed: %s',
-      e instanceof Error ? e.message : String(e),
-    );
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.indexOf('already exists') >= 0) {
+      return toJson(err('CONFLICT', 'a club with that name already exists'));
+    }
+    logger.error('club_create: groupCreate failed: %s', msg);
     return toJson(err('INTERNAL', 'failed to create club group'));
   }
 
-  // Spend 5000 coins. On failure, delete the orphan group so the
-  // caller doesn't see a phantom club.
+  // Charge 5000 coins and write the metadata, the lifetime counter and
+  // the leader's membership row in ONE transaction (T-11 wallet helper):
+  // no charge without a club, no club without a charge. The counter and
+  // the membership row are create-only, so a concurrent create (or join)
+  // loses the CAS and nothing is charged. On failure the group goes too.
   const cost = CLUB_DEFAULT_CREATE_COST_COINS;
+  const now = Date.now();
+  const meta: ClubMetadata = {
+    schemaVersion: 1,
+    clubId: group.id,
+    leaderId: caller.id,
+    motto: mottoRes.value,
+    emblemId,
+    region,
+    minDivision,
+    weeklyPoints: 0,
+    createdAt: now,
+  };
+  const leader: MemberRecord = {
+    schemaVersion: 1,
+    clubId: group.id,
+    userId: caller.id,
+    role: 'leader',
+    joinedAt: now,
+    weeklyContribution: 0,
+  };
   const spendResult = spend(
     nk,
     caller.id,
@@ -306,55 +341,30 @@ export function club_create_impl(
     },
     // The group is in the key: wallet keys are durable (T-11), and a
     // player who left a club may found another one.
-    `club_create:${caller.id}:${group.groupId}`,
+    `club_create:${caller.id}:${group.id}`,
+    {
+      extraWrites: [
+        clubMetadataWrite(meta, '*'),
+        clubCreatedWrite({ schemaVersion: 1, userId: caller.id, clubId: group.id, createdAt: now }),
+        memberWrite(leader, '*'),
+      ],
+    },
   );
   if (!spendResult.ok) {
-    if (groupCreateSucceeded) {
-      try { nk.groupDelete(group.groupId); } catch { /* best-effort */ }
-    }
+    try { nk.groupDelete(group.id); } catch { /* best-effort */ }
     return toJson(spendResult);
   }
   const newBalance = spendResult.data;
 
-  // Persist metadata + lifetime counter.
-  const now = Date.now();
-  const meta: ClubMetadata = {
-    schemaVersion: 1,
-    clubId: group.groupId,
-    leaderId: caller.id,
-    motto: mottoRes.value,
-    emblemId,
-    region,
-    minDivision,
-    weeklyPoints: 0,
-    createdAt: now,
-  };
-  try {
-    writeClubMetadataCreate(nk, meta);
-    writeClubCreated(nk, {
-      schemaVersion: 1,
-      userId: caller.id,
-      clubId: group.groupId,
-      createdAt: now,
-    });
-  } catch (e) {
-    logger.error(
-      'club_create: metadata write failed: %s — group %s and charge %d coins retained; manual cleanup required',
-      e instanceof Error ? e.message : String(e),
-      group.groupId, cost,
-    );
-    return toJson(err('INTERNAL', 'failed to persist club metadata'));
-  }
-
   emit(nk, logger, 'club_created', {
-    clubId: group.groupId,
+    clubId: group.id,
     name: nameRes.value,
     emblemId,
     region,
   }, { userId: caller.id });
 
   const out: ClubCreateOutput = {
-    clubId: group.groupId,
+    clubId: group.id,
     name: nameRes.value,
     costPaid: cost,
     newBalance,
@@ -362,22 +372,25 @@ export function club_create_impl(
   return toJson(ok(out));
 }
 
+/** Characters the 3.27 ILIKE name filter treats as wildcards. */
+function stripLikeWildcards(s: string): string {
+  return s.split('%').join('').split('_').join('').split('\\').join('');
+}
+
 /**
- * Linear scan via `nk.groupsList(name)` for an exact-name duplicate.
- * `groupsList(name)` filters server-side on the `name` query param —
- * returns groups whose name starts with the substring. The caller
- * still compares the full string client-side.
+ * Exact-name duplicate via `nk.groupsList(name)`: the 3.27 name filter is
+ * an ILIKE pattern, so a name without wildcards matches case-insensitively.
  */
 export function findGroupByName(
   nk: INakama,
   name: string,
 ): IGroup | null {
-  const res = nk.groupsList(50, '', name);
-  const list = Array.isArray(res) ? res : (res as { groups?: IGroup[] }).groups ?? [];
-  for (const g of list) {
-    if (typeof g === 'object' && g !== null && 'name' in g && (g as IGroup).name === name) {
-      return g as IGroup;
-    }
+  const pattern = stripLikeWildcards(name);
+  if (pattern.length === 0) return null;
+  const res = nk.groupsList(pattern, null, null, null, 50, null);
+  const lower = name.toLowerCase();
+  for (const g of res.groups ?? []) {
+    if (g.name.toLowerCase() === lower) return g;
   }
   return null;
 }
@@ -417,53 +430,19 @@ export function club_get_impl(
     return toJson(err('NOT_FOUND', 'no club with that id'));
   }
 
-  // Read members via nk.groupUsersList.
-  let memberCount = 1;
-  let leaderUsername = 'unknown';
-  try {
-    const res = nk.groupUsersList(clubId, 50, '') as unknown;
-    const list = Array.isArray(res) ? res : ((res as { groupUsers?: unknown[] }).groupUsers ?? []);
-    memberCount = list.length;
-    // First user with creator flag or matching meta.leaderId is the leader.
-    for (const m of list) {
-      const entry = m as { user?: { userId: string; username?: string } };
-      if (entry?.user?.userId === meta.record.leaderId) {
-        leaderUsername = entry.user.username ?? 'unknown';
-        break;
-      }
-    }
-  } catch (e) {
-    logger.warn(
-      'club_get: groupUsersList failed: %s',
-      e instanceof Error ? e.message : String(e),
-    );
-  }
-
-  // Look up the actual Nakama group for the real name + description.
-  // Fall back to a synthetic group from metadata when not found
-  // (group was deleted but metadata lingers).
-  let group: IGroup | null = readClubGroup(nk, clubId);
+  const group: IGroup | null = readClubGroup(nk, clubId);
   if (group === null) {
-    group = {
-      groupId: meta.record.clubId,
-      creatorUserId: meta.record.leaderId,
-      name: leaderUsername === 'unknown' ? meta.record.clubId : leaderUsername,
-      description: meta.record.motto,
-      metadata: {
-        emblemId: meta.record.emblemId,
-        region: meta.record.region,
-        minDivision: meta.record.minDivision,
-      },
-      maxCount: CLUB_MAX_MEMBERS,
-      open: true,
-    };
+    return toJson(err('NOT_FOUND', 'no club with that id'));
   }
 
-  const view = buildClubView(group, meta.record, memberCount);
-  const members = buildMemberView(
-    [{ userId: meta.record.leaderId }],
-    meta.record.leaderId,
-  );
+  // The leader preview, with the real username (audit 07 f14).
+  const nameCache = new Map<string, string>();
+  const members: ClubMemberView[] = [{
+    userId: meta.record.leaderId,
+    isLeader: true,
+    username: resolveUsername(nk, meta.record.leaderId, nameCache),
+  }];
+  const view = buildClubView(group, meta.record, group.edgeCount);
 
   const out: ClubGetOutput = {
     club: view,
@@ -498,28 +477,31 @@ export function club_search_impl(
   const namePrefix = typeof parsed.data.name === 'string' ? parsed.data.name : '';
   const regionFilter = typeof parsed.data.region === 'string' ? parsed.data.region : '';
 
-  // nk.groupsList signature: (limit, cursor, nameFilter).
-  const res = nk.groupsList(limitN, cursor, namePrefix) as unknown;
-  let groups: IGroup[] = [];
-  let nextCursor = '';
-  if (Array.isArray(res)) {
-    groups = res as IGroup[];
-  } else if (res && typeof res === 'object') {
-    const r = res as { groups?: IGroup[]; cursor?: string };
-    groups = Array.isArray(r.groups) ? r.groups : [];
-    nextCursor = typeof r.cursor === 'string' ? r.cursor : '';
+  // 3.27: groupsList(name, langTag, open, edgeCount, limit, cursor); the
+  // name filter is an ILIKE pattern, so a prefix search appends '%'
+  // (the old (limit, cursor, name) call answered HTTP 500).
+  const pattern = stripLikeWildcards(namePrefix);
+  let res: IGroupList;
+  try {
+    res = nk.groupsList(pattern.length > 0 ? `${pattern}%` : null, null, null, null, limitN, cursor.length > 0 ? cursor : null);
+  } catch (e) {
+    if (cursor.length > 0) return toJson(err('BAD_REQUEST', 'invalid cursor'));
+    logger.error('club_search: groupsList failed: %s', e instanceof Error ? e.message : String(e));
+    return toJson(err('INTERNAL', 'club search failed'));
   }
+  const groups: IGroup[] = res.groups ?? [];
+  const nextCursor = res.cursor ?? '';
 
+  // Phase 7 Chunk 5: lazy weekly reset for each club returned (the first
+  // call after a boundary owns the weekly reward), then one metadata read.
+  for (const g of groups) ensureWeekBoundary(nk, logger, g.id);
+  const metas = readClubMetadataMany(nk, groups.map((g) => g.id));
   const views: ClubView[] = [];
   for (const g of groups) {
-    // Phase 7 Chunk 5: trigger the lazy weekly reset for each club
-    // returned. The first call after a boundary owns the weekly
-    // reward; every other club is a cheap same-week no-op.
-    ensureWeekBoundary(nk, logger, g.groupId);
-    const meta = readClubMetadata(nk, g.groupId);
-    if (meta === null) continue;
+    const meta = metas.get(g.id);
+    if (meta === undefined) continue;
     if (regionFilter.length > 0 && meta.record.region !== regionFilter) continue;
-    views.push(buildClubView(g, meta.record, 1));
+    views.push(buildClubView(g, meta.record, g.edgeCount));
   }
 
   const out: ClubSearchOutput = {
@@ -527,6 +509,47 @@ export function club_search_impl(
     nextCursor,
   };
   return toJson(ok(out));
+}
+
+// ─── club_join ────────────────────────────────────────────────────────────────
+
+/**
+ * Join a club (plan T-21; audit PC-13, 07 f1). The rules are the ones the
+ * native JoinGroup hook applies (`clubs/join.ts`): one club per player,
+ * room left, level 8, minimum division, no block with the leader or an
+ * admin. The caller lands as `member` and shows in `club_members_list`.
+ *
+ * Errors: BAD_REQUEST (clubId), NOT_FOUND, CONFLICT (`details.reason`
+ * ALREADY_MEMBER | ALREADY_IN_CLUB | CLUB_FULL), FORBIDDEN (`details.reason`
+ * BLOCKED | MIN_LEVEL | MIN_DIVISION), RATE_LIMITED, SERVICE_UNAVAILABLE.
+ */
+export function club_join_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = requireCallerId(ctx, parsed.data);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_join', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const clubId = parsed.data.clubId;
+  if (typeof clubId !== 'string' || clubId.length === 0) {
+    return toJson(err('BAD_REQUEST', 'clubId is required'));
+  }
+
+  const joined = joinClub(nk, logger, caller.id, clubId, Date.now());
+  if (!joined.ok) return toJson(joined);
+
+  emit(nk, logger, 'club_joined', { clubId }, { userId: caller.id });
+  return toJson(ok<ClubJoinOutput>(joined.data));
 }
 
 // ─── Pure helper exposed for unit tests ──────────────────────────────────────
@@ -583,6 +606,14 @@ function readTargetRole(
 ): { role: Role; version: string } | null {
   const m = readMember(nk, clubId, userId);
   return m !== null ? { role: m.record.role, version: m.version } : null;
+}
+
+/**
+ * Role names a client may send. The Unity adapter says `officer` for the
+ * server's `admin` (accepted as an alias, D-05 additive).
+ */
+function normaliseRole(raw: unknown): unknown {
+  return raw === 'officer' ? 'admin' : raw;
 }
 
 // ─── club_update ────────────────────────────────────────────────────────────
@@ -694,28 +725,27 @@ export function club_members_list_impl(
     : 50;
   const cursor = typeof parsed.data.cursor === 'string' ? parsed.data.cursor : '';
 
+  // The whole roster (the group, paged by the runtime cursor, joined with
+  // the membership rows: at most 30). Stable order: leader, admins, then
+  // members by joinedAt, ties by user id.
   const all = readClubMembers(nk, clubId);
-  // Stable order: leader first, then admins, then members by joinedAt asc.
   const order: Record<Role, number> = { leader: 0, admin: 1, member: 2 };
-  all.sort((a, b) => {
-    const roleDiff = order[a.record.role] - order[b.record.role];
-    if (roleDiff !== 0) return roleDiff;
-    return a.record.joinedAt - b.record.joinedAt;
-  });
+  all.sort((a, b) =>
+    order[a.record.role] - order[b.record.role]
+    || a.record.joinedAt - b.record.joinedAt
+    || (a.record.userId < b.record.userId ? -1 : a.record.userId > b.record.userId ? 1 : 0));
 
-  // Cursor = joinedAt of the last item we've returned.
+  // Cursor = offset into that order. It was the last joinedAt, which
+  // skipped or repeated members on ties and across roles (the flaky
+  // `club_membership_flow` cursor test).
   let startIdx = 0;
   if (cursor.length > 0) {
-    const cursorAt = Number(cursor);
-    if (Number.isFinite(cursorAt)) {
-      startIdx = all.findIndex((m) => m.record.joinedAt > cursorAt);
-      if (startIdx === -1) startIdx = all.length;
-    }
+    const n = Number(cursor);
+    if (!Number.isInteger(n) || n < 0) return toJson(err('BAD_REQUEST', 'invalid cursor'));
+    startIdx = Math.min(n, all.length);
   }
   const page = all.slice(startIdx, startIdx + limitN);
-  const nextCursor = (startIdx + page.length < all.length)
-    ? String(page[page.length - 1]!.record.joinedAt)
-    : '';
+  const nextCursor = (startIdx + page.length < all.length) ? String(startIdx + page.length) : '';
 
   const nameCache = new Map<string, string>();
   const members: ClubMemberViewV2[] = page.map((m) => {
@@ -789,7 +819,7 @@ export function club_kick_impl(
     return toJson(err('FORBIDDEN', 'no permission to kick'));
   }
 
-  deleteMember(nk, clubId, targetUserId, target!.version);
+  removeClubMember(nk, logger, target!);
 
   emit(nk, logger, 'club_kicked', {
     clubId, targetUserId, by: caller.id,
@@ -820,7 +850,7 @@ export function club_promote_impl(
 
   const clubId = parsed.data.clubId;
   const targetUserId = parsed.data.targetUserId;
-  const to = parsed.data.to;
+  const to = normaliseRole(parsed.data.to);
   if (typeof clubId !== 'string' || clubId.length === 0) {
     return toJson(err('BAD_REQUEST', 'clubId is required'));
   }
@@ -879,42 +909,23 @@ export function club_promote_impl(
     return toJson(err('INTERNAL', 'unreachable'));
   }
 
-  // to === 'leader' — atomic transfer.
+  // to === 'leader' — atomic transfer: both membership rows and the
+  // metadata (system-owned, so its owner does not change) in one batch.
   const steps = applyTransfer(caller.id, targetUserId, target!.record.role);
-  const writes: IStorageObject[] = steps.map((s) => {
-    if (s.userId === caller.id) {
-      return {
-        collection: CLUBS_MEMBERS_COLLECTION,
-        key: clubId,
-        userId: caller.id,
-        value: { ...actor!.record, role: s.to } as unknown as Record<string, unknown>,
-        permissionRead: 1,
-        permissionWrite: 0,
-        version: actor!.version,
-      };
-    }
-    return {
-      collection: CLUBS_MEMBERS_COLLECTION,
-      key: clubId,
-      userId: targetUserId,
-      value: { ...target!.record, role: s.to } as unknown as Record<string, unknown>,
-      permissionRead: 1,
-      permissionWrite: 0,
-      version: target!.version,
-    };
-  });
-  // Also bump metadata.leaderId in the same batch.
-  writes.push({
-    collection: 'clubs_metadata',
-    key: clubId,
-    userId: meta.record.leaderId,
-    value: { ...meta.record, leaderId: targetUserId } as unknown as Record<string, unknown>,
-    permissionRead: 2,
-    permissionWrite: 0,
-    version: meta.version,
-  });
+  const writes = steps.map((s) => (s.userId === caller.id
+    ? memberWrite({ ...actor!.record, role: s.to }, actor!.version)
+    : memberWrite({ ...target!.record, role: s.to }, target!.version)));
+  writes.push(clubMetadataWrite({ ...meta.record, leaderId: targetUserId }, meta.version));
 
-  multiUpdateMembers(nk, writes);
+  try {
+    multiUpdateMembers(nk, writes);
+  } catch (e) {
+    logger.warn('club_promote leader transfer lost a CAS: %s', e instanceof Error ? e.message : String(e));
+    return toJson(err('CONFLICT', 'the club changed meanwhile; please retry', { reason: 'VERSION_CONFLICT' }));
+  }
+  // The group superadmin follows the leadership, so a later kick of the
+  // former leader (now admin) is not refused as "last superadmin".
+  syncGroupLeader(nk, logger, clubId, targetUserId, caller.id);
 
   emit(nk, logger, 'club_promoted', {
     clubId, targetUserId, to: 'leader', by: caller.id,
@@ -945,7 +956,7 @@ export function club_demote_impl(
 
   const clubId = parsed.data.clubId;
   const targetUserId = parsed.data.targetUserId;
-  const to = parsed.data.to;
+  const to = normaliseRole(parsed.data.to);
   if (typeof clubId !== 'string' || clubId.length === 0) {
     return toJson(err('BAD_REQUEST', 'clubId is required'));
   }
@@ -1024,7 +1035,7 @@ export function club_leave_impl(
     return toJson(err('NOT_FOUND', 'not a member'));
   }
 
-  deleteMember(nk, clubId, caller.id, actor!.version);
+  removeClubMember(nk, logger, actor!);
 
   emit(nk, logger, 'club_left', {
     clubId, userId: caller.id,
@@ -1044,6 +1055,7 @@ void memberRecordFromRead;
 export const club_create = withRuntime(club_create_impl);
 export const club_get = withRuntime(club_get_impl);
 export const club_search = withRuntime(club_search_impl);
+export const club_join = withRuntime(club_join_impl);
 export const club_update = withRuntime(club_update_impl);
 export const club_members_list = withRuntime(club_members_list_impl);
 export const club_kick = withRuntime(club_kick_impl);

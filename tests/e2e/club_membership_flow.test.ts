@@ -12,8 +12,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import { FakeContext, loadBundleForTest, SYSTEM_USER_ID } from './_stubs';
 import type { LoadedBundle } from './_stubs';
-import { CLUBS_MEMBERS_COLLECTION } from '../../modules/src/clubs/members_repo';
-import type { MemberRecord } from '../../modules/src/clubs/types';
 import { PROFILES_COLLECTION } from '../../modules/src/profiles/storage';
 import type { ProfileRecord } from '../../modules/src/profiles/storage';
 import { LIVEOPS_STORAGE_KEY } from '../../modules/src/liveops/config';
@@ -83,27 +81,19 @@ function seedProfile(env: LoadedBundle, userId: string, level: number): void {
   });
 }
 
-function seedMember(env: LoadedBundle, clubId: string, userId: string, role: 'leader' | 'admin' | 'member'): void {
-  const rec: MemberRecord = {
-    schemaVersion: 1,
-    clubId,
-    userId,
-    role,
-    joinedAt: 1_700_000_000_000 + Math.floor(Math.random() * 10000),
-    weeklyContribution: 0,
-  };
-  env.fakeNakama.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`, {
-    collection: CLUBS_MEMBERS_COLLECTION,
-    key: clubId,
-    userId,
-    value: rec as unknown as Record<string, unknown>,
-    version: 'v00000001',
-    permissionRead: 1,
-    permissionWrite: 1,
-    createTime: new Date(0).toISOString(),
-    updateTime: new Date(0).toISOString(),
-    expiresAt: null,
-  });
+/**
+ * A real member: level-8 profile, `club_join`, and for `admin` the
+ * leader's `club_promote` (plan T-21: the roster is the group joined with
+ * the membership rows, so seeding storage rows alone is not a member).
+ */
+function seedMember(env: LoadedBundle, clubId: string, userId: string, role: 'admin' | 'member'): void {
+  seedProfile(env, userId, 8);
+  const joined = call<Resp<unknown>>(env, 'club_join', userId, { clubId });
+  if (!joined.ok) throw new Error(`seed: club_join failed for ${userId}: ${JSON.stringify(joined)}`);
+  if (role === 'admin') {
+    const promoted = call<Resp<unknown>>(env, 'club_promote', LEADER, { clubId, targetUserId: userId, to: 'admin' });
+    if (!promoted.ok) throw new Error(`seed: club_promote failed for ${userId}`);
+  }
 }
 
 function setMaintenance(env: LoadedBundle): void {
@@ -187,13 +177,13 @@ describe('club membership e2e (Phase 7 Chunk 4)', () => {
     // Seed leader + admin + member profiles.
     seedProfile(env, LEADER, 8);
     seedProfile(env, ADMIN, 8);
-    seedProfile(env, MEMBER, 5);
+    seedProfile(env, MEMBER, 8);
     setCoins(env, LEADER, 10_000);
     const created = callCreate(env, LEADER);
     expect(created.ok).toBe(true);
     if (!created.ok) throw new Error('seed: club_create failed');
     clubId = created.data.clubId;
-    seedMember(env, clubId, LEADER, 'leader');
+    // club_create wrote the leader's membership row.
     seedMember(env, clubId, ADMIN, 'admin');
     seedMember(env, clubId, MEMBER, 'member');
   });

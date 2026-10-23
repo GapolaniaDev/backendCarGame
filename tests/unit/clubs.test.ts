@@ -38,6 +38,7 @@ import {
   type ClubMetadata,
 } from '../../modules/src/clubs/types';
 import type { ILogger } from '../../modules/src/nkruntime';
+import { defaultProfile, writeProfileCreate } from '../../modules/src/profiles/storage';
 
 const NOW = 1_700_000_000_000;
 const LEADER = 'user-leader';
@@ -146,26 +147,12 @@ describe('clubs_repo (Phase 7 Chunk 3)', () => {
       expect(got!.version.length).toBeGreaterThan(0);
     });
 
-    it('readClubMetadata falls back to storageList when user-scoped read fails', () => {
+    it('the metadata row is owned by the system user (plan T-21)', () => {
       const meta = makeMeta();
-      // Insert directly under a different owner (simulates leader loss /
-      // restart). The stub's storageRead with `userId=clubId` will miss
-      // since the row's userId is LEADER, not the club id.
-      fake.store.set(`${CLUBS_METADATA_COLLECTION}/${meta.clubId}/${LEADER}`, {
-        collection: CLUBS_METADATA_COLLECTION,
-        key: meta.clubId,
-        userId: LEADER,
-        value: meta as unknown as Record<string, unknown>,
-        version: 'v00000001',
-        permissionRead: 2,
-        permissionWrite: 1,
-        createTime: new Date(0).toISOString(),
-        updateTime: new Date(0).toISOString(),
-        expiresAt: null,
-      });
-      const got = readClubMetadata(fake.nakama, meta.clubId);
-      expect(got).not.toBeNull();
-      expect(got!.record.leaderId).toBe(LEADER);
+      writeClubMetadataCreate(fake.nakama, meta);
+      expect(fake.store.has(`${CLUBS_METADATA_COLLECTION}/${meta.clubId}/00000000-0000-0000-0000-000000000000`)).toBe(true);
+      expect(fake.store.has(`${CLUBS_METADATA_COLLECTION}/${meta.clubId}/${LEADER}`)).toBe(false);
+      expect(readClubMetadata(fake.nakama, meta.clubId)!.record.leaderId).toBe(LEADER);
     });
 
     it('readClubMetadata returns null on absent', () => {
@@ -211,13 +198,18 @@ describe('clubs_repo (Phase 7 Chunk 3)', () => {
     it('composes the public view from a Nakama group + metadata', () => {
       const meta = makeMeta();
       const group = {
-        groupId: meta.clubId,
-        creatorUserId: meta.leaderId,
+        id: meta.clubId,
+        creatorId: meta.leaderId,
         name: 'Fast Lane',
         description: meta.motto,
+        avatarUrl: '',
+        langTag: 'es',
         metadata: { emblemId: meta.emblemId, region: meta.region },
-        maxCount: 30,
         open: true,
+        edgeCount: 7,
+        maxCount: 30,
+        createTime: 0,
+        updateTime: 0,
       };
       const view = buildClubView(group, meta, 7);
       expect(view.clubId).toBe('club-1');
@@ -273,9 +265,15 @@ describe('clubs_repo (Phase 7 Chunk 3)', () => {
   describe('checkClubJoinGate', () => {
     it('allows when minDivision=bronce (default) and no block', () => {
       const meta = makeMeta({ minDivision: 'bronce' });
+      writeProfileCreate(fake.nakama, { ...defaultProfile(JOINER, 0, 'Joiner'), progression: { xp: 0, level: 8, lastDailyWinAt: 0 } });
       const d = checkClubJoinGate(fake.nakama, silentLogger(), JOINER, meta);
       expect(d.allowed).toBe(true);
       expect(d.reason).toBeNull();
+    });
+
+    it('a player without a profile is level 1: min_level (plan T-21)', () => {
+      const d = checkClubJoinGate(fake.nakama, silentLogger(), JOINER, makeMeta());
+      expect(d).toEqual({ allowed: false, reason: 'min_level' });
     });
   });
 });

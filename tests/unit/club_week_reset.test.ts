@@ -27,6 +27,7 @@ import { CLUB_WEEK_LEADERBOARD_ID } from '../../modules/src/clubs/leaderboard_in
 import { INBOX_COLLECTION } from '../../modules/src/liveops/messages';
 
 const NOW = 1_700_000_000_000;
+const SYSTEM = '00000000-0000-0000-0000-000000000000';
 
 function seedClubMeta(fake: FakeNakamaType, clubId: string, leaderId: string, weeklyPoints: number): void {
   const rec: ClubMetadata = {
@@ -40,10 +41,11 @@ function seedClubMeta(fake: FakeNakamaType, clubId: string, leaderId: string, we
     weeklyPoints,
     createdAt: NOW,
   };
-  fake.store.set(`${CLUBS_METADATA_COLLECTION}/${clubId}/${leaderId}`, {
+  // System-owned since plan T-21.
+  fake.store.set(`${CLUBS_METADATA_COLLECTION}/${clubId}/${SYSTEM}`, {
     collection: CLUBS_METADATA_COLLECTION,
     key: clubId,
-    userId: leaderId,
+    userId: SYSTEM,
     value: rec as unknown as Record<string, unknown>,
     version: 'v00000001',
     permissionRead: 2,
@@ -63,9 +65,10 @@ function seedMember(fake: FakeNakamaType, clubId: string, userId: string, weekly
     joinedAt,
     weeklyContribution,
   };
-  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`, {
+  // Plan T-21: the single membership row plus the group edge (the roster).
+  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`, {
     collection: CLUBS_MEMBERS_COLLECTION,
-    key: clubId,
+    key: 'current',
     userId,
     value: rec as unknown as Record<string, unknown>,
     version: 'v00000001',
@@ -75,6 +78,16 @@ function seedMember(fake: FakeNakamaType, clubId: string, userId: string, weekly
     updateTime: new Date(0).toISOString(),
     expiresAt: null,
   });
+  if (!fake.groups.has(clubId)) {
+    fake.groups.set(clubId, {
+      id: clubId, creatorId: userId, name: clubId, description: '', avatarUrl: '', langTag: 'es',
+      metadata: {}, open: false, edgeCount: 0, maxCount: 30, createTime: 0, updateTime: 0,
+    });
+    fake.groupMembers.set(clubId, new Set());
+    fake.groupStates.set(clubId, new Map());
+  }
+  fake.groupMembers.get(clubId)!.add(userId);
+  fake.groupStates.get(clubId)!.set(userId, role === 'leader' ? 0 : role === 'admin' ? 1 : 2);
 }
 
 function ensureLeaderboard(fake: FakeNakamaType): void {
@@ -117,13 +130,14 @@ function readMeta(fake: FakeNakamaType, clubId: string): ClubMetadata | null {
 }
 
 function readMember(fake: FakeNakamaType, clubId: string, userId: string): MemberRecord | null {
-  const obj = fake.store.get(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`);
+  const obj = fake.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`);
+  if (obj !== undefined && (obj.value as unknown as MemberRecord).clubId !== clubId) return null;
   if (obj === undefined) return null;
   return obj.value as unknown as MemberRecord;
 }
 
 function readResetMarker(fake: FakeNakamaType, weekUtc: string): { winnerClubId: string | null; rewardedUserIds: string[] } | null {
-  const obj = fake.store.get(`${CLUBS_WEEK_RESET_COLLECTION}/${weekUtc}/${weekUtc}`);
+  const obj = fake.store.get(`${CLUBS_WEEK_RESET_COLLECTION}/${weekUtc}/${SYSTEM}`);
   if (obj === undefined) return null;
   const v = obj.value as { winnerClubId: string | null; rewardedUserIds: string[] };
   return { winnerClubId: v.winnerClubId, rewardedUserIds: v.rewardedUserIds };
@@ -153,7 +167,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     const out = ensureWeekBoundary(fake.nakama as INakama, logger, 'club-1');
     expect(out.reset).toBe(false);
     expect(out.reason).toBe('first_seen');
-    const meta = fake.store.get(`${CLUBS_WEEK_META_COLLECTION}/club-1/club-1`);
+    const meta = fake.store.get(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`);
     expect(meta).toBeDefined();
     expect((meta!.value as { currentWeek: string }).currentWeek).toMatch(/^\d{4}-W\d{2}$/);
   });
@@ -177,7 +191,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     seedMember(fake, 'club-1', 'user-M3', 2, 400);
 
     // Seed the meta row to last week.
-    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/club-1`, {
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
       collection: CLUBS_WEEK_META_COLLECTION,
       key: 'club-1',
       userId: 'club-1',
@@ -233,7 +247,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
 
     // Seed both clubs' meta rows to last week.
     for (const cid of ['club-1', 'club-2']) {
-      fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/${cid}/${cid}`, {
+      fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/${cid}/${SYSTEM}`, {
         collection: CLUBS_WEEK_META_COLLECTION,
         key: cid,
         userId: cid,
@@ -272,7 +286,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
   it('empty leaderboard → no_winner (no inbox)', () => {
     seedClubMeta(fake, 'club-1', 'user-L1', 5);
     seedMember(fake, 'club-1', 'user-L1', 5, 100, 'leader');
-    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/club-1`, {
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
       collection: CLUBS_WEEK_META_COLLECTION,
       key: 'club-1',
       userId: 'club-1',
@@ -308,7 +322,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     seedMember(fake, 'club-1', 'user-B', 10, 300);
     seedMember(fake, 'club-1', 'user-C', 3, 400);  // outside top 3
     seedMember(fake, 'club-1', 'user-D', 1, 500);  // outside top 3
-    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/club-1`, {
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
       collection: CLUBS_WEEK_META_COLLECTION,
       key: 'club-1',
       userId: 'club-1',

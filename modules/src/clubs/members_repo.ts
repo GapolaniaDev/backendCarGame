@@ -1,23 +1,29 @@
-// Phase 7 Chunk 4 — Club member storage + role helpers.
+// Club membership storage (plan T-21; audit 07 f1, PC-13).
 //
 // Storage layout:
-//   clubs_members/{clubId}/{userId}     — one row per (club, user).
-//                                          owner = userId (so the user
-//                                          can read their own row from
-//                                          the client). Read=1 Write=1.
+//   clubs_members/current/{userId}   — the player's ONE membership row
+//                                       (owner = userId, read 1, write 0).
+//                                       `value.clubId` names the club.
 //
-// Source of truth for the public roster (Nakama 3.27 JS runtime does
-// NOT expose `groupUsersRemove`, so the group table can only grow —
-// not shrink — from this layer; we mirror membership in storage and
-// treat the group table as a label/chat anchor. The drift between the
-// two is documented and acceptable for Chunk 4; Chunk 5+ chat will
-// need a reconciliation cron if/when membership churn matters).
+// A fixed key makes "one club per player" a storage invariant: the row
+// is created with version '*' (must not exist), so two concurrent joins
+// cannot both land. Reading it is also the O(1) "which club am I in"
+// lookup the chat, the club-week subscriber and the join gate use.
+//
+// The roster of a club is enumerated through the Nakama group
+// (`groupUsersList`, cursor-paged by the runtime) and joined with these
+// rows: the group is the member list and the capacity guard
+// (`groupUsersAdd` enforces `maxCount` in its transaction); the row is
+// the authoritative role and weekly contribution. A group member
+// without a matching row is not a member.
 
-import type { IGroup, IMultiUpdateResult, INakama, IStorageObject } from '../nkruntime';
+import type { IMultiUpdateResult, INakama, IStorageObject } from '../nkruntime';
 import { type Role, type MemberRecord } from './types';
-import { listStorage } from '../core/storage';
 
 export const CLUBS_MEMBERS_COLLECTION = 'clubs_members';
+
+/** Key of the single membership row of each player. */
+export const CLUB_MEMBER_KEY = 'current';
 
 /** Maximum club roster size (mirrors CLUB_MAX_MEMBERS in types.ts). */
 export const MAX_MEMBERS_PER_CLUB = 30;
@@ -25,27 +31,16 @@ export const MAX_MEMBERS_PER_CLUB = 30;
 /** CAS retry cap, matching the rest of the codebase. */
 export const MAX_CAS_RETRIES = 3;
 
+/** Group states that count as members (superadmin, admin, member). */
+const MEMBER_STATES: ReadonlySet<number> = new Set([0, 1, 2]);
+
 export interface MemberReadResult {
   record: MemberRecord;
   version: string;
 }
 
-// ─── Reads ──────────────────────────────────────────────────────────────────
-
-/**
- * Read a single member row. Returns `null` when absent.
- */
-export function readMember(
-  nk: INakama,
-  clubId: string,
-  userId: string,
-): MemberReadResult | null {
-  const objs = nk.storageRead([
-    { collection: CLUBS_MEMBERS_COLLECTION, key: clubId, userId },
-  ]);
-  const obj = objs[0];
-  if (!obj) return null;
-  const v = obj.value as Partial<MemberRecord>;
+function parseMember(value: unknown): MemberRecord | null {
+  const v = value as Partial<MemberRecord> | null;
   if (
     !v || typeof v !== 'object' || v.schemaVersion !== 1 ||
     typeof v.clubId !== 'string' || typeof v.userId !== 'string' ||
@@ -54,60 +49,95 @@ export function readMember(
   ) {
     return null;
   }
-  return { record: v as MemberRecord, version: obj.version ?? '' };
+  return v as MemberRecord;
+}
+
+// ─── Reads ──────────────────────────────────────────────────────────────────
+
+/** The player's membership row, whatever the club. `null` when in no club. */
+export function readMembership(nk: INakama, userId: string): MemberReadResult | null {
+  const obj = nk.storageRead([{ collection: CLUBS_MEMBERS_COLLECTION, key: CLUB_MEMBER_KEY, userId }])[0];
+  if (!obj) return null;
+  const record = parseMember(obj.value);
+  return record === null ? null : { record, version: obj.version ?? '' };
+}
+
+/** The player's membership row in `clubId`; `null` when not a member of it. */
+export function readMember(
+  nk: INakama,
+  clubId: string,
+  userId: string,
+): MemberReadResult | null {
+  const m = readMembership(nk, userId);
+  return m !== null && m.record.clubId === clubId ? m : null;
+}
+
+/** User ids of the group's members, every page of the runtime cursor. */
+export function listGroupMemberIds(nk: INakama, clubId: string): string[] {
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  // The roster is capped (30), so this is one page in practice; the loop
+  // keeps it correct if the cap grows.
+  for (let page = 0; page < 100; page++) {
+    const res = nk.groupUsersList(clubId, 100, null, cursor);
+    for (const gu of res.groupUsers ?? []) {
+      if (MEMBER_STATES.has(gu.state) && typeof gu.user?.userId === 'string') ids.push(gu.user.userId);
+    }
+    cursor = res.cursor ?? null;
+    if (cursor === null || cursor === '') break;
+  }
+  return ids;
 }
 
 /**
- * Read every member of a club. We scan `clubs_members` and filter by
- * `key === clubId` (Nakama storageList `userId` filter does not match
- * by `key`, so the only way to enumerate a club's roster from JS is
- * to scan + filter). At our scale (30 × few-hundred-clubs) the scan
- * stays cheap; Chunk 5 can introduce a `clubs_index` row if it bites.
+ * Every member of a club: the group roster joined with the membership
+ * rows (one batched read). Missing or foreign rows are skipped.
  */
 export function readClubMembers(
   nk: INakama,
   clubId: string,
 ): MemberReadResult[] {
-  const list = listStorage(nk, {
-    collection: CLUBS_MEMBERS_COLLECTION,
-    limit: 1000,
-  });
+  let ids: string[];
+  try {
+    ids = listGroupMemberIds(nk, clubId);
+  } catch {
+    return [];
+  }
+  if (ids.length === 0) return [];
+  const objs = nk.storageRead(ids.map((userId) => ({ collection: CLUBS_MEMBERS_COLLECTION, key: CLUB_MEMBER_KEY, userId })));
   const out: MemberReadResult[] = [];
-  for (const o of list.objects) {
-    if (o.key !== clubId) continue;
-    const v = o.value as Partial<MemberRecord>;
-    if (
-      !v || typeof v !== 'object' || v.schemaVersion !== 1 ||
-      typeof v.clubId !== 'string' || typeof v.userId !== 'string' ||
-      typeof v.role !== 'string' ||
-      typeof v.joinedAt !== 'number' || typeof v.weeklyContribution !== 'number'
-    ) {
-      continue;
-    }
-    out.push({ record: v as MemberRecord, version: o.version ?? '' });
+  for (const o of objs) {
+    const record = parseMember(o.value);
+    if (record === null || record.clubId !== clubId) continue;
+    out.push({ record, version: o.version ?? '' });
   }
   return out;
 }
 
 // ─── Writes ─────────────────────────────────────────────────────────────────
 
+/** Storage object of a membership row (`version` '*' = must not exist yet). */
+export function memberWrite(rec: MemberRecord, version: string): IStorageObject {
+  return {
+    collection: CLUBS_MEMBERS_COLLECTION,
+    key: CLUB_MEMBER_KEY,
+    userId: rec.userId,
+    value: rec as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version,
+  };
+}
+
 /**
- * Insert a brand-new member row (no `version`).
+ * Create a membership row. Throws when the player already has one (in
+ * this or another club): the one-club rule.
  */
 export function writeMemberCreate(
   nk: INakama,
   rec: MemberRecord,
 ): string {
-  const objs = nk.storageWrite([
-    {
-      collection: CLUBS_MEMBERS_COLLECTION,
-      key: rec.clubId,
-      userId: rec.userId,
-      value: rec as unknown as Record<string, unknown>,
-      permissionRead: 1,
-      permissionWrite: 0,
-    },
-  ]);
+  const objs = nk.storageWrite([memberWrite(rec, '*')]);
   const first = (objs as Array<{ version?: string }>)[0];
   return first?.version ?? '';
 }
@@ -120,47 +150,33 @@ export function writeMemberUpdate(
   rec: MemberRecord,
   version: string,
 ): string {
-  const objs = nk.storageWrite([
-    {
-      collection: CLUBS_MEMBERS_COLLECTION,
-      key: rec.clubId,
-      userId: rec.userId,
-      value: rec as unknown as Record<string, unknown>,
-      permissionRead: 1,
-      permissionWrite: 0,
-      version,
-    },
-  ]);
+  const objs = nk.storageWrite([memberWrite(rec, version)]);
   const first = (objs as Array<{ version?: string }>)[0];
   return first?.version ?? '';
 }
 
 /**
- * Idempotent delete. `storageDelete` does not require a version; the
- * runtime resolves the row by `(collection, key, userId)`. We keep
- * `version` as an optional arg so callers that want a precondition
- * check can pre-read; the runtime ignores it.
+ * Delete a membership row. With `version` the delete only applies to the
+ * row that was read (a row of a club joined since is left alone).
  */
 export function deleteMember(
   nk: INakama,
-  clubId: string,
   userId: string,
-  _version?: string,
+  version?: string,
 ): void {
-  nk.storageDelete([{ collection: CLUBS_MEMBERS_COLLECTION, key: clubId, userId }]);
+  nk.storageDelete([{
+    collection: CLUBS_MEMBERS_COLLECTION,
+    key: CLUB_MEMBER_KEY,
+    userId,
+    ...(version !== undefined && version !== '' ? { version } : {}),
+  }]);
 }
 
 /**
  * Atomic batch — used for the leader-transfer path: demote current
  * leader to admin + promote target to leader + bump metadata.leaderId
- * in one `multiUpdate`.
- *
- * The runtime requires POSITIONAL 5-arg shape (see Chunk 1 memo):
- *   multiUpdate(accountUpdates, storageWrites, storageDeletes, walletUpdates, ledgerLedgerUpdates)
- *
- * The 3.27 JS runtime `storageDeletes` slot is typed as `undefined`
- * (the runtime's delete path is `storageDelete`), so this helper only
- * accepts writes. Delete paths use `deleteMember` instead.
+ * in one `multiUpdate` (positional 3.27 shape: accounts, storage writes,
+ * storage deletes, wallets, updateLedger).
  */
 export function multiUpdateMembers(
   nk: INakama,
@@ -169,14 +185,11 @@ export function multiUpdateMembers(
   return nk.multiUpdate(undefined, writes, undefined, undefined, undefined);
 }
 
-// ─── Convenience: scan group via nk.groupsList + build member views ──────────
+// ─── Usernames ──────────────────────────────────────────────────────────────
 
 /**
  * Resolve a member's username from the Nakama user table. Returns
- * 'unknown' when the account is gone. Used by `club_members_list` to
- * hydrate display names without a per-user `nk.usersGetId` roundtrip
- * per member (we batch via `nk.usersGetId` when feasible; single
- * fallback when not).
+ * 'unknown' when the account is gone.
  */
 export function resolveUsername(
   nk: INakama,
@@ -195,9 +208,4 @@ export function resolveUsername(
   }
 }
 
-// Re-export the type guard interface for callers that want a single
-// import path.
 export type { Role, MemberRecord };
-// Also expose the IGroup import so consumers can import everything from
-// here if they prefer.
-export type { IGroup };

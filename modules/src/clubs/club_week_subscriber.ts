@@ -7,9 +7,9 @@
 //      outcomes credit points. `client` (humans disagreed, flagged for
 //      review) drops the entire event so nobody is credited.
 //   2. For every human finisher (non-bot, non-abandoned):
-//        - look up their clubId via a one-shot scan of `clubs_members`
-//          (cached across all humans in the event so we don't scan once
-//          per player);
+//        - look up their club through their membership row
+//          (`clubs_members/current/{userId}`, one read per human; it was
+//          a scan of 5000 rows of the whole collection, plan T-21);
 //        - if they have a club:
 //            * increment the `club_week` leaderboard by `points` for
 //              ownerId=clubId;
@@ -31,9 +31,9 @@ import type { EventBus } from '../core/event_bus';
 import type { RaceCompletedEvent, RaceResult } from '../race/types';
 import { RACE_EVENT_RACE_COMPLETED } from '../race/constants';
 import {
-  CLUBS_MEMBERS_COLLECTION,
   MAX_CAS_RETRIES,
   readMember,
+  readMembership,
   writeMemberUpdate,
 } from './members_repo';
 import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
@@ -42,7 +42,6 @@ import {
   pointsForRace,
   pointsForRaceResult,
 } from './club_week';
-import { listStorage } from '../core/storage';
 
 export interface ClubWeekSubscriberDeps {
   logger: ILogger;
@@ -117,11 +116,12 @@ export function handleRaceCompletedForClubWeek(
     return { ...SKIP, reason: 'no_humans' };
   }
 
-  // 3. Build a one-shot userId → clubId map. We scan the entire
-  //    `clubs_members` collection (small at our scale — 30 per club ×
-  //    few-hundred clubs) and key by userId so a player only appears
-  //    once even if multiple humans in the race share a club.
-  const clubByUser = scanUserToClubMap(nk);
+  // 3. userId → clubId from each human's membership row.
+  const clubByUser = new Map<string, string>();
+  for (const r of humans) {
+    const m = readMembership(nk, r.userId);
+    if (m !== null) clubByUser.set(r.userId, m.record.clubId);
+  }
   if (clubByUser.size === 0) {
     return { ...SKIP, reason: 'no_clubs' };
   }
@@ -228,32 +228,6 @@ export function handleRaceCompletedForClubWeek(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Scan every `clubs_members` row and build a `userId → clubId` map.
- * Used to attribute race results to clubs without per-user storage
- * reads. Pure-ish: no leaderboard writes.
- */
-function scanUserToClubMap(nk: INakama): Map<string, string> {
-  const list = listStorage(nk, {
-    collection: CLUBS_MEMBERS_COLLECTION,
-    limit: 5000,
-  });
-  const out = new Map<string, string>();
-  for (const o of list.objects) {
-    const v = o.value as Partial<{ userId: string; clubId: string }>;
-    if (
-      v && typeof v === 'object' &&
-      typeof v.userId === 'string' && v.userId.length > 0 &&
-      typeof v.clubId === 'string' && v.clubId.length > 0
-    ) {
-      // First-write wins (a user can only be in one club at a time in
-      // the data model; a duplicate is a bug we silently de-dupe).
-      if (!out.has(v.userId)) out.set(v.userId, v.clubId);
-    }
-  }
-  return out;
-}
 
 /**
  * CAS-add `delta` to a member's `weeklyContribution`. Retries up to

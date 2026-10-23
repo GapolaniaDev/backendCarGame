@@ -34,6 +34,7 @@ const TITLES: Record<InboxRewardType, string> = {
   subscription_renewed: 'Subscription renewed',
   ad_reward: 'Ad reward',
   pass_season_end: 'Battle pass rewards',
+  club_week_reward: 'Club week reward',
 };
 
 export function inboxTitle(type: InboxRewardType): string {

@@ -96,7 +96,8 @@ export type InboxRewardType =
   | 'subscription_expiring_soon'
   | 'subscription_renewed'
   | 'ad_reward'
-  | 'pass_season_end';
+  | 'pass_season_end'
+  | 'club_week_reward';
 
 export interface InboxRewardPayload {
   /** Optional coin grant. */

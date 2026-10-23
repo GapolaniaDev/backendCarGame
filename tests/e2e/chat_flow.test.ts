@@ -74,9 +74,10 @@ function call<T>(
 }
 
 function seedClubMember(env: LoadedBundle, clubId: string, userId: string): void {
-  env.fakeNakama.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`, {
+  // The player's single membership row (plan T-21: key `current`).
+  env.fakeNakama.store.set(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`, {
     collection: CLUBS_MEMBERS_COLLECTION,
-    key: clubId,
+    key: 'current',
     userId,
     value: {
       schemaVersion: 1,

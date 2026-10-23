@@ -78,8 +78,8 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   userOwned('clubs_created', 'clubs'),
   userOwned('clubs_members', 'clubs'),
   {
-    name: 'clubs_metadata', module: 'clubs', owner: 'user', purge: [],
-    retained: 'owned by the leader, so a deleted leader takes the club metadata with them (roster repair is T-21)',
+    name: 'clubs_metadata', module: 'clubs', owner: 'system', purge: [],
+    retained: 'club documents (system-owned since T-21); account deletion first hands a led club to a successor or dissolves it (clubs/join.ts)',
   },
   {
     name: 'clubs_week_meta', module: 'clubs', owner: 'system', purge: [],
@@ -87,7 +87,7 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   },
   {
     name: 'clubs_week_reset', module: 'clubs', owner: 'system', purge: [],
-    retained: 'per-week reset markers',
+    retained: 'per-week reset markers (the rewarded user ids are an audit trail)',
   },
   // economy
   userOwned('idem', 'core/idempotency'),
@@ -134,7 +134,7 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   userOwned('active_party', 'parties'),
   {
     name: 'parties', module: 'parties', owner: 'system', purge: [],
-    retained: 'short-lived party documents; the member list keeps the user until the party disbands',
+    retained: 'short-lived party documents; account deletion first takes the user out of their party (parties_repo.ts)',
   },
   // pass
   userOwned('pass', 'pass'),

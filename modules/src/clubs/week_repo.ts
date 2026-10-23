@@ -33,10 +33,13 @@
 //        rewardedUserIds: string[],
 //      }
 //
-// Both collections are server-owned (Write=1).
+// Both collections are owned by the system user (write 0). They used the
+// club id / week string as the owner, which is not a user: 3.27 rejects
+// those writes (plan T-21).
 
 import type { INakama, IStorageObject } from '../nkruntime';
 import { utcWeek, serverNowMs } from '../core/time';
+import { SYSTEM_USER_ID } from '../race/constants';
 
 export const CLUBS_WEEK_META_COLLECTION = 'clubs_week_meta';
 export const CLUBS_WEEK_RESET_COLLECTION = 'clubs_week_reset';
@@ -69,7 +72,7 @@ export function readClubWeekMeta(
   clubId: string,
 ): { record: ClubWeekMeta; version: string } | null {
   const objs = nk.storageRead([
-    { collection: CLUBS_WEEK_META_COLLECTION, key: clubId, userId: clubId },
+    { collection: CLUBS_WEEK_META_COLLECTION, key: clubId, userId: SYSTEM_USER_ID },
   ]);
   const obj = objs[0];
   if (obj === undefined) return null;
@@ -96,7 +99,7 @@ export function readClubWeekResetMarker(
     {
       collection: CLUBS_WEEK_RESET_COLLECTION,
       key: weekUtc,
-      userId: weekUtc,
+      userId: SYSTEM_USER_ID,
     },
   ]);
   const obj = objs[0];
@@ -128,7 +131,7 @@ export function writeClubWeekMetaCreate(
     {
       collection: CLUBS_WEEK_META_COLLECTION,
       key: rec.clubId,
-      userId: rec.clubId,
+      userId: SYSTEM_USER_ID,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
       permissionWrite: 0,
@@ -147,7 +150,7 @@ export function writeClubWeekMetaUpdate(
     {
       collection: CLUBS_WEEK_META_COLLECTION,
       key: rec.clubId,
-      userId: rec.clubId,
+      userId: SYSTEM_USER_ID,
       value: rec as unknown as Record<string, unknown>,
       permissionRead: 1,
       permissionWrite: 0,
@@ -159,10 +162,14 @@ export function writeClubWeekMetaUpdate(
 }
 
 /**
- * Create the global reset marker for a weekUtc. Caller MUST pre-check
- * that the row doesn't exist — we don't accept a `version` because the
- * row is created exactly once per week.
+ * Create the global reset marker for a weekUtc. Throws when it exists
+ * already: the row is created exactly once per week.
  */
+/** Delete a club's weekly meta row (club dissolved). */
+export function deleteClubWeekMeta(nk: INakama, clubId: string): void {
+  nk.storageDelete([{ collection: CLUBS_WEEK_META_COLLECTION, key: clubId, userId: SYSTEM_USER_ID }]);
+}
+
 export function writeClubWeekResetMarker(
   nk: INakama,
   rec: ClubWeekResetMarker,
@@ -170,10 +177,13 @@ export function writeClubWeekResetMarker(
   const obj: IStorageObject = {
     collection: CLUBS_WEEK_RESET_COLLECTION,
     key: rec.weekUtc,
-    userId: rec.weekUtc,
+    userId: SYSTEM_USER_ID,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
     permissionWrite: 0,
+    // Create-only: of two concurrent resets of the same week one claims
+    // the marker (and the reward), the other throws.
+    version: '*',
   };
   nk.storageWrite([obj]);
 }

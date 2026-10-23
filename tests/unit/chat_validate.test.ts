@@ -30,9 +30,10 @@ function seedCatalog(logger: ILogger): void {
 }
 
 function seedMember(fake: FakeNakamaType, clubId: string, userId: string): void {
-  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/${clubId}/${userId}`, {
+  // Plan T-21: the player's single membership row.
+  fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/current/${userId}`, {
     collection: CLUBS_MEMBERS_COLLECTION,
-    key: clubId,
+    key: 'current',
     userId,
     value: {
       schemaVersion: 1, clubId, userId, role: 'member',

@@ -1,23 +1,21 @@
 // Phase 7 Chunk 3 — Clubs storage helpers (read-side).
 //
 // Storage layout:
-//   clubs_metadata/{clubId}    — owner=leaderId, Read=2 (public),
-//                                Write=1 (server-owned). Single row per
-//                                club; created in `club_create`.
-//   clubs_created/{userId}     — owner=userId, Read=1/Write=1.
+//   clubs_metadata/{clubId}    — owner = system user, read 2 (public),
+//                                write 0. One row per club, created in
+//                                `club_create` in the same transaction as
+//                                the charge. System-owned (plan T-21) so a
+//                                leader transfer or a deleted leader never
+//                                moves or cascades it.
+//   clubs_created/{userId}     — owner = userId, read 1, write 0.
 //                                Lifetime counter (1 row per user who
-//                                has ever created a club). Lazy on
-//                                write — never read for presence.
+//                                has ever created a club).
 //
-// Nakama 3.27 JS runtime does NOT expose `registerBeforeAddGroupUsers` —
-// the spec hook is deferred to a future runtime upgrade. For Chunk 3
-// we ship the `beforeJoin` pure check helper in
-// `modules/src/groups/before_join.ts` (from Chunk 2) and a
-// `checkClubJoinGate` wrapper here that consumes the club metadata +
-// caller's level/division. Production hook wiring will land when the
-// runtime binding lands.
+// Join rules (level, division, blocks) live in `checkClubJoinGate`; the
+// `club_join` RPC and the native JoinGroup before-hook
+// (`groups/before_join.ts`) both apply them.
 
-import type { IGroup, INakama, ILogger } from '../nkruntime';
+import type { IGroup, INakama, ILogger, IStorageObject } from '../nkruntime';
 import { isBlockedEitherWay } from '../social/blocks_repo';
 import {
   type ClubMetadata,
@@ -28,11 +26,25 @@ import {
 import { readProfile } from '../profiles/storage';
 import { getRankedConfig, divisionForRating } from '../ranked/config';
 import { readRankedRecord } from '../ranked/ranked_repo';
-import { listStorage } from '../core/storage';
+import { SYSTEM_USER_ID } from '../race/constants';
 
 export const MAX_CAS_RETRIES = 3;
 
 // ─── Read metadata ────────────────────────────────────────────────────────────
+
+function parseClubMetadata(value: unknown): ClubMetadata | null {
+  const v = value as Partial<ClubMetadata> | null;
+  if (
+    !v || typeof v !== 'object' || v.schemaVersion !== 1 ||
+    typeof v.clubId !== 'string' || typeof v.leaderId !== 'string' ||
+    typeof v.motto !== 'string' || typeof v.emblemId !== 'string' ||
+    typeof v.region !== 'string' || typeof v.minDivision !== 'string' ||
+    typeof v.weeklyPoints !== 'number' || typeof v.createdAt !== 'number'
+  ) {
+    return null;
+  }
+  return v as ClubMetadata;
+}
 
 /**
  * Read club metadata by `clubId`. Returns `null` when absent or
@@ -42,46 +54,27 @@ export function readClubMetadata(
   nk: INakama,
   clubId: string,
 ): { record: ClubMetadata; version: string } | null {
-  // Try reading as the leader first; if that fails, scan for any
-  // owner (clubs are publicly readable per D9). The data row is keyed
-  // by `clubId` and the owner is `leaderId`, but read-permission is
-  // public (Read=2) so any storageRead with `userId=clubId` works in
-  // practice.
-  const objs = nk.storageRead([
-    { collection: CLUBS_METADATA_COLLECTION, key: clubId, userId: clubId },
-  ]);
-  const obj = objs[0];
-  if (!obj) {
-    // Fallback: scan public rows. Cheap enough at our scale (catalog
-    // tens of thousands) and correct because clubs_metadata is
-    // public-read.
-    const list = listStorage(nk, {
-      collection: CLUBS_METADATA_COLLECTION,
-      limit: 200,
-    });
-    for (const o of list.objects) {
-      if (o.key !== clubId) continue;
-      const v = o.value as Partial<ClubMetadata>;
-      if (
-        v && typeof v === 'object' && v.schemaVersion === 1 &&
-        typeof v.clubId === 'string' && typeof v.leaderId === 'string'
-      ) {
-        return { record: v as ClubMetadata, version: o.version ?? '' };
-      }
-    }
-    return null;
+  const obj = nk.storageRead([
+    { collection: CLUBS_METADATA_COLLECTION, key: clubId, userId: SYSTEM_USER_ID },
+  ])[0];
+  if (!obj) return null;
+  const record = parseClubMetadata(obj.value);
+  return record === null ? null : { record, version: obj.version ?? '' };
+}
+
+/** Metadata of several clubs in one read, keyed by club id. */
+export function readClubMetadataMany(
+  nk: INakama,
+  clubIds: readonly string[],
+): Map<string, { record: ClubMetadata; version: string }> {
+  const out = new Map<string, { record: ClubMetadata; version: string }>();
+  if (clubIds.length === 0) return out;
+  const objs = nk.storageRead(clubIds.map((key) => ({ collection: CLUBS_METADATA_COLLECTION, key, userId: SYSTEM_USER_ID })));
+  for (const o of objs) {
+    const record = parseClubMetadata(o.value);
+    if (record !== null) out.set(record.clubId, { record, version: o.version ?? '' });
   }
-  const value = obj.value as Partial<ClubMetadata>;
-  if (
-    !value || typeof value !== 'object' || value.schemaVersion !== 1 ||
-    typeof value.clubId !== 'string' || typeof value.leaderId !== 'string' ||
-    typeof value.motto !== 'string' || typeof value.emblemId !== 'string' ||
-    typeof value.region !== 'string' || typeof value.minDivision !== 'string' ||
-    typeof value.weeklyPoints !== 'number' || typeof value.createdAt !== 'number'
-  ) {
-    return null;
-  }
-  return { record: value as ClubMetadata, version: obj.version ?? '' };
+  return out;
 }
 
 /**
@@ -110,24 +103,24 @@ export function readClubCreated(
 
 // ─── Write metadata ───────────────────────────────────────────────────────────
 
+/** Storage object of the metadata row (`version` '*' = must not exist yet). */
+export function clubMetadataWrite(record: ClubMetadata, version?: string): IStorageObject {
+  return {
+    collection: CLUBS_METADATA_COLLECTION,
+    key: record.clubId,
+    userId: SYSTEM_USER_ID,
+    value: record as unknown as Record<string, unknown>,
+    permissionRead: 2,
+    permissionWrite: 0,
+    ...(version !== undefined ? { version } : {}),
+  };
+}
+
 export function writeClubMetadataCreate(
   nk: INakama,
   record: ClubMetadata,
 ): string {
-  // The runtime requires `userId` to match the read-side permission;
-  // for clubs we set the LEADER as the row owner (write permission
-  // server-owned via PermissionWrite=1) and read-permission is 2
-  // (public). See `asClubMetadataWrite`.
-  const objs = nk.storageWrite([
-    {
-      collection: CLUBS_METADATA_COLLECTION,
-      key: record.clubId,
-      userId: record.leaderId,
-      value: record as unknown as Record<string, unknown>,
-      permissionRead: 2,
-      permissionWrite: 0,
-    },
-  ]);
+  const objs = nk.storageWrite([clubMetadataWrite(record, '*')]);
   const first = (objs as Array<{ version?: string }>)[0];
   return first?.version ?? '';
 }
@@ -137,62 +130,51 @@ export function writeClubMetadataUpdate(
   record: ClubMetadata,
   version: string,
 ): string {
-  const objs = nk.storageWrite([
-    {
-      collection: CLUBS_METADATA_COLLECTION,
-      key: record.clubId,
-      userId: record.leaderId,
-      value: record as unknown as Record<string, unknown>,
-      permissionRead: 2,
-      permissionWrite: 0,
-      version,
-    },
-  ]);
+  const objs = nk.storageWrite([clubMetadataWrite(record, version)]);
   const first = (objs as Array<{ version?: string }>)[0];
   return first?.version ?? '';
+}
+
+/** Delete the metadata row (club dissolved). */
+export function deleteClubMetadata(nk: INakama, clubId: string): void {
+  nk.storageDelete([{ collection: CLUBS_METADATA_COLLECTION, key: clubId, userId: SYSTEM_USER_ID }]);
+}
+
+/** Storage object of the lifetime counter row (created once: version '*'). */
+export function clubCreatedWrite(
+  record: { schemaVersion: 1; userId: string; clubId: string; createdAt: number },
+): IStorageObject {
+  return {
+    collection: 'clubs_created',
+    key: record.userId,
+    userId: record.userId,
+    value: record as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version: '*',
+  };
 }
 
 export function writeClubCreated(
   nk: INakama,
   record: { schemaVersion: 1; userId: string; clubId: string; createdAt: number },
 ): string {
-  const objs = nk.storageWrite([
-    {
-      collection: 'clubs_created',
-      key: record.userId,
-      userId: record.userId,
-      value: record as unknown as Record<string, unknown>,
-      permissionRead: 1,
-      permissionWrite: 0,
-    },
-  ]);
+  const objs = nk.storageWrite([clubCreatedWrite(record)]);
   const first = (objs as Array<{ version?: string }>)[0];
   return first?.version ?? '';
 }
 
-/**
- * Scan `nk.groupsList()` for a group matching `clubId`. Returns
- * `null` when not found. The scan is cheap for our scale (tens of
- * thousands at peak) — and avoids a second storage row holding the
- * group name. Chunk 4 will replace this with a dedicated `club_id`
- * index if perf demands.
- */
+/** The Nakama group of a club; `null` when it does not exist. */
 export function readClubGroup(
   nk: INakama,
   clubId: string,
 ): IGroup | null {
-  // `groupsList` paginates; a 200-limit scan covers all our clubs at
-  // current scale. Chunk 4 can add cursor-aware pagination.
-  const res = nk.groupsList(200, '', '') as unknown;
-  const list = Array.isArray(res)
-    ? (res as IGroup[])
-    : ((res as { groups?: IGroup[] }).groups ?? []);
-  for (const g of list) {
-    if (typeof g === 'object' && g !== null && g.groupId === clubId) {
-      return g;
-    }
+  try {
+    const groups = nk.groupsGetId([clubId]);
+    return groups.find((g) => g.id === clubId) ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 // ─── Helper: build ClubView from Nakama group + metadata ─────────────────────
@@ -207,7 +189,7 @@ export function buildClubView(
   memberCount: number,
 ): ClubView {
   return {
-    clubId: group.groupId,
+    clubId: group.id,
     name: group.name,
     motto: meta.motto,
     emblemId: meta.emblemId,
@@ -277,13 +259,12 @@ export function checkClubJoinGate(
     }
   }
 
-  // Level check.
+  // Level check. A player without a profile is level 1 (plan T-21: the
+  // gate used to skip the check and let them in).
   const profile = readProfile(nk, joinerId);
-  if (profile !== null) {
-    const level = profile.progression?.level ?? 1;
-    if (typeof level === 'number' && level < 8) {
-      return { allowed: false, reason: 'min_level' };
-    }
+  const level = profile?.progression?.level ?? 1;
+  if (typeof level !== 'number' || level < 8) {
+    return { allowed: false, reason: 'min_level' };
   }
 
   // Division check. If the club's minDivision is the default 'bronce',

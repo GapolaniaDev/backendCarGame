@@ -812,118 +812,200 @@ class FakeNakamaCore {
     return parsed.index;
   }
 
-  // ── Groups (for clubs) ──
+  // ── Groups (for clubs) — v3.27.0 semantics (core_group.go) ──
   /** groupId → IGroup. Populated via `groupCreate`. */
   readonly groups = new Map<string, IGroup>();
-  /** groupId → set of member userIds. Populated via `groupCreate` (creator auto-joined) and `groupUsersAdd`. */
+  /**
+   * groupId → member userIds in join order. Populated via `groupCreate`
+   * (the creator, superadmin) and `groupUsersAdd`.
+   */
   readonly groupMembers = new Map<string, Set<string>>();
+  /** groupId → userId → state (0 superadmin, 1 admin, 2 member). */
+  readonly groupStates = new Map<string, Map<string, number>>();
+
+  private groupCounter = 0;
+
+  private touchGroup(id: string): IGroup {
+    const g = this.groups.get(id);
+    if (!g) throw new Error('group not found');
+    g.edgeCount = this.groupMembers.get(id)?.size ?? 0;
+    return g;
+  }
 
   groupCreate(
+    userId: string,
     name: string,
-    description: string,
-    lang: string,
-    metadata: Record<string, unknown>,
-    maxCount: number,
-    open: boolean,
-  ): { group: IGroup; creator: IUser } {
-    const groupId = `grp-${(this.groups.size + 1).toString().padStart(8, '0')}`;
-    // The stub keeps `creatorUserId` from the metadata payload —
-    // production Nakama derives it from the auth context. Chunk 3's
-    // RPC injects `createdBy: caller.id` into metadata for parity.
-    const creatorUserId =
-      typeof metadata['createdBy'] === 'string'
-        ? (metadata['createdBy'] as string)
-        : SYSTEM_USER_ID;
+    creatorId?: string | null,
+    langTag?: string | null,
+    description?: string | null,
+    avatarUrl?: string | null,
+    open?: boolean | null,
+    metadata?: Record<string, unknown> | null,
+    maxCount?: number | null,
+  ): IGroup {
+    // 3.27 parses the first argument as the superadmin's user id (the old
+    // call passed the club name there and threw on the real runtime).
+    if (typeof userId !== 'string' || userId.length === 0 || /\s/.test(userId)) {
+      throw new TypeError('expects user ID to be a valid identifier');
+    }
+    if (!name) throw new TypeError('expects group name to not be empty');
+    for (const g of this.groups.values()) {
+      if (g.name.toLowerCase() === name.toLowerCase()) {
+        throw new Error('did not create group as a group already exists with the same name');
+      }
+    }
+    this.groupCounter += 1;
+    const id = `grp-${this.groupCounter.toString().padStart(8, '0')}`;
     const group: IGroup = {
-      groupId,
-      creatorUserId,
+      id,
+      creatorId: creatorId ?? SYSTEM_USER_ID,
       name,
-      description,
-      metadata,
-      maxCount,
-      open,
+      description: description ?? '',
+      avatarUrl: avatarUrl ?? '',
+      langTag: langTag ?? '',
+      metadata: { ...(metadata ?? {}) },
+      open: open === true,
+      edgeCount: 1,
+      maxCount: maxCount ?? 100,
+      createTime: Math.floor(Date.now() / 1000),
+      updateTime: Math.floor(Date.now() / 1000),
     };
-    this.groups.set(groupId, group);
-    const members = new Set<string>([creatorUserId]);
-    this.groupMembers.set(groupId, members);
-    const creator: IUser = {
-      userId: creatorUserId,
-      username: `user-${creatorUserId.slice(0, 8)}`,
-      createTime: new Date().toISOString(),
-      updateTime: new Date().toISOString(),
-      disableTime: null,
-      metadata: {},
-    };
-    return { group, creator };
+    this.groups.set(id, group);
+    this.groupMembers.set(id, new Set<string>([userId]));
+    this.groupStates.set(id, new Map<string, number>([[userId, 0]]));
+    return { ...group };
   }
 
-  groupUsersList(groupId: string, limit?: number, _cursor?: string): unknown {
-    const members = this.groupMembers.get(groupId);
-    if (!members) return [];
-    const users: Array<{ user: IUser; state: number }> = [];
-    let i = 0;
-    for (const userId of members) {
-      if (limit !== undefined && i >= limit) break;
-      users.push({
-        user: {
-          userId,
-          username: `user-${userId.slice(0, 8)}`,
-          createTime: new Date().toISOString(),
-          updateTime: new Date().toISOString(),
-          disableTime: null,
-          metadata: {},
-        },
-        state: 0, // SUPERADMIN
-      });
-      i++;
-    }
-    return users;
+  groupsGetId(groupIds: string[]): IGroup[] {
+    return groupIds
+      .filter((id) => this.groups.has(id))
+      .map((id) => ({ ...this.touchGroup(id) }));
   }
 
-  groupsList(limit?: number, _cursor?: string, name?: string): unknown {
-    let list = Array.from(this.groups.values());
-    if (typeof name === 'string' && name.length > 0) {
-      const needle = name.toLowerCase();
-      list = list.filter((g) => g.name.toLowerCase().includes(needle));
+  /** Cursor = base64 offset; state 0 first, then join order (like `ORDER BY state, position`). */
+  groupUsersList(groupId: string, limit?: number, state?: number | null, cursor?: string | null): unknown {
+    const n = limit ?? 100;
+    if (n < 1 || n > 10000) throw new TypeError('expects limit to be 1-10000');
+    if (!this.groups.has(groupId)) return { groupUsers: [], cursor: null };
+    const states = this.groupStates.get(groupId)!;
+    const order = Array.from(this.groupMembers.get(groupId) ?? [])
+      .map((userId, position) => ({ userId, position, state: states.get(userId) ?? 2 }))
+      .filter((e) => state === undefined || state === null || state === -1 || e.state === state)
+      .sort((a, b) => a.state - b.state || a.position - b.position);
+    const start = cursor ? Number(Buffer.from(cursor, 'base64').toString('utf8')) : 0;
+    const page = order.slice(start, start + n);
+    const users = this.usersGetId(page.map((e) => e.userId));
+    const groupUsers = page.map((e, i) => ({
+      user: { userId: e.userId, username: (users[i] as unknown as { username?: string })?.username ?? `name-${e.userId}` },
+      state: e.state,
+    }));
+    const next = start + page.length < order.length ? Buffer.from(String(start + page.length)).toString('base64') : null;
+    return { groupUsers, cursor: next };
+  }
+
+  /** ILIKE name pattern (`%` wildcard); cursor = base64 offset over name order. */
+  groupsList(
+    name?: string | null,
+    langTag?: string | null,
+    open?: boolean | null,
+    edgeCount?: number | null,
+    limit?: number,
+    cursor?: string | null,
+  ): unknown {
+    if (name && (langTag || (open !== undefined && open !== null) || (edgeCount !== undefined && edgeCount !== null && edgeCount > -1))) {
+      throw new Error('error listing groups: name filter cannot be combined with any other filter');
     }
-    if (limit !== undefined && limit > 0) list = list.slice(0, limit);
-    return list;
+    const n = limit ?? 100;
+    if (n < 1 || n > 100) throw new TypeError('expects limit to be 1-100');
+    let list = Array.from(this.groups.keys()).map((id) => this.touchGroup(id));
+    if (name) {
+      const trimmed = name.replace(/^[% ]+/, '');
+      const escaped = trimmed.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.');
+      const re = new RegExp(`^${escaped}$`);
+      list = list.filter((g) => re.test(g.name.toLowerCase()));
+      list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    }
+    let start = 0;
+    if (cursor) {
+      start = Number(Buffer.from(cursor, 'base64').toString('utf8'));
+      if (!Number.isInteger(start)) throw new Error('error listing groups: Malformed cursor was used.');
+    }
+    const page = list.slice(start, start + n).map((g) => ({ ...g }));
+    const next = start + page.length < list.length ? Buffer.from(String(start + page.length)).toString('base64') : null;
+    return { groups: page, cursor: next };
   }
 
   groupDelete(groupId: string): void {
-    if (!this.groups.has(groupId)) {
-      throw new Error(`groupDelete: unknown group "${groupId}"`);
-    }
     this.groups.delete(groupId);
     this.groupMembers.delete(groupId);
+    this.groupStates.delete(groupId);
   }
 
   groupUpdate(
     groupId: string,
-    name: string,
-    description: string,
-    _lang: string,
-    metadata: Record<string, unknown>,
-    open: boolean,
+    _userId: string | null,
+    name?: string | null,
+    _creatorId?: string | null,
+    _langTag?: string | null,
+    description?: string | null,
+    _avatarUrl?: string | null,
+    open?: boolean | null,
+    metadata?: Record<string, unknown> | null,
   ): void {
     const g = this.groups.get(groupId);
-    if (!g) throw new Error(`groupUpdate: unknown group "${groupId}"`);
-    g.name = name;
-    g.description = description;
-    g.metadata = metadata;
-    g.open = open;
+    if (!g) throw new Error('group not found');
+    if (name) g.name = name;
+    if (description) g.description = description;
+    if (metadata) g.metadata = metadata;
+    if (open !== undefined && open !== null) g.open = open;
   }
 
-  groupUsersAdd(groupId: string, userIds: string[]): void {
-    const bucket = this.groupMembers.get(groupId);
-    if (!bucket) throw new Error(`groupUsersAdd: unknown group "${groupId}"`);
-    for (const id of userIds) bucket.add(id);
+  /** System add: no permission check, `maxCount` enforced (ErrGroupFull). */
+  groupUsersAdd(groupId: string, userIds: string[], _callerId?: string | null): void {
+    const g = this.groups.get(groupId);
+    if (!g) throw new Error('error while trying to add users into group: group not found');
+    const bucket = this.groupMembers.get(groupId)!;
+    const states = this.groupStates.get(groupId)!;
+    const fresh = userIds.filter((id) => !bucket.has(id));
+    if (bucket.size + fresh.length > g.maxCount) {
+      throw new Error('error while trying to add users into group: group is full');
+    }
+    for (const id of fresh) {
+      bucket.add(id);
+      states.set(id, 2);
+    }
   }
 
-  groupUserJoin(groupId: string, userId: string): void {
+  groupUsersKick(groupId: string, userIds: string[], _callerId?: string | null): void {
     const bucket = this.groupMembers.get(groupId);
-    if (!bucket) throw new Error(`groupUserJoin: unknown group "${groupId}"`);
-    bucket.add(userId);
+    const states = this.groupStates.get(groupId);
+    if (!bucket || !states) throw new Error('error while trying to kick users from a group: group not found');
+    for (const id of userIds) {
+      const otherSuper = Array.from(states.entries()).some(([u, st]) => u !== id && st === 0);
+      if (states.get(id) === 0 && !otherSuper) {
+        throw new Error('error while trying to kick users from a group: cannot kick the last superadmin');
+      }
+      bucket.delete(id);
+      states.delete(id);
+    }
+  }
+
+  groupUsersPromote(groupId: string, userIds: string[], _callerId?: string | null): void {
+    const states = this.groupStates.get(groupId);
+    if (!states) throw new Error('group not found');
+    for (const id of userIds) {
+      const st = states.get(id);
+      if (st !== undefined && st > 0) states.set(id, st - 1);
+    }
+  }
+
+  groupUsersDemote(groupId: string, userIds: string[], _callerId?: string | null): void {
+    const states = this.groupStates.get(groupId);
+    if (!states) throw new Error('group not found');
+    for (const id of userIds) {
+      const st = states.get(id);
+      if (st !== undefined && st < 2) states.set(id, st + 1);
+    }
   }
 
   /**
@@ -1004,7 +1086,18 @@ class FakeNakamaCore {
       if (k.endsWith(`/${userId}`)) this.store.delete(k);
     }
     for (const records of this.leaderboardRecords.values()) records.delete(userId);
-    for (const members of this.groupMembers.values()) members.delete(userId);
+    // GroupDeleteAll: a group whose only superadmin goes is deleted.
+    for (const [gid, members] of Array.from(this.groupMembers.entries())) {
+      if (!members.has(userId)) continue;
+      const states = this.groupStates.get(gid)!;
+      const otherSuper = Array.from(states.entries()).some(([u, st]) => u !== userId && st === 0);
+      if (states.get(userId) === 0 && !otherSuper) {
+        this.groupDelete(gid);
+      } else {
+        members.delete(userId);
+        states.delete(userId);
+      }
+    }
   }
 }
 
@@ -1058,6 +1151,8 @@ export class FakeNakama {
   readonly groups: Map<string, IGroup>;
   /** Group id → set of member userIds. */
   readonly groupMembers: Map<string, Set<string>>;
+  /** Group id → userId → group state. */
+  readonly groupStates: Map<string, Map<string, number>>;
   /** Matches created via `matchCreate`. */
   readonly createdMatches: Array<{ matchId: string; module: string; params: Record<string, unknown> }>;
   /** Installed before-hook for `leaderboardRecordWrite`. Tests can replace. */
@@ -1098,6 +1193,7 @@ export class FakeNakama {
     this.deletedLeaderboards = core.deletedLeaderboards;
     this.groups = core.groups;
     this.groupMembers = core.groupMembers;
+    this.groupStates = core.groupStates;
     this.beforeLeaderboardRecordWrite = core.beforeLeaderboardRecordWrite;
     this.httpRequests = core.httpRequests;
     this.httpResponse = core.httpResponse;
@@ -1116,6 +1212,8 @@ export class FakeNakama {
 // ─── FakeInitializer ────────────────────────────────────────────────────────
 
 /** Backing store for the initializer — RPC and shutdown handlers. */
+type GroupHookFn = (ctx: unknown, logger: ILogger, nk: INakama, data: unknown) => unknown;
+
 class FakeInitializerCore {
   readonly rpcs: Array<{ key: string; fn: RpcFunction }> = [];
   readonly shutdowns: Array<ShutdownFn> = [];
@@ -1245,6 +1343,49 @@ class FakeInitializerCore {
     this.beforeWriteStorageObjects.push(fn);
   }
 
+  /** Before-hooks of the client group APIs by API name (plan T-21). */
+  readonly groupHooks = new Map<string, GroupHookFn>();
+
+  registerBeforeJoinGroup(fn: GroupHookFn): void {
+    this.groupHooks.set('JoinGroup', fn);
+  }
+
+  registerBeforeCreateGroup(fn: GroupHookFn): void {
+    this.groupHooks.set('CreateGroup', fn);
+  }
+
+  registerBeforeUpdateGroup(fn: GroupHookFn): void {
+    this.groupHooks.set('UpdateGroup', fn);
+  }
+
+  registerBeforeDeleteGroup(fn: GroupHookFn): void {
+    this.groupHooks.set('DeleteGroup', fn);
+  }
+
+  registerBeforeLeaveGroup(fn: GroupHookFn): void {
+    this.groupHooks.set('LeaveGroup', fn);
+  }
+
+  registerBeforeAddGroupUsers(fn: GroupHookFn): void {
+    this.groupHooks.set('AddGroupUsers', fn);
+  }
+
+  registerBeforeBanGroupUsers(fn: GroupHookFn): void {
+    this.groupHooks.set('BanGroupUsers', fn);
+  }
+
+  registerBeforeKickGroupUsers(fn: GroupHookFn): void {
+    this.groupHooks.set('KickGroupUsers', fn);
+  }
+
+  registerBeforePromoteGroupUsers(fn: GroupHookFn): void {
+    this.groupHooks.set('PromoteGroupUsers', fn);
+  }
+
+  registerBeforeDemoteGroupUsers(fn: GroupHookFn): void {
+    this.groupHooks.set('DemoteGroupUsers', fn);
+  }
+
   /** Match handlers by module name (`registerMatch`). */
   readonly matches = new Map<string, Record<string, unknown>>();
 
@@ -1309,6 +1450,8 @@ export class FakeInitializer {
   readonly beforeWriteStorageObjects: ReadonlyArray<
     (ctx: unknown, logger: ILogger, nk: INakama, envelope: unknown) => unknown
   >;
+  /** Before-hooks of the client group APIs by API name (`JoinGroup`, …). */
+  readonly groupHooks: ReadonlyMap<string, GroupHookFn>;
   readonly initializer: IInitializer;
 
   private readonly _core: FakeInitializerCore;
@@ -1323,6 +1466,7 @@ export class FakeInitializer {
     this.afterAuthenticates = core.afterAuthenticates;
     this.beforeAuthenticateDevices = core.beforeAuthenticateDevices;
     this.beforeWriteStorageObjects = core.beforeWriteStorageObjects;
+    this.groupHooks = core.groupHooks;
     this.initializer = wrapWithNotStubbedThrow(core) as IInitializer;
   }
 

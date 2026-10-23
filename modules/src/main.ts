@@ -51,7 +51,7 @@ import {
 } from './social/rpcs';
 import { invite_send, invite_list, invite_respond } from './social/invites';
 import { block_add, block_remove, block_list } from './social/blocks';
-import { club_create, club_get, club_search } from './clubs/rpcs';
+import { club_create, club_get, club_search, club_join } from './clubs/rpcs';
 import {
   club_update,
   club_members_list,
@@ -106,6 +106,7 @@ import {
   admin_migrate_permissions,
 } from './admin/rpcs';
 import { beforeWriteStorageObjectsGuard } from './core/storage_permissions';
+import { beforeJoinGroupGuard, beforeGroupWriteGuard } from './groups/before_join';
 import {
   tournament_list,
   tournament_get,
@@ -165,6 +166,9 @@ const afterAuthenticate = withRuntimeHook(afterAuthenticateAutoCreate);
 const beforeWriteLeaderboardRecord = withRuntimeHook(beforeWriteLeaderboardRecordGuard);
 // Plan T-18 (D-10): client storage writes only to the cloud-save collections.
 const beforeWriteStorageObjects = beforeWriteStorageObjectsGuard;
+// Plan T-21: the club rules cannot be skipped through the client group API.
+const beforeJoinGroup = withRuntimeHook(beforeJoinGroupGuard);
+const beforeGroupWrite = beforeGroupWriteGuard;
 
 function InitModule(
   _ctx: IContext,
@@ -233,6 +237,16 @@ function InitModule(
     initializer.registerAfterAuthenticateApple(afterAuthenticate);
     initializer.registerBeforeWriteLeaderboardRecord(beforeWriteLeaderboardRecord);
     initializer.registerBeforeWriteStorageObjects(beforeWriteStorageObjects);
+    initializer.registerBeforeJoinGroup(beforeJoinGroup);
+    initializer.registerBeforeCreateGroup(beforeGroupWrite);
+    initializer.registerBeforeUpdateGroup(beforeGroupWrite);
+    initializer.registerBeforeDeleteGroup(beforeGroupWrite);
+    initializer.registerBeforeLeaveGroup(beforeGroupWrite);
+    initializer.registerBeforeAddGroupUsers(beforeGroupWrite);
+    initializer.registerBeforeBanGroupUsers(beforeGroupWrite);
+    initializer.registerBeforeKickGroupUsers(beforeGroupWrite);
+    initializer.registerBeforePromoteGroupUsers(beforeGroupWrite);
+    initializer.registerBeforeDemoteGroupUsers(beforeGroupWrite);
     // Periodic jobs (tournaments, events, subscriptions) run in this
     // service match: the runtime has no setInterval (audit PC-09).
     initializer.registerMatch('service_ticker', {
@@ -352,6 +366,7 @@ function InitModule(
     initializer.registerRpc('club_create', club_create);
     initializer.registerRpc('club_get', club_get);
     initializer.registerRpc('club_search', club_search);
+    initializer.registerRpc('club_join', club_join);
     // Phase 7 Chunk 4: membership + roles + updates.
     initializer.registerRpc('club_update', club_update);
     initializer.registerRpc('club_members_list', club_members_list);

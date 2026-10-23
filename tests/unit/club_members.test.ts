@@ -2,7 +2,7 @@
 //
 // Covers:
 //   - readMember / writeMemberCreate / writeMemberUpdate / deleteMember
-//   - readClubMembers (paginated list, key-filter)
+//   - readClubMembers (group roster joined with the membership rows, T-21)
 //   - multiUpdateMembers atomic batch (uses stub multiUpdate)
 //   - resolveUsername cached + uncached paths
 
@@ -12,7 +12,9 @@ import { FakeNakama, type FakeNakama as FakeNakamaType } from '../e2e/_stubs';
 import {
   CLUBS_MEMBERS_COLLECTION,
   deleteMember,
+  memberWrite,
   multiUpdateMembers,
+  readMembership,
   readClubMembers,
   readMember,
   resolveUsername,
@@ -40,6 +42,16 @@ function makeRec(
   };
 }
 
+/** A Nakama group `clubId` whose members are `userIds` (the first is superadmin). */
+function seedGroup(fake: FakeNakamaType, clubId: string, userIds: string[]): void {
+  fake.groups.set(clubId, {
+    id: clubId, creatorId: userIds[0] ?? '', name: clubId, description: '', avatarUrl: '', langTag: 'es',
+    metadata: {}, open: false, edgeCount: userIds.length, maxCount: 30, createTime: 0, updateTime: 0,
+  });
+  fake.groupMembers.set(clubId, new Set(userIds));
+  fake.groupStates.set(clubId, new Map(userIds.map((u, i) => [u, i === 0 ? 0 : 2])));
+}
+
 describe('members_repo (Phase 7 Chunk 4)', () => {
   let fake: FakeNakamaType;
   beforeEach(() => { fake = new FakeNakama(); });
@@ -61,13 +73,12 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
       expect(readMember(fake.nakama, 'club-1', 'missing')).toBeNull();
     });
 
-    it('does NOT collide with same userId in different clubs', () => {
+    it('one membership per player: a second create throws (plan T-21)', () => {
       writeMemberCreate(fake.nakama, makeRec('club-1', 'user-X', 'member'));
-      writeMemberCreate(fake.nakama, makeRec('club-2', 'user-X', 'admin'));
-      const a = readMember(fake.nakama, 'club-1', 'user-X');
-      const b = readMember(fake.nakama, 'club-2', 'user-X');
-      expect(a!.record.role).toBe('member');
-      expect(b!.record.role).toBe('admin');
+      expect(() => writeMemberCreate(fake.nakama, makeRec('club-2', 'user-X', 'admin'))).toThrow();
+      expect(readMember(fake.nakama, 'club-1', 'user-X')!.record.role).toBe('member');
+      expect(readMember(fake.nakama, 'club-2', 'user-X')).toBeNull();
+      expect(readMembership(fake.nakama, 'user-X')!.record.clubId).toBe('club-1');
     });
   });
 
@@ -88,31 +99,35 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
     it('removes the row', () => {
       writeMemberCreate(fake.nakama, makeRec('club-1', 'user-X', 'member'));
       expect(readMember(fake.nakama, 'club-1', 'user-X')).not.toBeNull();
-      deleteMember(fake.nakama, 'club-1', 'user-X');
+      deleteMember(fake.nakama, 'user-X');
       expect(readMember(fake.nakama, 'club-1', 'user-X')).toBeNull();
     });
   });
 
   describe('readClubMembers', () => {
-    it('returns only rows whose key matches the clubId', () => {
+    it('returns the group members that have a row of this club', () => {
+      seedGroup(fake, 'club-1', ['user-A', 'user-B', 'user-D']);
+      seedGroup(fake, 'club-2', ['user-C']);
       writeMemberCreate(fake.nakama, makeRec('club-1', 'user-A', 'leader'));
       writeMemberCreate(fake.nakama, makeRec('club-1', 'user-B', 'member'));
       writeMemberCreate(fake.nakama, makeRec('club-2', 'user-C', 'leader'));
+      // user-D: a leftover group edge with a row of another club.
+      writeMemberCreate(fake.nakama, makeRec('club-9', 'user-D', 'member'));
       const members = readClubMembers(fake.nakama, 'club-1');
-      expect(members).toHaveLength(2);
       const ids = members.map((m) => m.record.userId).sort();
       expect(ids).toEqual(['user-A', 'user-B']);
     });
 
-    it('returns empty for an empty club', () => {
+    it('returns empty for an unknown club', () => {
       expect(readClubMembers(fake.nakama, 'club-empty')).toEqual([]);
     });
 
     it('skips malformed rows', () => {
+      seedGroup(fake, 'club-1', ['bad-user', 'good-user']);
       // Insert a malformed row directly into the store (no role field).
-      fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/club-1/bad-user/bad-user`, {
+      fake.store.set(`${CLUBS_MEMBERS_COLLECTION}/current/bad-user`, {
         collection: CLUBS_MEMBERS_COLLECTION,
-        key: 'club-1',
+        key: 'current',
         userId: 'bad-user',
         value: { schemaVersion: 1, clubId: 'club-1', userId: 'bad-user', joinedAt: 0 },
         version: 'v00000001',
@@ -138,26 +153,7 @@ describe('members_repo (Phase 7 Chunk 4)', () => {
       // Demote A, promote B in one shot.
       const next1: MemberRecord = { ...r1, role: 'admin' };
       const next2: MemberRecord = { ...r2, role: 'leader' };
-      multiUpdateMembers(fake.nakama, [
-        {
-          collection: CLUBS_MEMBERS_COLLECTION,
-          key: 'club-1',
-          userId: 'user-A',
-          value: next1 as unknown as Record<string, unknown>,
-          permissionRead: 1,
-          permissionWrite: 0,
-          version: v1,
-        },
-        {
-          collection: CLUBS_MEMBERS_COLLECTION,
-          key: 'club-1',
-          userId: 'user-B',
-          value: next2 as unknown as Record<string, unknown>,
-          permissionRead: 1,
-          permissionWrite: 0,
-          version: v2,
-        },
-      ]);
+      multiUpdateMembers(fake.nakama, [memberWrite(next1, v1), memberWrite(next2, v2)]);
       expect(readMember(fake.nakama, 'club-1', 'user-A')!.record.role).toBe('admin');
       expect(readMember(fake.nakama, 'club-1', 'user-B')!.record.role).toBe('leader');
     });

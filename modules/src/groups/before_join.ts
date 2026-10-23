@@ -1,19 +1,23 @@
-// Phase 7 Chunk 2 — groups (clubs) `beforeJoinGroup` block check stub.
+// Club join rules on the native group API (plan T-21; audit 07 f2,
+// 7.3.5, 7.6.5).
 //
-// The clubs module lands in Phase 7 Chunk 3. This file ships the
-// block-check helper that Chunk 3 will wire into the real
-// `registerBeforeJoinGroup` hook. The hook doesn't exist in the
-// Nakama 3.27 JS runtime surface today — Chunk 3 will add it (or use
-// a runtime-side check on group joins).
+// Clubs are Nakama groups created CLOSED, and the roster, roles and join
+// rules live in the club RPCs (`club_join`, `club_leave`, `club_kick`,
+// `club_promote` …). The client group API would bypass them, so:
+//   - `beforeJoinGroupGuard` (JoinGroup) applies the club join rules and
+//     refuses with the failing rule; when every rule passes it still
+//     refuses and points to `club_join` (a closed group would only file a
+//     join request that no RPC reads);
+//   - `beforeGroupWriteGuard` refuses the other group writes (create,
+//     update, delete, leave, add, kick, ban, promote, demote): an admin
+//     reopening the group or adding users natively would skip the rules.
+// Both throw `{message, code: 7}`: HTTP 403 without a runtime error log.
 //
-// The contract mirrors `chat/before_send.ts`:
-//   - For each (joining user, group owner / admin) pair, look up
-//     both directions of `blocks/{owner}/{target}`. If either side has
-//     a block, refuse with FORBIDDEN.
-//   - MUST NOT throw on real races: catch + return `allowed:true` on
-//     storage error (defense-in-depth).
+// `checkGroupJoinBlock` is the block check of the join rules: the joiner
+// against the leader and every admin, either direction.
 
-import type { ILogger, INakama } from '../nkruntime';
+import type { IContext, ILogger, INakama } from '../nkruntime';
+import { evaluateClubJoin } from '../clubs/join';
 import { isBlockedEitherWay } from '../social/blocks_repo';
 
 export interface GroupJoinDecision {
@@ -53,4 +57,33 @@ export function checkGroupJoinBlock(
     }
   }
   return { allowed: true, reason: null };
+}
+
+/** gRPC PERMISSION_DENIED: the client receives HTTP 403. */
+const PERMISSION_DENIED = 7;
+
+/** Before-hook of the client JoinGroup API. */
+export function beforeJoinGroupGuard(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  data: unknown,
+): unknown {
+  const groupId = String((data as { groupId?: unknown } | null)?.groupId ?? '');
+  const userId = String(ctx?.userId ?? '');
+  const verdict = evaluateClubJoin(nk, logger, userId, groupId);
+  const reason = verdict.allowed ? 'use_club_join' : verdict.reason;
+  logger.info('rejecting native JoinGroup [user=%s group=%s reason=%s]', userId, groupId, reason);
+  throw { message: `clubs are joined through the club_join RPC (${reason})`, code: PERMISSION_DENIED };
+}
+
+/** Before-hook of the other client group writes. */
+export function beforeGroupWriteGuard(
+  ctx: IContext,
+  logger: ILogger,
+  _nk: INakama,
+  _data: unknown,
+): unknown {
+  logger.info('rejecting native group write [user=%s]', String(ctx?.userId ?? '?'));
+  throw { message: 'clubs are managed through the club_* RPCs', code: PERMISSION_DENIED };
 }

@@ -15,12 +15,13 @@
 //     a. Compute the boundary week (`oldWeek = meta.currentWeek`).
 //     b. Look up the global `clubs_week_reset/{oldWeek}` marker.
 //
-//        - Absent → we are the FIRST lazy reset this week. We own the
-//          weekly payment: read the top row of the `club_week`
-//          leaderboard (desc), read the winning club's members, pick
-//          the top-3 contributors by `weeklyContribution`, and send
-//          each an inbox reward via `sendInbox`. Then we write the
-//          global marker so no further club can double-send.
+//        - Absent → we may be the FIRST lazy reset this week: read the
+//          top row of the `club_week` leaderboard (desc), read the
+//          winning club's members and pick the top-3 contributors by
+//          `weeklyContribution`; then CLAIM the global marker
+//          (create-only) and only the claimer sends each a claimable
+//          reward to the single inbox (`sendReward`, id
+//          `club_week:<week>:<userId>`, so a re-run never duplicates).
 //
 //        - Present → rewards already sent (or no winner). Nothing to
 //          do for the reward step.
@@ -35,7 +36,7 @@
 // `ensureWeekBoundary` is the only entry point the RPCs call.
 
 import type { ILogger, INakama } from '../nkruntime';
-import { sendInbox } from '../liveops/messages';
+import { sendReward } from '../liveops/inbox';
 import { serverNowMs } from '../core/time';
 import { readClubMembers, writeMemberUpdate } from './members_repo';
 import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
@@ -233,45 +234,52 @@ function awardWeeklyReward(
     /* limit */ WEEKLY_REWARD_MAX_RECIPIENTS,
   );
   const top1 = top.records[0];
-  if (top1 === undefined) {
-    // No records at all — no clubs scored this week. Write the marker
-    // so future resets don't redo the lookup.
-    writeClubWeekResetMarker(nk, {
-      schemaVersion: 1,
-      weekUtc: oldWeek,
-      resetAt: nowMs,
-      winnerClubId: null,
-      rewardedUserIds: [],
-    });
-    return { winnerClubId: null, rewardedUserIds: [] };
+  const winnerClubId = top1 !== undefined ? top1.ownerId : null;
+
+  // 2. The winner club's top-3 contributors.
+  const top3 = winnerClubId === null
+    ? []
+    : pickTopContributors(readClubMembers(nk, winnerClubId).map((m): ContributionRow => ({
+      userId: m.record.userId,
+      weeklyContribution: m.record.weeklyContribution,
+      joinedAt: m.record.joinedAt,
+    })));
+
+  // 3. Claim the week. A concurrent reset that claimed it first owns
+  //    the reward; we report what it recorded.
+  const marker: ClubWeekResetMarker = {
+    schemaVersion: 1,
+    weekUtc: oldWeek,
+    resetAt: nowMs,
+    winnerClubId,
+    rewardedUserIds: top3.map((m) => m.userId),
+  };
+  try {
+    writeClubWeekResetMarker(nk, marker);
+  } catch (e) {
+    const theirs = readClubWeekResetMarker(nk, oldWeek);
+    if (theirs !== null) {
+      return { winnerClubId: theirs.record.winnerClubId, rewardedUserIds: theirs.record.rewardedUserIds };
+    }
+    logger.warn(
+      'club_week_reset marker write failed week=%s: %s',
+      oldWeek, e instanceof Error ? e.message : String(e),
+    );
+    return { winnerClubId, rewardedUserIds: [] };
   }
-  const winnerClubId = top1.ownerId;
 
-  // 2. Read the winner club's members.
-  const members = readClubMembers(nk, winnerClubId);
-  const contributionRows: ContributionRow[] = members.map((m) => ({
-    userId: m.record.userId,
-    weeklyContribution: m.record.weeklyContribution,
-    joinedAt: m.record.joinedAt,
-  }));
-  const top3 = pickTopContributors(contributionRows);
-
-  // 3. Send inbox to each top-3 member.
+  // 4. Claimable rewards to the single inbox.
   const rewardedUserIds: string[] = [];
   for (const m of top3) {
     try {
-      sendInbox(
+      sendReward(
         nk,
         m.userId,
-        {
-          id: nk.uuidv4(),
-          kind: 'reward',
-          title: 'Club week reward',
-          body: 'Your club won the week — top contributor reward inside.',
-          reward: { coins: WEEKLY_REWARD_COINS },
-          expiresAt: nowMs + WEEKLY_REWARD_TTL_MS,
-        },
+        'club_week_reward',
+        { coins: WEEKLY_REWARD_COINS, note: 'Your club won the week — top contributor reward inside.' },
+        `club_week:${oldWeek}:${m.userId}`,
         nowMs,
+        nowMs + WEEKLY_REWARD_TTL_MS,
       );
       rewardedUserIds.push(m.userId);
     } catch (e) {
@@ -280,23 +288,6 @@ function awardWeeklyReward(
         m.userId, e instanceof Error ? e.message : String(e),
       );
     }
-  }
-
-  // 4. Write the global reset marker.
-  const marker: ClubWeekResetMarker = {
-    schemaVersion: 1,
-    weekUtc: oldWeek,
-    resetAt: nowMs,
-    winnerClubId,
-    rewardedUserIds,
-  };
-  try {
-    writeClubWeekResetMarker(nk, marker);
-  } catch (e) {
-    logger.warn(
-      'club_week_reset marker write failed week=%s: %s',
-      oldWeek, e instanceof Error ? e.message : String(e),
-    );
   }
 
   return { winnerClubId, rewardedUserIds };
