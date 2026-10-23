@@ -8,7 +8,11 @@
 //     - D1 maintenance granularity: GLOBAL — one flag, read at every
 //        gated RPC.
 //     - D2 min client version: HARD BLOCK — `UPGRADE_REQUIRED` returned
-//        before any game RPC mutates state.
+//        before any game RPC mutates state, for a client that declares a
+//        version below the minimum. A request WITHOUT `clientVersion`
+//        passes (plan T-14, D-05): the Unity client does not send it, and
+//        treating it as "0.0.0" rejected every profile/garage/inbox call.
+//        Such a client learns the minimum from `config_get`.
 //     - Exempt users: `flags.maintenanceExemptUserIds` is a static
 //        server-only list. Admin RPCs (Chunks 5+) bypass maintenance
 //        via `skipForAdmin: true`.
@@ -100,19 +104,35 @@ export function assertNotInMaintenance(
 
 // ─── Min client version gate ────────────────────────────────────────────────
 
+/** Platform assumed when a request does not say (or names an unknown one). */
+export const DEFAULT_CLIENT_PLATFORM: ClientPlatform = 'ios';
+
+/** `platform` when it is a known one, else `DEFAULT_CLIENT_PLATFORM`. */
+export function clientPlatformOf(platform: unknown, config: LiveopsConfig): ClientPlatform {
+  return typeof platform === 'string' && platform in config.minClientVersion
+    ? (platform as ClientPlatform)
+    : DEFAULT_CLIENT_PLATFORM;
+}
+
+/** The LiveOps minimum client version for `platform` ("0.0.0" when unset). */
+export function minClientVersionFor(config: LiveopsConfig, platform: ClientPlatform): string {
+  return config.minClientVersion[platform] ?? '0.0.0';
+}
+
 /**
  * Returns an `err(UPGRADE_REQUIRED)` envelope when `clientVersion` is
- * strictly less than `config.minClientVersion[platform]`. A missing
- * `clientVersion` is treated as `"0.0.0"` (defense against legacy
- * clients that don't send it). Returns `null` on the happy path.
+ * strictly less than `config.minClientVersion[platform]`. A missing or
+ * blank `clientVersion` passes (plan T-14, D-05: the Unity client does
+ * not send it). Returns `null` on the happy path.
  */
 export function assertMinClientVersion(
   clientVersion: string | undefined,
   platform: ClientPlatform,
   config: LiveopsConfig,
 ): Resp<unknown> | null {
-  const incoming = clientVersion ?? '0.0.0';
-  const required = config.minClientVersion[platform] ?? '0.0.0';
+  if (typeof clientVersion !== 'string' || clientVersion.trim().length === 0) return null;
+  const incoming = clientVersion;
+  const required = minClientVersionFor(config, platform);
   if (compareSemver(incoming, required) < 0) {
     return err(
       'UPGRADE_REQUIRED',

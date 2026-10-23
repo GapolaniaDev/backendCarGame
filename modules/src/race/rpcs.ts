@@ -21,7 +21,13 @@
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
-import { assertNotInMaintenance } from '../core/liveops';
+import {
+  assertMinClientVersion,
+  assertNotInMaintenance,
+  clientPlatformOf,
+  minClientVersionFor,
+} from '../core/liveops';
+import { loadLiveopsConfig } from '../liveops/config';
 import { emit } from '../core/admin/analytics';
 import {
   getCatalogsHash,
@@ -126,27 +132,53 @@ function parsePayload<T>(payload: string): Resp<T> | null {
 
 // ─── config_get ──────────────────────────────────────────────────────────────
 
+function lenientObject(payload: string): { clientVersion?: unknown; platform?: unknown } {
+  try {
+    const v = JSON.parse(payload) as unknown;
+    return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Returns the catalogs (read-only data the client needs at boot) plus the
  * server's wall clock and a content hash so the client can short-circuit
  * a full re-download when nothing changed.
  *
- * The handler is intentionally cheap: it does no I/O beyond an in-memory
- * hash lookup and a Date.now() call. No rate limit either — clients may
- * call it as often as they like (configurable in env `RATE_LIMITS`).
+ * `minClientVersion` is the LiveOps minimum for the request's `platform`
+ * (optional, default `ios`; plan T-14, audit 04 f14: it was a hard-coded
+ * '1.0.0'). A request that declares a lower `clientVersion` gets
+ * `UPGRADE_REQUIRED`; one without it passes, like every other gate.
+ * `config_get` stays open during maintenance: the client needs its clock
+ * and the minimum version to show the maintenance or update screen.
+ *
+ * The handler is intentionally cheap: one LiveOps config read besides
+ * in-memory catalogs and a Date.now() call. No rate limit either —
+ * clients may call it as often as they like.
  */
 function config_get_impl(
   _ctx: IContext,
   logger: ILogger,
   _nk: INakama,
-  _payload: string,
+  payload: string,
 ): string {
+  // The body used to be ignored, so any body is accepted (D-05): only an
+  // object's `clientVersion` / `platform` are read.
+  const input = lenientObject(payload);
+  const liveops = loadLiveopsConfig(_nk, logger);
+  const platform = clientPlatformOf(input.platform, liveops);
+  const minClientVersion = minClientVersionFor(liveops, platform);
+  const clientVersion = typeof input.clientVersion === 'string' ? input.clientVersion : undefined;
+  const gate = assertMinClientVersion(clientVersion, platform, liveops);
+  if (gate !== null) return toJson(gate);
+
   const data: ConfigGetOutput = {
     serverTimeMs: serverNowMs(),
     catalogsHash: getCatalogsHash(_nk),
     tracks: getTracks(_nk),
     modes: getModes(_nk),
-    minClientVersion: '1.0.0',
+    minClientVersion,
   };
   logger.debug('config_get served hash=%s', data.catalogsHash.slice(0, 12));
   return toJson(ok(data));

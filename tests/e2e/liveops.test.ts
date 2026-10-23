@@ -206,9 +206,14 @@ describe('liveops (Phase 5 Chunk 2) — gate enforcement on garage_get', () => {
     expect(r.data.garage.userId).toBe(USER);
   });
 
-  it('garage_get with missing clientVersion (legacy client) → UPGRADE_REQUIRED', () => {
-    // clientVersion undefined → treated as "0.0.0" → fails min 0.1.0.
+  it('garage_get with missing clientVersion (the Unity client) passes the gate (T-14, D-05)', () => {
+    // Only a declared version below the minimum is rejected.
     const r = getGarage(env, USER, { platform: 'ios' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('garage_get with a declared clientVersion below the minimum → UPGRADE_REQUIRED', () => {
+    const r = getGarage(env, USER, { platform: 'ios', clientVersion: '0.0.9' });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('UPGRADE_REQUIRED');

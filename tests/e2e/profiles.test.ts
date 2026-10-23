@@ -198,4 +198,52 @@ describe('profile module (Chunk 14)', () => {
     expect(stored).toBeDefined();
     expect((stored?.value as { displayName: string }).displayName).toBe('Racer');
   });
+
+  // ── Plan T-14 (PC-17, audit 05 f9) ───────────────────────────────────────
+
+  it("another player's profile is the public projection only", () => {
+    call(env, 'profile_get', OTHER_ID, { callerUserId: OTHER_ID });
+    const resp = call<{ ok: true; data: { profile: Record<string, unknown> } }>(
+      env,
+      'profile_get',
+      HOST_ID,
+      { userId: OTHER_ID },
+    );
+    expect(resp.ok).toBe(true);
+    expect(Object.keys(resp.data.profile).sort()).toEqual(['avatarUrl', 'displayName', 'progression', 'userId']);
+    expect(resp.data.profile['userId']).toBe(OTHER_ID);
+    expect(resp.data.profile['progression']).toEqual({ level: 1 });
+  });
+
+  it('another player without a profile → NOT_FOUND, and nothing is created', () => {
+    const ghost = 'user-ghost';
+    const r1 = call<{ ok: false; error: { code: string } }>(env, 'profile_get', HOST_ID, { userId: ghost });
+    expect(r1.ok).toBe(false);
+    expect(r1.error.code).toBe('NOT_FOUND');
+    expect(env.fakeNakama.store.get(`profiles/${ghost}/${ghost}`)).toBeUndefined();
+    const r2 = call<{ ok: false; error: { code: string } }>(env, 'profile_get', HOST_ID, { userId: ghost });
+    expect(r2.error.code).toBe('NOT_FOUND');
+  });
+
+  it("the caller's own id in userId still returns the full profile", () => {
+    const resp = call<{ ok: true; data: { profile: { createdAt?: number; progression: { xp?: number } } } }>(
+      env,
+      'profile_get',
+      HOST_ID,
+      { userId: HOST_ID },
+    );
+    expect(resp.ok).toBe(true);
+    expect(typeof resp.data.profile.createdAt).toBe('number');
+    expect(resp.data.profile.progression.xp).toBe(0);
+  });
+
+  it('profile_get without clientVersion passes the gate; a lower one → UPGRADE_REQUIRED (T-14)', () => {
+    const handler = env.resolver('profile_get')!;
+    const ctx = { ...FakeContext, userId: HOST_ID };
+    const noVersion = JSON.parse(handler(ctx, env.logger, env.nak, '{}'));
+    expect(noVersion.ok).toBe(true);
+    const old = JSON.parse(handler(ctx, env.logger, env.nak, JSON.stringify({ clientVersion: '0.0.1' })));
+    expect(old.ok).toBe(false);
+    expect(old.error.code).toBe('UPGRADE_REQUIRED');
+  });
 });

@@ -9,7 +9,7 @@
 //   - assertMinClientVersion: per platform (ios/android/windows/macos/linux)
 //     below → UPGRADE_REQUIRED envelope
 //   - assertMinClientVersion: exact match → null
-//   - assertMinClientVersion: clientVersion undefined → "0.0.0" → UPGRADE_REQUIRED
+//   - assertMinClientVersion: clientVersion undefined or blank → null (plan T-14, D-05)
 //   - compareSemver: 1.0.0<1.0.1, 1.0.0<2.0.0, 1.2.3==1.2.3,
 //                    1.10.0>1.9.0 (numeric, NOT lexicographic)
 //
@@ -213,14 +213,16 @@ describe('liveops gate (Phase 5 Chunk 2) — assertMinClientVersion (per-platfor
     expect(result).toBeNull();
   });
 
-  it('clientVersion undefined → treated as "0.0.0" → UPGRADE_REQUIRED', () => {
-    const result = assertMinClientVersion(undefined, 'ios', cfg);
+  it('clientVersion undefined or blank → passes (the Unity client does not send it, T-14)', () => {
+    expect(assertMinClientVersion(undefined, 'ios', cfg)).toBeNull();
+    expect(assertMinClientVersion('', 'ios', cfg)).toBeNull();
+    expect(assertMinClientVersion('  ', 'ios', cfg)).toBeNull();
+  });
+
+  it('a declared but unparsable clientVersion counts as 0.0.0 → UPGRADE_REQUIRED', () => {
+    const result = assertMinClientVersion('garbage', 'ios', cfg);
     expect(result).not.toBeNull();
-    if (result && !result.ok) {
-      expect(result.error.code).toBe('UPGRADE_REQUIRED');
-      const detail = result.error.details as { clientVersion: string };
-      expect(detail.clientVersion).toBe('0.0.0');
-    }
+    if (result && !result.ok) expect(result.error.code).toBe('UPGRADE_REQUIRED');
   });
 
   it('clientVersion undefined + minVersion=0.0.0 → no-op', () => {

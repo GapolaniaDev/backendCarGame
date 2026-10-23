@@ -241,7 +241,32 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect((result.data as { tracks: unknown[] }).tracks).toHaveLength(6);
       expect((result.data as { modes: unknown[] }).modes).toHaveLength(4);
       expect(typeof (result.data as { serverTimeMs: number }).serverTimeMs).toBe('number');
-      expect((result.data as { minClientVersion: string }).minClientVersion).toBe('1.0.0');
+      // Plan T-14: the LiveOps minimum (bundled default 0.1.0), not a constant.
+      expect((result.data as { minClientVersion: string }).minClientVersion).toBe('0.1.0');
+    });
+
+    it('takes minClientVersion from the LiveOps config of the requested platform (T-14)', () => {
+      const cfg = env.resolver('config_get') as RpcFunction;
+      const key = 'liveops/config/00000000-0000-0000-0000-000000000000';
+      const stored = env.fakeNakama.store.get(key);
+      expect(stored).toBeDefined();
+      const value = stored!.value as { minClientVersion: Record<string, string> };
+      env.fakeNakama.store.set(key, {
+        ...stored!,
+        value: { ...value, minClientVersion: { ...value.minClientVersion, android: '2.3.0' } },
+      });
+      const android = JSON.parse(cfg(FakeContext, env.logger, env.nak, JSON.stringify({ platform: 'android' })));
+      expect(android.data.minClientVersion).toBe('2.3.0');
+      const old = JSON.parse(cfg(FakeContext, env.logger, env.nak,
+        JSON.stringify({ platform: 'android', clientVersion: '2.2.9' })));
+      expect(old.ok).toBe(false);
+      expect(old.error.code).toBe('UPGRADE_REQUIRED');
+      const current = JSON.parse(cfg(FakeContext, env.logger, env.nak,
+        JSON.stringify({ platform: 'android', clientVersion: '2.3.0' })));
+      expect(current.ok).toBe(true);
+      // Without a version (the Unity client) or with any body, config_get answers.
+      expect(JSON.parse(cfg(FakeContext, env.logger, env.nak, 'null')).ok).toBe(true);
+      expect(JSON.parse(cfg(FakeContext, env.logger, env.nak, JSON.stringify({ platform: 'android' }))).ok).toBe(true);
     });
   });
 
