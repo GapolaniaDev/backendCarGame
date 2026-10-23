@@ -25,7 +25,7 @@ import { serverNowMs } from '../core/time';
 import { assertAdminKey, withoutAdminKey } from '../admin/auth';
 import { emitAdminAction } from '../core/admin/analytics';
 import { grant } from '../economy/wallet';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { distributePrizes, type PrizeDistributionRow } from './prizes';
 import { topN } from './leaderboard';
 import { tournamentState } from './catalog';
@@ -456,7 +456,7 @@ export const admin_tournament_void_refund_impl: RpcHandler = (_ctx, logger, nk, 
     // Always send the inbox so the player sees the reason. Idempotent
     // on the (userId, rewardId) pair.
     try {
-      sendReward(
+      sendNotice(
         nk, e.userId, 'tournament_voided',
         {
           coins: e.paidEntryFee,

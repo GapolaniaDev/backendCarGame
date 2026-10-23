@@ -208,7 +208,7 @@ describe('admin tournament RPCs e2e (Phase 8 Chunk 7)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.distributed).toBe(1);
-    const inbox = env.fakeNakama.store.get('liveops_inbox/fast/tournament:a:prize:fast:1/fast');
+    const inbox = env.fakeNakama.store.get('inbox/fast/tournament:a:prize:fast:1/fast');
     expect(inbox).toBeDefined();
   });
 
@@ -305,7 +305,7 @@ describe('admin tournament RPCs e2e (Phase 8 Chunk 7)', () => {
     // No refund.
     expect(env.fakeNakama.wallets.get('u1')?.coins).toBe(0);
     // No inbox.
-    const inboxKeys = Array.from(env.fakeNakama.store.keys()).filter((k) => k.startsWith('liveops_inbox/'));
+    const inboxKeys = Array.from(env.fakeNakama.store.keys()).filter((k) => k.startsWith('inbox/'));
     expect(inboxKeys).toEqual([]);
   });
 

@@ -24,7 +24,7 @@ import type { ILogger, INakama } from '../nkruntime';
 import { serverNowMs } from '../core/time';
 import { emit } from '../core/admin/analytics';
 import { grant } from '../economy/wallet';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { TOURNAMENT_INSTANCES_COLLECTION, TOURNAMENT_INSTANCES_SYSTEM_USER } from './repo';
 import {
   distributePrizes,
@@ -204,11 +204,11 @@ function grantPrizeRow(
   // so the client knows to refresh its loadout).
   const cosmetics = row.rewards.cosmeticId !== undefined ? [row.rewards.cosmeticId] : [];
   try {
-    sendReward(
+    sendNotice(
       nk, row.userId, 'tournament_prize',
       {
         ...(row.rewards.coins !== undefined ? { coins: row.rewards.coins } : {}),
-        ...(row.rewards.gems !== undefined ? { coins: 0 } : {}),
+        ...(row.rewards.gems !== undefined ? { gems: row.rewards.gems } : {}),
         ...(cosmetics.length > 0 ? { cosmetics } : {}),
         note: `Tournament prize: rank ${row.rank}`,
       },

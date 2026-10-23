@@ -18,7 +18,7 @@
 // that's ~288k subs/day at 5min cadence.
 
 import type { INakama, ILogger } from '../nkruntime';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { grant, type WalletView } from '../economy/wallet';
 import { type Resp } from '../core/response';
 import {
@@ -77,7 +77,7 @@ export function scanOnce(nk: INakama, logger: ILogger, nowUtc: number): Subscrip
         const remainingDays = Math.max(0, Math.ceil((sub.expiresAtUtc - nowUtc) / MS_PER_DAY));
         const rewardId = `sub_expiring:${row.userId}:${sub.expiresAtUtc}`;
         try {
-          sendReward(
+          sendNotice(
             nk,
             row.userId,
             'subscription_expiring_soon',
@@ -108,7 +108,7 @@ export function scanOnce(nk: INakama, logger: ILogger, nowUtc: number): Subscrip
       if (isExpired(sub, nowUtc) && sub.expiredNotified !== true) {
         const rewardId = `sub_expired:${row.userId}:${sub.expiresAtUtc}`;
         try {
-          sendReward(
+          sendNotice(
             nk,
             row.userId,
             'subscription_expired',

@@ -28,7 +28,7 @@ import {
 import { getRewardsCatalog } from '../economy/catalog';
 import { xpFromCoins } from '../progression/leveling';
 import { grant } from '../economy/wallet';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 
 export interface EventsSubscriberDeps {
   logger: ILogger;
@@ -94,7 +94,7 @@ export function handleRaceCompletedForEvents(
     // call but we also try/catch so a single bad payload doesn't kill
     // the loop).
     try {
-      sendReward(
+      sendNotice(
         deps.nk,
         result.userId,
         'event_xp_applied',

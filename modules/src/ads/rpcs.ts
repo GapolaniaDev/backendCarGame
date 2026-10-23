@@ -16,7 +16,7 @@ import type { ErrorCode } from '../core/errors';
 import { parseInput } from '../core/parse_input';
 import { serverNowMs } from '../core/time';
 import { grant, walletGet, type WalletView } from '../economy/wallet';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { emit } from '../core/admin/analytics';
 import { findAdRewardTier } from './catalog';
 import { verifyAdMock, type AdVerifyError } from './verify_mock';
@@ -239,7 +239,7 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
   writeAdWatchLog(nk, userId, input.impressionId, log);
 
   // 8. Inbox notification (idempotent — same key as the wallet grant).
-  sendReward(
+  sendNotice(
     nk,
     userId,
     'ad_reward',

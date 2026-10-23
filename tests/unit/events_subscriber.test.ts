@@ -291,13 +291,13 @@ describe('events subscriber (Phase 8 Chunk 8)', () => {
     seedProfile(fake, 'u1');
     const event = makeRaceEvent();
     handleRaceCompletedForEvents(deps, event);
-    const key = `liveops_inbox/u1/event_xp_applied:${event.sessionId}:u1/u1`;
+    const key = `inbox/u1/event_xp_applied:${event.sessionId}:u1/u1`;
     const obj = fake.store.get(key);
     expect(obj).toBeDefined();
-    const v = obj!.value as { type: string; payload: { coins: number; note: string } };
-    expect(v.type).toBe('event_xp_applied');
-    expect(v.payload.coins).toBe(27);
-    expect(v.payload.note).toMatch(/x2/);
+    const v = obj!.value as { source: string; granted: { coins: number }; body: string };
+    expect(v.source).toBe('event_xp_applied');
+    expect(v.granted.coins).toBe(27);
+    expect(v.body).toMatch(/x2/);
   });
 
   it('is idempotent across re-fires for the same race (race-tied key)', () => {

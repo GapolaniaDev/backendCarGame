@@ -270,13 +270,14 @@ describe('admin_iap_refund (Phase 9 Chunk 6)', () => {
 
     // Inbox entry exists. The inbox storage key is `${userId}/${rewardId}`.
     const inbox = Array.from(env.fakeNakama.store.values()).find(
-      (o) => o.collection === 'liveops_inbox' && o.key === 'u1/iap_refund:tx-1',
+      (o) => o.collection === 'inbox' && o.key === 'u1/iap_refund:tx-1',
     );
     expect(inbox).toBeDefined();
-    const iv = inbox!.value as { type: string; payload: { coins: number; note: string } };
-    expect(iv.type).toBe('iap_refund');
-    expect(iv.payload.coins).toBe(100);
-    expect(iv.payload.note).toContain('duplicate');
+    const iv = inbox!.value as { source: string; granted: { coins: number }; body: string; reward?: unknown };
+    expect(iv.source).toBe('iap_refund');
+    expect(iv.granted.coins).toBe(100);
+    expect(iv.body).toContain('duplicate');
+    expect(iv.reward).toBeUndefined();
   });
 
   it('replay: same admin retry returns CONFLICT (D90: refund blocked if already refunded)', () => {

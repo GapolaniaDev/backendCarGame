@@ -96,10 +96,10 @@ function adminWriteInbox(
 ): void {
   // The exact composite key the storage stub uses
   //   `${collection}/${key}/${userId}` with `key = inboxKey(...)`.
-  const compositeKey = `${INBOX_COLLECTION}/${inboxKey(msg.userId, msg.id)}/${msg.userId}`;
+  const compositeKey = `${INBOX_COLLECTION}/${inboxKey(env.nak, msg.userId, msg.id)}/${msg.userId}`;
   env.fakeNakama.store.set(compositeKey, {
     collection: INBOX_COLLECTION,
-    key: inboxKey(msg.userId, msg.id),
+    key: inboxKey(env.nak, msg.userId, msg.id),
     userId: msg.userId,
     value: msg as unknown as Record<string, unknown>,
     version: 'v00000001',
@@ -257,5 +257,93 @@ describe('inbox (Phase 5 Chunk 3) — inbox_claim RPC', () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('SERVICE_UNAVAILABLE');
+  });
+});
+// ─── Plan T-17: one inbox for every reward sender ──────────────────────────
+
+describe('inbox (plan T-17) — season rewards, notices and the legacy migration', () => {
+  let env: ReturnType<typeof loadBundleForTest>;
+  const SYSTEM = '00000000-0000-0000-0000-000000000000';
+
+  beforeEach(() => {
+    env = loadBundleForTest();
+  });
+
+  it('a ranked season reward appears in inbox_list and pays once', async () => {
+    const { sendReward } = await import('../../modules/src/liveops/inbox');
+    const { payloadForTier } = await import('../../modules/src/ranked/season');
+    const tier = payloadForTier('silver');
+    sendReward(env.nak, USER, tier.type, tier.payload, 'season_2-rank-2', Date.now());
+
+    const list = callInboxList(env, USER);
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    const msg = list.data.messages.find((m) => m.id === 'season_2-rank-2');
+    expect(msg).toMatchObject({ kind: 'reward', source: 'season_silver', reward: { coins: 2500 } });
+
+    const first = callInboxClaim(env, USER, 'season_2-rank-2');
+    expect(first.ok && first.data.newBalance?.coins).toBe(2500);
+    const second = callInboxClaim(env, USER, 'season_2-rank-2');
+    expect(second.ok ? 'ok' : second.error.code).toBe('CONFLICT');
+    expect(env.fakeNakama.wallets.get(USER)?.['coins']).toBe(2500);
+  });
+
+  it('a tournament prize notice appears and its claim pays nothing more', async () => {
+    const { sendNotice } = await import('../../modules/src/liveops/inbox');
+    sendNotice(env.nak, USER, 'tournament_prize', { coins: 400, note: 'Tournament prize: rank 1' }, 'tournament:t1:prize:u:1', Date.now());
+    const list = callInboxList(env, USER);
+    const msg = list.ok ? list.data.messages.find((m) => m.id === 'tournament:t1:prize:u:1') : undefined;
+    expect(msg).toMatchObject({ kind: 'system', source: 'tournament_prize', granted: { coins: 400 } });
+    expect(msg?.reward).toBeUndefined();
+    const claim = callInboxClaim(env, USER, 'tournament:t1:prize:u:1');
+    expect(claim.ok).toBe(true);
+    expect(env.fakeNakama.wallets.get(USER)?.['coins'] ?? 0).toBe(0);
+  });
+
+  it('inbox_claim delivers catalog items and reports unknown ones (not silently)', () => {
+    const now = Date.now();
+    adminWriteInbox(env, {
+      schemaVersion: 1, id: 'items', userId: USER, kind: 'reward', title: 't', body: 'b',
+      reward: { cosmeticId: 'paint_red_flame', cosmeticIds: ['paint_red_flame', 'legendary_aether_chassis'] },
+      createdAt: now, expiresAt: now + 86_400_000,
+    });
+    const r = call<Resp<{ delivered?: { cosmeticId?: string }; undelivered?: string[] }>>(
+      env, 'inbox_claim', USER, { messageId: 'items' },
+    );
+    expect(r).toMatchObject({ ok: true, data: { delivered: { cosmeticId: 'paint_red_flame' }, undelivered: ['cosmetic:legendary_aether_chassis'] } });
+    const garage = env.fakeNakama.store.get(`garage/${USER}/${USER}`)?.value as { cosmeticsBag: string[] };
+    expect(garage.cosmeticsBag).toContain('paint_red_flame');
+  });
+
+  it('the boot migration moves liveops_inbox once: season → claimable (amount from the tier), others → notices', async () => {
+    const { migrateLegacyInbox } = await import('../../modules/src/liveops/inbox_migration');
+    // InitModule already ran it (empty) and wrote the marker.
+    expect(env.fakeNakama.store.has(`migrations/inbox_v1/${SYSTEM}`)).toBe(true);
+    env.fakeNakama.store.delete(`migrations/inbox_v1/${SYSTEM}`);
+    const legacy = (key: string, value: Record<string, unknown>): void => {
+      env.fakeNakama.store.set(`liveops_inbox/${USER}/${key}/${USER}`, {
+        collection: 'liveops_inbox', key: `${USER}/${key}`, userId: USER, value, version: 'v1',
+        permissionRead: 1, permissionWrite: 1, createTime: '', updateTime: '', expiresAt: null,
+      });
+    };
+    legacy('season_2-rank-1', {
+      schemaVersion: 1, rewardId: 'season_2-rank-1', userId: USER, type: 'season_gold',
+      payload: { coins: 999_999, cosmetics: [] }, createdAt: 1, expiresAt: null, claimed: false,
+    });
+    legacy('tournament:t9:prize', {
+      schemaVersion: 1, rewardId: 'tournament:t9:prize', userId: USER, type: 'tournament_prize',
+      payload: { coins: 100 }, createdAt: 1, expiresAt: null, claimed: false,
+    });
+
+    const r = migrateLegacyInbox(env.nak, env.logger, Date.now());
+    expect(r).toEqual({ rewards: 1, notices: 1, skipped: 0 });
+    expect([...env.fakeNakama.store.keys()].some((k) => k.startsWith('liveops_inbox/'))).toBe(false);
+    expect(migrateLegacyInbox(env.nak, env.logger, Date.now())).toBeNull();
+
+    const list = callInboxList(env, USER);
+    const season = list.ok ? list.data.messages.find((m) => m.id === 'season_2-rank-1') : undefined;
+    expect(season?.reward?.coins).toBe(5000);
+    const claim = callInboxClaim(env, USER, 'season_2-rank-1');
+    expect(claim.ok && claim.data.newBalance?.coins).toBe(5000);
   });
 });

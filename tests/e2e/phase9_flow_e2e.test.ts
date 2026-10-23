@@ -524,7 +524,7 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
 
     // inbox entry
     const inbox = Array.from(nak.store.values()).find(
-      (o) => o.collection === 'liveops_inbox' && o.key === 'user-A/iap_refund:tx-refund-1',
+      (o) => o.collection === 'inbox' && o.key === 'user-A/iap_refund:tx-refund-1',
     );
     expect(inbox).toBeDefined();
     // refund event

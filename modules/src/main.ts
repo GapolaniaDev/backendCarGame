@@ -16,6 +16,7 @@
 
 import type { IContext, ILogger, IInitializer, INakama } from './nkruntime';
 import { ensureRuntimeState, withRuntimeHook } from './core/runtime_state';
+import { migrateLegacyInbox } from './liveops/inbox_migration';
 import {
   config_get,
   race_host_claim,
@@ -195,6 +196,15 @@ function InitModule(
       'liveops bootEnsure failed (continuing with bundled default): %s',
       e instanceof Error ? e.message : String(e),
     );
+  }
+
+  // Plan T-17: move the legacy `liveops_inbox` into the single inbox,
+  // once (marker `migrations/inbox_v1`). A failure only logs: the
+  // legacy objects stay and the next boot retries.
+  try {
+    migrateLegacyInbox(nk, logger, Date.now());
+  } catch (e) {
+    logger.error('inbox migration failed (will retry on next boot): %s', e instanceof Error ? e.message : String(e));
   }
 
   // Every registration is a top-level statement of this `try` — no

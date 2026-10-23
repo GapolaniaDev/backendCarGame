@@ -18,10 +18,7 @@ import { err, ok, toJson, type Resp } from '../core/response';
 import { parseInput } from '../core/parse_input';
 import { loadLiveopsConfig, type LiveopsConfig } from './config';
 import type { ClientPlatform, LiveopsRegion, LiveopsCalendarEntry } from './types';
-import { claimInbox, listInbox, sendInbox, type InboxMessage } from './messages';
-import { grant } from '../economy/wallet';
-import { addCarToGarage, addCosmeticToBag, readGarage, readGarageObject, writeGarageCreate, writeGarageUpdate, defaultGarage } from '../garage/storage';
-import { getCarsCatalog, getCosmeticsCatalog } from '../garage/catalog';
+import { claimInbox, listInbox, type InboxDelivered, type InboxMessage } from './messages';
 import { liveopsGate } from '../core/liveops';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
@@ -165,9 +162,16 @@ export interface InboxClaimOutput {
   message: InboxMessage;
   newBalance?: { coins: number; gems: number };
   /** Car/cosmetic ids delivered (for client-side confirmation toast). */
-  delivered?: { carId?: string; cosmeticId?: string };
+  delivered?: InboxDelivered;
+  /** Additive (T-17): reward items missing from the catalog, not delivered. */
+  undelivered?: string[];
 }
 
+/**
+ * Pays the reward and marks the message claimed in one transaction
+ * (`claimInbox`, plan T-17): a failed payout leaves it claimable, and
+ * every outcome is an envelope (audit 04 f4).
+ */
 export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
@@ -191,67 +195,26 @@ export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   );
   if (gate !== null) return toJson(gate);
 
-  const result = claimInbox(nk, userId, messageId, Date.now(), (nkArg, uid, changeset, idempKey) => {
-    const grantResp = grant(nkArg, uid, changeset, { reason: 'inbox', sourceId: messageId }, idempKey);
-    if (!grantResp.ok) {
-      // The CAS already succeeded; surface the error so the client retries
-      // and the idempotency key prevents double-credit.
-      throw new Error(`inbox grant failed: ${grantResp.error.code} ${grantResp.error.message}`);
-    }
-    return { coins: grantResp.data.coins, gems: grantResp.data.gems };
-  });
-  if (!result.ok) {
-    return toJson(err(result.code, result.message));
+  let result;
+  try {
+    result = claimInbox(nk, logger, userId, messageId, Date.now());
+  } catch (e) {
+    logger.error('inbox_claim failed user=%s message=%s: %s', userId, messageId, e instanceof Error ? e.message : String(e));
+    return toJson(err('INTERNAL', 'inbox claim failed; nothing was paid and the message is still claimable'));
   }
-
-  // Apply car/cosmetic rewards AFTER the claim CAS so a delivery
-  // failure doesn't roll back the claim (idempotency on the wallet
-  // side keeps coins/gems safe).
-  const delivered: { carId?: string; cosmeticId?: string } = {};
-  const reward = result.message.reward;
-  if (reward !== undefined) {
-    if (typeof reward.carId === 'string' && reward.carId.length > 0) {
-      const car = getCarsCatalog().cars.find((c) => c.id === reward.carId);
-      if (car) {
-        const existing = readGarage(nk, userId);
-        if (existing === null) {
-          // No garage yet — create one with the car as the first owned car.
-          const created = defaultGarage(userId, Date.now());
-          const withCar = addCarToGarage(created, car);
-          writeGarageCreate(nk, withCar);
-        } else {
-          const next = addCarToGarage(existing, car);
-          // Use the read-with-version helper so the CAS write is correct.
-          const read = readGarageWithVersion(nk, userId);
-          if (read !== null) writeGarageUpdate(nk, next, read.version);
-        }
-        delivered.carId = reward.carId;
-      }
-    }
-    if (typeof reward.cosmeticId === 'string' && reward.cosmeticId.length > 0) {
-      const cosmetic = getCosmeticsCatalog().items.find((c) => c.id === reward.cosmeticId);
-      if (cosmetic) {
-        const existing = readGarage(nk, userId);
-        if (existing === null) {
-          writeGarageCreate(nk, defaultGarage(userId, Date.now()));
-        } else {
-          const next = addCosmeticToBag(existing, reward.cosmeticId);
-          const read = readGarageWithVersion(nk, userId);
-          if (read !== null) writeGarageUpdate(nk, next, read.version);
-        }
-        delivered.cosmeticId = reward.cosmeticId;
-      }
-    }
+  if (!result.ok) {
+    return toJson(err(result.code, result.message, result.details));
   }
 
   logger.info(
-    'inbox_claim user=%s message=%s delivered=%j',
-    userId, messageId, delivered,
+    'inbox_claim user=%s message=%s paid=%j delivered=%j',
+    userId, messageId, result.message.reward ?? null, result.delivered ?? {},
   );
   const out: InboxClaimOutput = {
     message: result.message,
     ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
-    ...(Object.keys(delivered).length > 0 ? { delivered } : {}),
+    ...(result.delivered !== undefined ? { delivered: result.delivered } : {}),
+    ...(result.undelivered !== undefined ? { undelivered: result.undelivered } : {}),
   };
   return toJson(ok(out));
 };
@@ -260,7 +223,3 @@ export const inbox_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
 export const inbox_list: RpcHandler = withRuntime(inbox_list_impl);
 export const inbox_claim: RpcHandler = withRuntime(inbox_claim_impl);
 
-/** Read garage with version (thin wrapper that returns null on miss). */
-function readGarageWithVersion(nk: INakama, userId: string): { value: import('../garage/types').Garage; version: string } | null {
-  return readGarageObject(nk, userId);
-}

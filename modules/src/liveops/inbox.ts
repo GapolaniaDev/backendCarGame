@@ -1,137 +1,93 @@
-// Phase 4 liveops inbox. Server-owned "reward bucket" the lazy-close
-// path writes into after every season end, and future give-back
-// rewards will reuse. The client reads its own inbox via
-// `nk.storageRead` with its userId; the server writes via `nk.storageWrite`
-// with perms { read: 1 (owner), write: 1 (owner) }.
+// Reward senders → the player's inbox (plan T-17, audit 04 f3).
 //
-// Storage layout:
-//   collection: `liveops_inbox`
-//   key:        `${userId}/${rewardId}`
-//   userId:     `userId` (owner — only they may read/write directly)
-//   permissionRead:  1 (owner)
-//   permissionWrite: 1 (owner)
-//
-// Phase 4 Chunk 6 ships `sendReward` + `listInbox` + a small claims
-// helper. The handler-side `inbox_get` RPC lands in a later chunk.
+// Before T-17 these wrote to a separate `liveops_inbox` collection that
+// no RPC read, so ranked season rewards could never be claimed and every
+// other notice was lost. Both helpers now write the single `inbox`
+// (`messages.ts`) that `inbox_list` / `inbox_claim` serve:
+//   - `sendReward`: a CLAIMABLE reward the server has not paid (ranked
+//     season rewards); `inbox_claim` pays it once;
+//   - `sendNotice`: a reward the caller ALREADY delivered (tournament
+//     prizes and refunds, event bonuses, IAP, ads, subscriptions);
+//     claiming only acknowledges it, so nothing is paid twice.
+// Message ids are the senders' deterministic reward ids, so re-running a
+// sender is a no-op.
 
 import type { INakama } from '../nkruntime';
-import type { InboxEntry, InboxRewardPayload, InboxRewardType } from '../ranked/types';
-import { listStorage } from '../core/storage';
+import type { InboxRewardPayload as LegacyPayload, InboxRewardType } from '../ranked/types';
+import { sendInbox, type InboxRewardPayload, type SendInboxResult } from './messages';
 
-export const INBOX_COLLECTION = 'liveops_inbox';
-export const INBOX_OWNER_READ = 1; // owner-only read
-export const INBOX_OWNER_WRITE = 1; // owner-only write
+/** The pre-T-17 reward bucket, read only by the boot migration and the account purge. */
+export const LEGACY_INBOX_COLLECTION = 'liveops_inbox';
 
-/** Composite key for a single inbox entry. */
-export function inboxKey(userId: string, rewardId: string): string {
-  return `${userId}/${rewardId}`;
+const TITLES: Record<InboxRewardType, string> = {
+  season_gold: 'Season reward: Gold',
+  season_silver: 'Season reward: Silver',
+  season_bronze: 'Season reward: Bronze',
+  season_compensation: 'Season compensation',
+  tournament_prize: 'Tournament prize',
+  tournament_voided: 'Tournament cancelled',
+  event_xp_applied: 'Event bonus',
+  iap_purchase: 'Purchase delivered',
+  iap_refund: 'Purchase refunded',
+  subscription_expired: 'Subscription expired',
+  subscription_expiring_soon: 'Subscription expiring soon',
+  subscription_renewed: 'Subscription renewed',
+  ad_reward: 'Ad reward',
+};
+
+export function inboxTitle(type: InboxRewardType): string {
+  return TITLES[type] ?? 'Reward';
 }
 
-/**
- * Server-side: write a reward entry to `userId`'s inbox.
- *
- * Idempotency: the runtime refuses a write when a record with the
- * same `(userId, rewardId)` already exists with a different value —
- * but the lazy-close path uses deterministic reward ids
- * (`${seasonId}-${rank}`) so re-running the close is safe (the
- * second call sees `meta.rewardsDistributed === true` and bails
- * before reaching this helper).
- *
- * The stub `nk.storageWrite` doesn't enforce uniqueness, so the
- * caller must guard re-entry via the season-meta CAS.
- */
+/** A sender payload as an inbox reward (`cosmetics[]` → `cosmeticId` + `cosmeticIds`). */
+export function toInboxReward(payload: LegacyPayload & { gems?: number }): InboxRewardPayload | undefined {
+  const out: InboxRewardPayload = {};
+  if (typeof payload.coins === 'number' && payload.coins > 0) out.coins = payload.coins;
+  if (typeof payload.gems === 'number' && payload.gems > 0) out.gems = payload.gems;
+  const cosmetics = (payload.cosmetics ?? []).filter((c): c is string => typeof c === 'string' && c.length > 0);
+  if (cosmetics.length > 0) out.cosmeticId = cosmetics[0] as string;
+  if (cosmetics.length > 1) out.cosmeticIds = cosmetics;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A claimable reward: `inbox_claim` pays it (once). */
 export function sendReward(
   nk: INakama,
   userId: string,
   type: InboxRewardType,
-  payload: InboxRewardPayload,
+  payload: LegacyPayload & { gems?: number },
   rewardId: string,
   nowMs: number,
   expiresAt: number | null = null,
-): { version: string } {
-  const entry: InboxEntry = {
-    schemaVersion: 1,
-    rewardId,
-    userId,
-    type,
-    payload,
-    createdAt: nowMs,
-    expiresAt,
-    claimed: false,
-  };
-  const acks = nk.storageWrite([
-    {
-      collection: INBOX_COLLECTION,
-      key: inboxKey(userId, rewardId),
-      userId,
-      value: entry as unknown as Record<string, unknown>,
-      permissionRead: INBOX_OWNER_READ,
-      permissionWrite: INBOX_OWNER_WRITE,
-    },
-  ]);
-  const first = acks[0];
-  if (!first) {
-    throw new Error(`sendReward: storageWrite returned no ack for ${userId}/${rewardId}`);
-  }
-  return { version: first.version };
+): SendInboxResult {
+  const reward = toInboxReward(payload);
+  return sendInbox(nk, userId, {
+    id: rewardId,
+    kind: reward !== undefined ? 'reward' : 'system',
+    title: inboxTitle(type),
+    body: payload.note ?? '',
+    ...(reward !== undefined ? { reward } : {}),
+    source: type,
+    ...(expiresAt !== null ? { expiresAt } : {}),
+  }, nowMs);
 }
 
-/**
- * Read every reward in `userId`'s inbox. Returns an array sorted by
- * `createdAt` descending (newest on top, like a feed).
- */
-export function listInbox(nk: INakama, userId: string): InboxEntry[] {
-  const objects = listStorage(nk, {
-    collection: INBOX_COLLECTION,
-    userId,
-  });
-  const out: InboxEntry[] = [];
-  for (const o of objects.objects) {
-    const v = o.value as Partial<InboxEntry>;
-    if (
-      typeof v.rewardId === 'string' &&
-      typeof v.userId === 'string' &&
-      typeof v.type === 'string' &&
-      typeof v.payload === 'object' &&
-      v.payload !== null
-    ) {
-      out.push(v as InboxEntry);
-    }
-  }
-  out.sort((a, b) => b.createdAt - a.createdAt);
-  return out;
-}
-
-/**
- * Mark a reward as claimed. CAS-free today (single-owner write under
- * the perms layer); a future chunk may add CAS for replay safety.
- */
-export function claimReward(
+/** A notice of a reward the caller already delivered: claiming pays nothing. */
+export function sendNotice(
   nk: INakama,
   userId: string,
-  rewardId: string,
-  expectedVersion: string,
-): { version: string } {
-  const reads = nk.storageRead([
-    { collection: INBOX_COLLECTION, key: inboxKey(userId, rewardId), userId },
-  ]);
-  const obj = reads[0];
-  if (!obj) throw new Error(`claimReward: ${userId}/${rewardId} not found`);
-  const entry = obj.value as InboxEntry;
-  if (entry.claimed) return { version: expectedVersion };
-  const next: InboxEntry = { ...entry, claimed: true };
-  const acks = nk.storageWrite([
-    {
-      collection: INBOX_COLLECTION,
-      key: inboxKey(userId, rewardId),
-      userId,
-      value: next as unknown as Record<string, unknown>,
-      permissionRead: INBOX_OWNER_READ,
-      permissionWrite: INBOX_OWNER_WRITE,
-      version: expectedVersion,
-    },
-  ]);
-  const first = acks[0];
-  if (!first) throw new Error('claimReward: storageWrite returned no ack');
-  return { version: first.version };
+  type: InboxRewardType,
+  payload: LegacyPayload & { gems?: number },
+  noticeId: string,
+  nowMs: number,
+): SendInboxResult {
+  const granted = toInboxReward(payload);
+  return sendInbox(nk, userId, {
+    id: noticeId,
+    kind: 'system',
+    title: inboxTitle(type),
+    body: payload.note ?? '',
+    ...(granted !== undefined ? { granted } : {}),
+    source: type,
+  }, nowMs);
 }

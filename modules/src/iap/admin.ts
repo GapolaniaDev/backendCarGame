@@ -24,7 +24,7 @@ import { serverNowMs } from '../core/time';
 import { assertAdminKey, withoutAdminKey } from '../admin/auth';
 import { emit, emitAdminAction } from '../core/admin/analytics';
 import { spend, type WalletView } from '../economy/wallet';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { readPurchaseWithVersion, writePurchaseUpdate } from './purchase_repo';
 import {
   readFraudFlagWithVersion,
@@ -297,7 +297,7 @@ export const admin_iap_refund_impl: RpcHandler = (ctx, logger, nk, body) => {
     return fail('INTERNAL', e instanceof Error ? e.message : 'storage write failed');
   }
   // Inbox notification to the user.
-  sendReward(
+  sendNotice(
     nk,
     userId,
     'iap_refund',

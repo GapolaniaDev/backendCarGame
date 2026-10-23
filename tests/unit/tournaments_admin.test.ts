@@ -345,11 +345,11 @@ describe('admin_tournament_release_prizes (Phase 8 Chunk 7)', () => {
       permissionRead: 1, permissionWrite: 0,
     }]);
     call(env, admin_tournament_release_prizes_impl, { adminKey: ADMIN_KEY, tournamentId: 'a' });
-    const inbox = env.fake.store.get('liveops_inbox/fast/tournament:a:prize:fast:1/fast');
+    const inbox = env.fake.store.get('inbox/fast/tournament:a:prize:fast:1/fast');
     expect(inbox).toBeDefined();
-    const v = inbox?.value as { payload: { coins?: number; note?: string } };
-    expect(v.payload.coins).toBe(100);
-    expect(v.payload.note).toContain('rank 1');
+    const v = inbox?.value as { granted: { coins?: number }; body: string };
+    expect(v.granted.coins).toBe(100);
+    expect(v.body).toContain('rank 1');
   });
 });
 
@@ -400,12 +400,12 @@ describe('admin_tournament_void_refund (Phase 8 Chunk 7)', () => {
       createdAt: 0, updatedAt: 0, paidEntryFee: 100,
     });
     call(env, admin_tournament_void_refund_impl, { adminKey: ADMIN_KEY, tournamentId: 'a', reason: 'duplicate' });
-    const inbox = env.fake.store.get('liveops_inbox/u1/tournament:a:void:u1/u1');
+    const inbox = env.fake.store.get('inbox/u1/tournament:a:void:u1/u1');
     expect(inbox).toBeDefined();
-    const v = inbox?.value as { type: string; payload: { coins: number; note: string } };
-    expect(v.type).toBe('tournament_voided');
-    expect(v.payload.coins).toBe(100);
-    expect(v.payload.note).toContain('duplicate');
+    const v = inbox?.value as { source: string; granted: { coins: number }; body: string };
+    expect(v.source).toBe('tournament_voided');
+    expect(v.granted.coins).toBe(100);
+    expect(v.body).toContain('duplicate');
   });
 
   it('marks tournament voided=true, state=closed', () => {
@@ -468,7 +468,7 @@ describe('admin_tournament_cancel (Phase 8 Chunk 7)', () => {
     const now = Date.now();
     seedTournament(env.nk, { id: 'a', endsAt: now + 3600_000 });
     call(env, admin_tournament_cancel_impl, { adminKey: ADMIN_KEY, tournamentId: 'a', reason: 'r' });
-    const inbox = Array.from(env.fake.store.keys()).filter((k) => k.startsWith('liveops_inbox/'));
+    const inbox = Array.from(env.fake.store.keys()).filter((k) => k.startsWith('inbox/'));
     expect(inbox).toEqual([]);
   });
 

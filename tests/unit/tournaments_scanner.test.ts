@@ -115,7 +115,7 @@ describe('tournament scanner (Phase 8 Chunk 6)', () => {
     const inbox = fake.store;
     let inboxCount = 0;
     inbox.forEach((_v, k) => {
-      if (k.startsWith('liveops_inbox/')) inboxCount += 1;
+      if (k.startsWith('inbox/')) inboxCount += 1;
     });
     expect(inboxCount).toBe(3);
   });

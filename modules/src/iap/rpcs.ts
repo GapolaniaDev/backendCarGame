@@ -31,7 +31,7 @@ import {
   defaultGarage,
   addCosmeticToBag,
 } from '../garage/storage';
-import { sendReward } from '../liveops/inbox';
+import { sendNotice } from '../liveops/inbox';
 import { emit } from '../core/admin/analytics';
 import { loadLiveopsConfig } from '../liveops/config';
 import { findIapPackByProductId } from './catalog';
@@ -415,7 +415,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
 
   // 9. Inbox notification.
-  sendReward(
+  sendNotice(
     nk,
     userId,
     'iap_purchase',
