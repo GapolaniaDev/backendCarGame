@@ -33,14 +33,24 @@ export interface EventListOutput {
   now: number;
 }
 
-export const event_list_impl = (ctx: IContext, logger: ILogger, nk: INakama, body: string): string => {
+/**
+ * `nowMs` is injectable so tests pin the clock; Nakama calls the RPC with
+ * four arguments, so the runtime always uses the server clock.
+ */
+export const event_list_impl = (
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+  nowMs: () => number = serverNowMs,
+): string => {
   const parsed = parseInput(body);
   if (!parsed.ok) return toJson(parsed.value);
 
   const caller = requireCaller(ctx, parsed.value);
   if (!caller.ok) return toJson(caller.error);
 
-  const nowUtc = serverNowMs();
+  const nowUtc = nowMs();
   const all = getEventsCatalog();
   const active = new Set(activeEvents(nowUtc).map((e) => e.id));
 

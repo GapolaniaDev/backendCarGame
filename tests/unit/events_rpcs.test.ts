@@ -55,6 +55,10 @@ const FULL: RawEventsFile = {
   ],
 };
 
+// Pinned clock: inside the 2026-10-08..2026-10-15 window, so evt_xp2,
+// evt_featured and evt_offer are live and evt_future is not.
+const NOW_MS = Date.parse('2026-10-10T12:00:00Z');
+
 function setupCatalog(): void {
   _resetActiveEventsCatalogForTests();
   loadEventsCatalog(SILENT_LOGGER, FULL, null);
@@ -62,7 +66,7 @@ function setupCatalog(): void {
 
 function callRpc(nk: INakama, ctx: IContext, body: unknown): { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } } {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  const raw = event_list(ctx, SILENT_LOGGER, nk, payload);
+  const raw = event_list(ctx, SILENT_LOGGER, nk, payload, () => NOW_MS);
   return JSON.parse(raw) as { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
 }
 
@@ -82,7 +86,7 @@ describe('event_list RPC (Phase 8 Chunk 8)', () => {
     if (!r.ok) return;
     const data = r.data as { events: Array<{ id: string; isActive: boolean }>; now: number };
     expect(data.events).toHaveLength(4);
-    expect(typeof data.now).toBe('number');
+    expect(data.now).toBe(NOW_MS);
   });
 
   it('marks currently-live events as isActive=true', () => {
@@ -90,9 +94,6 @@ describe('event_list RPC (Phase 8 Chunk 8)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const data = r.data as { events: Array<{ id: string; isActive: boolean }> };
-    // serverNowMs() uses the real wall clock; on any day within the
-    // 2026-10-08..2026-11-02 window, all 3 of those events are
-    // active and evt_future is not.
     const live = data.events.find((e) => e.id === 'evt_xp2')!;
     expect(live.isActive).toBe(true);
   });
