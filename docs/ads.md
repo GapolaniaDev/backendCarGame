@@ -222,7 +222,8 @@ limiters).
   `ad_watch_granted` (the new clean name).
 - **Cooldown rows are per-(user, tier)** — not per-impression. A
   rejected ad does NOT reset the cooldown.
-- **Inbox message is idempotent** — the inbox `sendReward` call uses
+- **Inbox message is idempotent** — the inbox `sendNotice` call (a notice
+  of the already-paid reward, plan T-17) uses
   the same idempotency key as the wallet grant (`ad_watch:{impressionId}`).
   The same impression never produces two inbox messages.
 - **`ad_watched` is a home-only RPC** — D77. The maintenance gate

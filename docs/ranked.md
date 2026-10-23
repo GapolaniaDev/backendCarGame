@@ -27,7 +27,7 @@ closed.
 | `ranked_seasons_meta/{seasonId}` | `SYSTEM_USER_ID` | 0/0 | 1 | Server-owned. One per season. |
 | `ranked_{seasonId}` leaderboard | server | n/a | n/a | One per season; **desc** by rating (rank 1 = best rating), `set`, from `leaderboards.json` `seasonScoped.ranked` (plan T-13). The active season's table is ensured at boot (recreated there if it was created `asc`, R-02); a season minted by a lazy close gets it on its first ranked write. |
 | `abandons/{userId}` | `userId` | 0/0 (server-managed) | 1 | Abandon counter + block stamp. D6. |
-| `inbox/{rewardId}` | `userId` | 0/0 (server-managed) | 1 | Season rewards + future give-backs. |
+| `inbox/{userId}/{rewardId}` | `userId` | 1/0 (owner read, server write) | 1 | Season rewards, claimable with `inbox_claim` (plan T-17; before T-17 they went to `liveops_inbox`, which no RPC read, and are migrated at boot). |
 
 The `RankedRecord` is migrated to the new season on lazy close:
 `rating` carries over, `racesPlayed / wins / topThree` reset to 0,
@@ -125,7 +125,9 @@ Triggered on every `ranked_get` call:
       (best rating first; no standings when the table does not exist).
    b. Compute tier rewards via `computeSeasonRewards` (gold / silver
       / bronze tiers by final rank).
-   c. Send every grant via `sendReward` to `inbox/{rewardId}`.
+   c. Send every grant via `sendReward` to the player's inbox
+      (`inbox/{userId}/{rewardId}`, claimable: the close pays nothing,
+      `inbox_claim` pays once).
    d. CAS-update the meta to `{ status: 'closed',
       rewardsDistributed: true }`.
    e. Create the next season's meta with `nextSeasonId = season_N+1`,

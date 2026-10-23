@@ -137,7 +137,8 @@ the scanner:
    prizes via `distributePrizes(t, lb, now)` (top-N per `prizeTable`).
 4. For each row, calls `grantTournamentPrize(nk, tid, row, now)`:
    - `wallet.grant(reason='tournament_prize', idempotencyKey='tournament_prize:{tid}:{uid}:{rank}')`
-   - `inbox.sendReward(type='tournament_prize', idempotencyKey matches)`.
+   - `inbox.sendNotice(type='tournament_prize', idempotencyKey matches)`: a
+     notice in the player's inbox (`granted`, already paid; plan T-17).
 
 Players can submit races via the normal `race_submit_result` with an
 optional `tournamentId` field. The race subscriber (chunk-6) updates

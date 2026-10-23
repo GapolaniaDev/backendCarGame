@@ -1074,10 +1074,14 @@ See `docs/liveops.md`.
 Returns the user's inbox messages (unread + recent claimed). NOT
 maintenance-gated so the badge can render during the splash.
 
+Since T-17 this is the **only** inbox: admin messages, club week prizes
+and ranked season rewards (claimable, `reward`), plus notices of what the
+server already delivered (tournament prizes and refunds, event bonuses,
+IAP, ads, subscriptions: `kind: "system"`, `granted`, no `reward`).
+
 ```json
 // request
 {
-  "callerUserId": "<uuid>",
   "limit":        50,            // optional, default 50, max 100
   "cursor":       "<opaque>",    // optional, for pagination
   "includeClaimed": false        // optional, default false
@@ -1087,19 +1091,28 @@ maintenance-gated so the badge can render during the splash.
 {
   "messages": [
     {
-      "messageId":  "<uuid>",
+      "id":         "season_2-rank-2",
       "kind":       "reward",
-      "title":      "Welcome to Season 3",
-      "body":       "Free 500 coins",
-      "reward":     { "coins": 500 },
-      "createdAt":  "2026-10-01T12:00:00Z",
-      "expiresAt":  "2026-11-01T12:00:00Z",   // 30d retention
-      "claimed":    false,
-      "claimedAt":  null
+      "title":      "Season reward: Silver",
+      "body":       "Season 1 — Silver tier (rank 2-3)",
+      "reward":     { "coins": 2500, "cosmeticId": "..." },
+      "source":     "season_silver",          // additive (T-17)
+      "createdAt":  1760000000000,            // epoch ms
+      "expiresAt":  1762592000000             // 30d retention
+    },
+    {
+      "id":         "tournament:tt_ladder_2026w42:prize:<uuid>:1",
+      "kind":       "system",
+      "title":      "Tournament prize",
+      "body":       "Tournament prize: rank 1",
+      "granted":    { "coins": 400 },         // additive: already paid
+      "source":     "tournament_prize",
+      "createdAt":  1760000000000,
+      "expiresAt":  1762592000000
     }
   ],
-  "unreadCount": 3,
-  "nextCursor":   "<opaque>"     // null when no more
+  "unreadCount": 2,
+  "nextCursor":   ""             // "" when no more
 }
 ```
 
@@ -1110,24 +1123,25 @@ maintenance-gated so the badge can render during the splash.
 
 ### 18.3 `inbox_claim`
 
-Claim the reward attached to a message. Idempotent — calling twice
-credits the reward exactly once (key = `messageId`).
+Claim a message. The payout (coins / gems), the garage items and
+`claimedAt` are **one transaction** (T-17): two concurrent claims pay
+once, and a failed payout writes nothing, so the message stays
+claimable. A notice (no `reward`) is just acknowledged.
 
 ```json
 // request
 {
-  "callerUserId": "<uuid>",
-  "messageId":    "<uuid>",
+  "messageId":    "season_2-rank-2",
   "clientVersion": "1.2.0",     // optional, see §18 top
   "platform":      "ios"        // optional, see §18 top
 }
 
 // response.data
 {
-  "messageId":    "<uuid>",
-  "reward":       { "coins": 500 },
-  "newBalance":   { "coins": 1500, "gems": 25 },
-  "alreadyClaimed": false
+  "message":     { "id": "season_2-rank-2", "claimedAt": 1760000500000, ... },
+  "newBalance":  { "coins": 3500, "gems": 25 },        // when currencies were paid
+  "delivered":   { "cosmeticId": "paint_red_flame" },  // garage items added
+  "undelivered": ["cosmetic:legendary_aether_chassis"] // additive: not in the catalog (logged)
 }
 ```
 
@@ -1135,82 +1149,75 @@ credits the reward exactly once (key = `messageId`).
 |---|---|
 | `UNAUTHENTICATED` | no caller identity |
 | `NOT_FOUND` | unknown messageId OR not in this user's inbox |
-| `GONE` | message past `expiresAt` |
-| `SERVICE_UNAVAILABLE` | maintenance (idempotent retries on next launch) |
+| `CONFLICT` | already claimed (also the loser of two concurrent claims), or a concurrent update (`details.reason = VERSION_CONFLICT`: retry) |
+| `BAD_REQUEST` | message past `expiresAt` (the message says "expired") |
+| `INTERNAL` | the payout failed: nothing written, still claimable |
+| `SERVICE_UNAVAILABLE` | maintenance |
 
 ### 18.4 `account_link`
 
-Attach an external identity (Apple / Google / email) to the
-device-id account. Returns `{linked:true, bonusClaimed:true,
-newBalance:{...}}` on success, or `{linked:false, conflict:{...}}` if
-the provider is already linked elsewhere.
+Linking is **native** (T-15): the client links with the Nakama client
+API (`LinkGoogleAsync`, `LinkAppleAsync`, `LinkEmailAsync`,
+`LinkCustomAsync`, `LinkSteamAsync`, `LinkFacebookAsync`) and Nakama
+verifies the identity. `account_link` then credits the one-time 500-coin
+bonus. It takes no token: a body with `token` is rejected
+(`BAD_REQUEST`, `details.reason = NATIVE_LINK_REQUIRED`).
 
 ```json
 // request
+{ "provider": "google" }   // optional: must be linked to the account
+
+// response.data
 {
-  "callerUserId":  "<uuid>",
-  "provider":      "apple" | "google" | "email" | "custom",
-  "token":         "<provider-specific opaque>",
-  "clientVersion": "1.2.0",
-  "platform":      "ios"
-}
-
-// response.data — happy path
-{
-  "linked":         true,
-  "bonusClaimed":   true,
-  "newBalance":     { "coins": 500, "gems": 0 }
-}
-
-// response.data — conflict
-{
-  "linked":  false,
-  "conflict": {
-    "conflictToken": "<opaque>",
-    "otherUserId":   "<uuid>",
-    "otherProfile":  { "displayName": "...", "avatarUrl": "..." },
-    "expiresAt":     "2026-10-08T12:00:00Z"
-  }
-}
-```
-
-The 500-coin bonus is granted **once per profile** (gated by
-`profile.accountLinkBonusClaimed`). See `docs/account-linking.md` §1.
-
-### 18.5 `account_link_resolve_conflict`
-
-Resolve a conflict from `account_link`. Two choices:
-`'link'` (keep current, purge the other account) or `'cancel'`.
-
-```json
-// request
-{
-  "callerUserId":  "<uuid>",
-  "conflictToken": "<from prior account_link conflict>",
-  "choice":        "link" | "cancel",
-  "confirmText":   "DELETE-OTHER-ACCOUNT",   // required when choice='link'
-  "clientVersion": "1.2.0",
-  "platform":      "ios"
-}
-
-// response.data — cancelled
-{ "resolved": "cancelled" }
-
-// response.data — linked
-{
-  "resolved":                "linked",
-  "affectedAccountDeleted":  true,
-  "bonusClaimed":            true,
-  "newBalance":              { "coins": 500, "gems": 0 }
+  "linked":       true,
+  "providers":    ["google"],
+  "bonusClaimed": true,
+  "newBalance":   { "coins": 500, "gems": 0 }
 }
 ```
 
 | Error | When |
 |---|---|
+| `BAD_REQUEST` | `token` sent (NATIVE_LINK_REQUIRED), unknown provider |
+| `CONFLICT` | `details.reason = NOT_LINKED`: no linked identity, or `provider` not linked |
+| `NOT_FOUND` | the account no longer exists |
+
+See `docs/account-linking.md` §1.
+
+### 18.5 `account_link_resolve_conflict`
+
+A native link of an identity owned by another account fails with HTTP
+409. The client authenticates with that identity (`create: false`) to
+get a session of the other account, then:
+
+```json
+// 1. with the OTHER account's session
+{ "step": "open" }
+// response.data
+{
+  "conflictToken": "<uuid>",
+  "expiresAt":     "2026-10-22T12:10:00.000Z",     // 10 minutes
+  "target": { "userId": "<uuid>", "createdAt": 0,
+              "profile": { "name": "...", "level": 3, "xp": 120, "coins": 900, "gems": 4 } }
+}
+
+// 2. with the session that KEEPS the identity
+{ "step": "resolve", "conflictToken": "<uuid>", "choice": "link", "confirmText": "TRANSFER" }
+// response.data
+{ "resolved": "linked", "affectedAccountDeleted": true, "relinkProviders": ["google"] }
+// or choice "cancel" → { "resolved": "cancelled" }
+```
+
+After `link` the other account is deleted with the full account purge
+(§18.6) and its identities are free: link them again natively and call
+`account_link` for the bonus.
+
+| Error | When |
+|---|---|
 | `UNAUTHENTICATED` | no caller identity |
-| `BAD_REQUEST` | missing `confirmText` on `'link'`, malformed payload |
-| `NOT_FOUND` | unknown `conflictToken` OR expired (>24h) |
-| `FORBIDDEN` | `conflictToken` belongs to another user |
+| `BAD_REQUEST` | missing fields, `confirmText` not `TRANSFER`, resolving from the account being deleted |
+| `CONFLICT` | `open` without a linked identity (`NOT_LINKED`) |
+| `NOT_FOUND` | unknown, used or expired `conflictToken`; the other account is gone |
 
 ### 18.6 `account_delete`
 
@@ -1220,7 +1227,6 @@ session token still rejects, but an ops pause does not.
 ```json
 // request
 {
-  "callerUserId": "<uuid>",
   "confirmText":   "DELETE"   // sentinel — exact match
 }
 
@@ -1228,27 +1234,30 @@ session token still rejects, but an ops pause does not.
 {
   "deletedAt": "2026-10-07T12:00:00Z",
   "summary": {
-    "storageDeleted":      7,
-    "collectionsAffected": ["profiles","loadout","garage","ranked_records", ...],
+    "storageDeleted":      42,
+    "collectionsAffected": ["garage","idem","inbox","profiles", ...],
+    "referencesRemoved":   3,                  // friends' mirror edges, invites sent, ...
     "boardsDeleted":       3,
-    "boardsAffected":      ["ranked_season_2","wins_season_2", ...],
-    "unlinkedAuths":       2,
-    "wasClubLeaderOf":     [],          // always [] in v1 (clubs = Phase 7)
+    "boardsAffected":      ["lap_neon_blvd","time_neon_blvd","wins_week"],
+    "unlinkedAuths":       ["google"],
+    "wasClubLeaderOf":     [],
     "abandonedFromRaces":  0
   }
 }
 ```
 
-Cascade: profiles, loadout, garage, ranked_records, abandons, every
-linked custom auth, every leaderboard record. Skips the `pc-account`
-config and `abandons` aggregate counters.
+Cascade (T-16): every collection of the registry `core/collections.ts`
+(owned objects, system rows keyed by the user, other players' references),
+every leaderboard record, then `accountDeleteId` (identities, friends,
+group memberships, wallet ledger).
 
 | Error | When |
 |---|---|
 | `UNAUTHENTICATED` | no caller identity |
 | `BAD_REQUEST` | `confirmText !== 'DELETE'` |
+| `INTERNAL` | the Nakama account delete failed |
 
-See `docs/account-linking.md` §6 for the cascade contract.
+See `docs/account-linking.md` §3–§4 for the cascade contract.
 
 ### 18.7 `relay_token` (removed)
 

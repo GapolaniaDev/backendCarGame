@@ -152,7 +152,7 @@ paths:
         - "Config & LiveOps"
       summary: "Lista el buzón del jugador"
       operationId: "inbox_list"
-      description: "Errores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `BAD_REQUEST` (payload inválido).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"inbox_list\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<InboxListData>>(rpc.Payload)`."
+      description: "T-17: the single inbox: admin messages, club week prizes and ranked season rewards (claimable), plus notices of what the server already delivered (tournament prizes and refunds, event bonuses, IAP, ads, subscriptions).\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `BAD_REQUEST` (payload inválido).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"inbox_list\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<InboxListData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -203,7 +203,7 @@ paths:
         - "Config & LiveOps"
       summary: "Reclama la recompensa de un mensaje (idempotente)"
       operationId: "inbox_claim"
-      description: "Errores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `NOT_FOUND` (no existe), `SERVICE_UNAVAILABLE` (mantenimiento / config).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"inbox_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<InboxClaimData>>(rpc.Payload)`."
+      description: "T-17: the payout, the garage items and `claimedAt` are one transaction: two concurrent claims pay once (the other gets `CONFLICT`), and a failed payout writes nothing, so the message stays claimable. Every outcome is an envelope.\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `NOT_FOUND` (no existe), `CONFLICT` (already claimed, or a concurrent update: retry), `BAD_REQUEST` (expired: the message says so), `INTERNAL` (payout failed: still claimable), `SERVICE_UNAVAILABLE` (mantenimiento / config).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"inbox_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<InboxClaimData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -252,9 +252,9 @@ paths:
     post:
       tags:
         - "Account"
-      summary: "Vincula Apple/Google/email al device-id (bonus 500 coins una vez)"
+      summary: "Credits the one-time link bonus after a native link (500 coins once)"
       operationId: "account_link"
-      description: "Si `linked=false` hay conflicto: resolver con `account_link_resolve_conflict` (token válido 24h).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"account_link\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountLinkData>>(rpc.Payload)`."
+      description: "T-15: linking is native (P-02). The client links with the Nakama client API; this RPC only reads the identities Nakama verified and credits the bonus once (profile flag and coins in one wallet transaction). Errors: `BAD_REQUEST` (a `token` was sent: NATIVE_LINK_REQUIRED; unknown provider), `CONFLICT` with `details.reason = NOT_LINKED` (no linked identity, or `provider` not linked), `NOT_FOUND` (account gone). A native link of an identity owned by another account fails with HTTP 409 AlreadyExists: resolve it with `account_link_resolve_conflict`.\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"account_link\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountLinkData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -303,9 +303,9 @@ paths:
     post:
       tags:
         - "Account"
-      summary: "Resuelve un conflicto de vinculación"
+      summary: "Resolves a native link conflict with sessions of both accounts (T-15)"
       operationId: "account_link_resolve_conflict"
-      description: "Errores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"account_link_resolve_conflict\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountLinkResolveConflictData>>(rpc.Payload)`."
+      description: "T-15: 1) the native link fails with AlreadyExists; 2) the client authenticates with that identity (`create: false`) and calls step `open` with that session, which returns `AccountLinkConflict`; 3) with the original session it calls step `resolve` with `choice: link` + `confirmText: TRANSFER` (the other account is deleted with the full account purge, which frees its identities) or `choice: cancel`; 4) after `link`, it links the identities again natively. Errors: `NOT_FOUND` (unknown, used or expired token; account gone), `BAD_REQUEST` (missing fields, confirmText, resolving from the account being deleted), `CONFLICT` NOT_LINKED (open without a linked identity).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"account_link_resolve_conflict\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountLinkResolveConflictData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -356,7 +356,7 @@ paths:
         - "Account"
       summary: "Borrado de cuenta (GDPR)"
       operationId: "account_delete"
-      description: "IRREVERSIBLE. No bloqueado por mantenimiento.\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `BAD_REQUEST` (payload inválido).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"account_delete\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountDeleteData>>(rpc.Payload)`."
+      description: "T-16: purges every storage collection of the central registry (core/collections.ts), the user's leaderboard records and then the Nakama account (identities, friends, group memberships, wallet ledger). Not maintenance-gated (right to erasure).\n\nIRREVERSIBLE. No bloqueado por mantenimiento.\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `BAD_REQUEST` (payload inválido).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"account_delete\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AccountDeleteData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -4082,6 +4082,11 @@ components:
           type: "string"
         carId:
           type: "string"
+        cosmeticIds:
+          type: "array"
+          items:
+            type: "string"
+          description: "T-17, additive (inbox): every cosmetic when there is more than one; cosmeticId is the first."
     CarClassId:
       type: "string"
       enum:
@@ -4764,47 +4769,77 @@ components:
     InboxMessage:
       type: "object"
       properties:
-        messageId:
+        id:
           type: "string"
         kind:
           type: "string"
+          enum:
+            - "reward"
+            - "system"
         title:
           type: "string"
         body:
           type: "string"
         reward:
           "$ref": "#/components/schemas/Reward"
+          description: "Claimable reward (kind=reward): paid by inbox_claim."
+        granted:
+          "$ref": "#/components/schemas/Reward"
+          description: "T-17, additive: a notice of what the server already delivered (tournament prizes, refunds, events, IAP, ads); claiming pays nothing."
+        source:
+          type: "string"
+          description: "T-17, additive: sender reward type (season_gold, tournament_prize, iap_refund...)."
         createdAt:
-          type: "string"
-          format: "date-time"
+          type: "integer"
+          description: "Epoch ms."
         expiresAt:
-          type: "string"
-          format: "date-time"
-        claimed:
-          type: "boolean"
+          type: "integer"
+          description: "Epoch ms (30 days after createdAt)."
         claimedAt:
-          oneOf:
-            - type: "string"
-            - type: "null"
+          type: "integer"
+          description: "Epoch ms; absent until claimed."
+      required:
+        - "id"
+        - "kind"
+        - "title"
+        - "body"
+        - "createdAt"
     AccountLinkConflict:
       type: "object"
+      description: "T-15: returned by step `open` (session of the account that owns the identity)."
       properties:
         conflictToken:
           type: "string"
-        otherUserId:
-          type: "string"
-        otherProfile:
-          type: "object"
-          properties:
-            displayName:
-              type: "string"
-            avatarUrl:
-              oneOf:
-                - type: "string"
-                - type: "null"
+          description: "Single use; pass it with step `resolve` from the session that stays."
         expiresAt:
           type: "string"
           format: "date-time"
+          description: "10 minutes after open."
+        target:
+          type: "object"
+          description: "The account deleted on `choice: link`."
+          properties:
+            userId:
+              type: "string"
+            createdAt:
+              type: "integer"
+            profile:
+              type: "object"
+              properties:
+                name:
+                  type: "string"
+                level:
+                  type: "integer"
+                xp:
+                  type: "integer"
+                coins:
+                  type: "integer"
+                gems:
+                  type: "integer"
+      required:
+        - "conflictToken"
+        - "expiresAt"
+        - "target"
     ConfigGetRequest:
       type: "object"
       properties:
@@ -4967,16 +5002,32 @@ components:
     InboxClaimData:
       type: "object"
       properties:
-        messageId:
-          type: "string"
-        reward:
-          "$ref": "#/components/schemas/Reward"
+        message:
+          "$ref": "#/components/schemas/InboxMessage"
         newBalance:
           "$ref": "#/components/schemas/Wallet"
-        alreadyClaimed:
-          type: "boolean"
+          description: "Present when coins or gems were paid."
+        delivered:
+          type: "object"
+          properties:
+            carId:
+              type: "string"
+            cosmeticId:
+              type: "string"
+            cosmeticIds:
+              type: "array"
+              items:
+                type: "string"
+        undelivered:
+          type: "array"
+          items:
+            type: "string"
+          description: "T-17, additive: reward items missing from the catalog (`cosmetic:<id>`, `car:<id>`), not delivered and logged as errors."
+      required:
+        - "message"
     AccountLinkRequest:
       type: "object"
+      description: "T-15 (P-02): no token. Link natively first (Nakama client LinkGoogleAsync / LinkAppleAsync / LinkEmailAsync / LinkCustomAsync / LinkSteamAsync / LinkFacebookAsync); Nakama verifies the provider token. Sending `token` is rejected with BAD_REQUEST `details.reason = NATIVE_LINK_REQUIRED`."
       properties:
         callerUserId:
           type: "string"
@@ -5000,30 +5051,32 @@ components:
           enum:
             - "apple"
             - "google"
+            - "facebook"
+            - "facebook_instant_game"
+            - "gamecenter"
+            - "steam"
             - "email"
             - "custom"
-        token:
-          type: "string"
-          description: "Token opaco del proveedor"
-      required:
-        - "provider"
-        - "token"
+          description: "Optional: the provider just linked natively; must be linked to the account."
     AccountLinkData:
-      oneOf:
-        - type: "object"
-          properties:
-            linked:
-              const: true
-            bonusClaimed:
-              type: "boolean"
-            newBalance:
-              "$ref": "#/components/schemas/Wallet"
-        - type: "object"
-          properties:
-            linked:
-              const: false
-            conflict:
-              "$ref": "#/components/schemas/AccountLinkConflict"
+      type: "object"
+      properties:
+        linked:
+          const: true
+        providers:
+          type: "array"
+          items:
+            type: "string"
+          description: "Identities Nakama reports as linked (accountGetId)."
+        bonusClaimed:
+          type: "boolean"
+          description: "True when the one-time 500-coin bonus was credited on this call."
+        newBalance:
+          "$ref": "#/components/schemas/Wallet"
+      required:
+        - "linked"
+        - "providers"
+        - "bonusClaimed"
     AccountLinkResolveConflictRequest:
       type: "object"
       properties:
@@ -5044,21 +5097,28 @@ components:
             - "macos"
             - "linux"
           description: "Plataforma del cliente (gate de versión mínima)."
+        step:
+          type: "string"
+          enum:
+            - "open"
+            - "resolve"
+          default: "resolve"
+          description: "`open`: call with the session obtained by authenticating with the conflicting identity (`create: false`, Nakama verifies it); records that account. `resolve`: call with the session of the account that keeps the identity."
         conflictToken:
           type: "string"
+          description: "Required with step `resolve`."
         choice:
           type: "string"
           enum:
             - "link"
             - "cancel"
+          description: "Required with step `resolve`."
         confirmText:
           type: "string"
-          description: "Debe ser `DELETE-OTHER-ACCOUNT` si choice=link"
-      required:
-        - "conflictToken"
-        - "choice"
+          description: "Must be `TRANSFER` when choice=link."
     AccountLinkResolveConflictData:
       oneOf:
+        - "$ref": "#/components/schemas/AccountLinkConflict"
         - type: "object"
           properties:
             resolved:
@@ -5068,11 +5128,12 @@ components:
             resolved:
               const: "linked"
             affectedAccountDeleted:
-              type: "boolean"
-            bonusClaimed:
-              type: "boolean"
-            newBalance:
-              "$ref": "#/components/schemas/Wallet"
+              const: true
+            relinkProviders:
+              type: "array"
+              items:
+                type: "string"
+              description: "Identities that were on the deleted account: link them again natively, then call account_link for the bonus."
     AccountDeleteRequest:
       type: "object"
       properties:
@@ -5097,6 +5158,7 @@ components:
           properties:
             storageDeleted:
               type: "integer"
+              description: "T-16: objects owned by the user or keyed by them, across every collection of core/collections.ts."
             collectionsAffected:
               type: "array"
               items:
@@ -5108,13 +5170,20 @@ components:
               items:
                 type: "string"
             unlinkedAuths:
-              type: "integer"
+              type: "array"
+              items:
+                type: "string"
+              description: "Identities that were linked; deleting the account frees them."
             wasClubLeaderOf:
               type: "array"
               items:
                 type: "string"
+              description: "Clubs the user created."
             abandonedFromRaces:
               type: "integer"
+            referencesRemoved:
+              type: "integer"
+              description: "T-16: objects of other owners rewritten or deleted because they named the user (friend mirror edges, invites sent, rivals lists, tournament snapshots, chat messages)."
     ProfileGetRequest:
       type: "object"
       properties:
