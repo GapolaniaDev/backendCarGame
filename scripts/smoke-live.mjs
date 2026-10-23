@@ -62,6 +62,17 @@
 //     through the console and the migration marker deleted, and after it a
 //     season reward and a tournament notice are in inbox_list, two
 //     concurrent claims of the season reward pay once;
+//   - F5 storage and progression (plan T-18, T-19, T-20), with fresh
+//     accounts and the LiveOps admin key (set for the run when missing,
+//     then removed): admin_migrate_permissions runs to the end and leaves
+//     no client-writable object; a native WriteStorageObjects on pass,
+//     missions_daily, friends_edge, clubs_members, ranked and idem is
+//     rejected (403) and on save / public accepted; two concurrent
+//     pass_claim pay once; pass_buy_premium without gems changes nothing;
+//     admin_pass_season_close of a drill season with 3 accounts pays the
+//     3 through the inbox; two concurrent mission_claim pay once;
+//     mission_reroll without gems keeps the mission; the 1-player race,
+//     finished before the first missions_get / achievements_get, counts;
 //   - `docker compose logs nakama` since the last boot: no error-level
 //     lines, no "rpc registration failed", no "auto-create failed",
 //     periodic service-ticker ticks, and the cost of loading the runtime
@@ -115,6 +126,8 @@ const EXPECTED_ROLLBACK = /version check failed|rejected negative value/;
 const isExpectedRollback = (m) => m.msg === 'Error running multi update.' && EXPECTED_ROLLBACK.test(String(m.error));
 /** RPCs that still answer HTTP 500 to `{}`, and the plan card that fixes each. */
 const KNOWN_RPC_500 = { club_search: 'T-21 (groupsList signature)' };
+/** http_key of the runtime (.env), for the admin RPCs; never printed. */
+let ENV_HTTP_KEY = '';
 
 // ── report ──────────────────────────────────────────────────────────────────
 const rows = [];
@@ -222,8 +235,11 @@ function classifyErrors(msgs) {
   const allErrors = msgs.filter((m) => m.level === 'error' || m.level === 'fatal');
   const rollbacks = allErrors.filter(isExpectedRollback);
   const rpc500 = allErrors.filter((m) => m.mode === 'rpc' && m.id in KNOWN_RPC_500);
-  const errors = allErrors.filter((m) => !rollbacks.includes(m) && !rpc500.includes(m));
-  return { allErrors, rollbacks, rpc500, errors };
+  // T-19: reward items missing from the catalogs, logged once per boot
+  // (a content decision of the user, KNOWN until it is made).
+  const content = allErrors.filter((m) => CONTENT_LOG.test(String(m.msg)));
+  const errors = allErrors.filter((m) => !rollbacks.includes(m) && !rpc500.includes(m) && !content.includes(m));
+  return { allErrors, rollbacks, rpc500, content, errors };
 }
 
 function recordErrors(check, { errors }, since) {
@@ -235,7 +251,12 @@ function checkLogs(bin) {
   const { started, lines } = nakamaLogsSinceBoot(bin);
   const msgs = parseLogLines(lines);
   const classified = classifyErrors(msgs);
-  const { allErrors, rollbacks, rpc500 } = classified;
+  const { allErrors, rollbacks, rpc500, content } = classified;
+  if (content.length > 0) {
+    const ids = String(content[0].msg).split(': ').slice(2).join(': ').split(', ');
+    known('logs: catalog content check (T-19) — reward items missing from cars.json / cosmetics.json',
+      `${ids.length} id(s), content decision: ${ids.slice(0, 3).join(', ')}…`);
+  }
   if (rpc500.length > 0) {
     known('logs: uncaught exceptions of RPCs fixed by later cards',
       [...new Set(rpc500.map((m) => `${m.id} → ${KNOWN_RPC_500[m.id]}`))].join(', '));
@@ -1224,12 +1245,224 @@ async function inboxChecks(ct, seeded) {
     `${errCode(ack)} wallet ${w1?.coins} → ${w2?.coins}`);
 }
 
+// ── F5 storage and progression (plan T-18, T-19, T-20) ─────────────────────
+/** Collections a modified client must not write (T-18 smoke list). */
+const PROTECTED = ['pass', 'missions_daily', 'friends_edge', 'clubs_members', 'ranked', 'idem'];
+/** The boot line of the catalog content check (T-19): KNOWN until the content decision. */
+const CONTENT_LOG = /^catalog content: /;
+
+/** Run `fn(adminKey)` with the LiveOps admin key; a missing key is set for the call and removed after. */
+async function withAdminKey(ct, fn) {
+  const path = objectPath('liveops', 'config', SYSTEM_USER);
+  const got = await consoleGet(ct, path);
+  if (got.status !== 200 || typeof got.body?.value !== 'string') return fn(null);
+  const original = JSON.parse(got.body.value);
+  if (typeof original.adminRpcKey === 'string' && original.adminRpcKey.length > 0) return fn(original.adminRpcKey);
+  const temp = `smoke-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const put = (value) => consoleSend(ct, 'PUT', path, { value: JSON.stringify(value), permission_read: 0, permission_write: 0 });
+  if (await put({ ...original, adminRpcKey: temp }) !== 200) return fn(null);
+  try {
+    return await fn(temp);
+  } finally {
+    await put(original);
+  }
+}
+
+/** Native client storage write (PUT /v2/storage), as a modified client would send it. */
+async function nativeWrite(acct, collection, key, value, read = 1, write = 1) {
+  const r = await http('PUT', '/v2/storage', {
+    body: { objects: [{ collection, key, value: JSON.stringify(value), permission_read: read, permission_write: write }] },
+    headers: { Authorization: `Bearer ${acct.token}` },
+  });
+  return r.status;
+}
+
+async function nativeDelete(acct, collection, key) {
+  const r = await http('PUT', '/v2/storage/delete', {
+    body: { object_ids: [{ collection, key }] },
+    headers: { Authorization: `Bearer ${acct.token}` },
+  });
+  return r.status;
+}
+
+/** T-18: migrate the old objects, then a client cannot write server collections; the cloud save still works. */
+async function storagePermissionChecks(ct, adminKey, acct) {
+  if (adminKey) {
+    let next;
+    let total = 0;
+    let scanned = 0;
+    let done = false;
+    const by = {};
+    for (let i = 0; i < 50 && !done; i++) {
+      const r = await rpc(null, 'admin_migrate_permissions', { adminKey, maxObjects: 5000, ...(next ?? {}) }, { httpKey: ENV_HTTP_KEY });
+      if (!r.envelope?.ok) break;
+      total += r.envelope.data.rewritten;
+      scanned += r.envelope.data.scanned;
+      for (const [k, v] of Object.entries(r.envelope.data.byCollection)) by[k] = (by[k] ?? 0) + v;
+      done = r.envelope.data.done;
+      next = r.envelope.data.next;
+    }
+    record('T-18 admin_migrate_permissions ran to the end', done, `scanned=${scanned} rewritten=${total} ${JSON.stringify(by)}`);
+    const writable = [];
+    for (const c of [...PROTECTED, 'achievements', 'season_close', 'parties', 'invites', 'blocks', 'clubs_metadata']) {
+      const list = await consoleGet(ct, `/v2/console/storage?collection=${c}&limit=100`);
+      for (const o of list.body?.objects ?? []) if (Number(o.permission_write ?? 0) !== 0) writable.push(`${c}/${o.key}`);
+    }
+    const analytics = await consoleGet(ct, '/v2/console/storage?collection=analytics_events&limit=100');
+    const readable = (analytics.body?.objects ?? []).filter((o) => Number(o.permission_read ?? 0) !== 0).length;
+    record('T-18 after the migration: no client-writable object, analytics not client-readable (first console page per collection)',
+      writable.length === 0 && readable === 0, `writable=${writable.slice(0, 3).join(',') || 0} analyticsReadable=${readable}`);
+  } else {
+    record('T-18 admin_migrate_permissions ran to the end', false, 'no admin key (console or liveops config unavailable)');
+  }
+
+  // The account owns a pass, missions and an idem key (a purchase) by now.
+  await rpc(acct.token, 'pass_get', {});
+  await rpc(acct.token, 'missions_get', {});
+  const blocked = [];
+  for (const c of PROTECTED) {
+    const key = c === 'pass' || c === 'ranked' || c === 'friends_edge' ? acct.uid : `${acct.uid}/smoke`;
+    const status = await nativeWrite(acct, c, key, { premiumPurchased: true, rating: 9999, role: 'leader', state: 'applied' });
+    blocked.push(`${c}=${status}`);
+  }
+  record('T-18 native WriteStorageObjects on pass, missions_daily, friends_edge, clubs_members, ranked, idem → rejected',
+    blocked.every((b) => b.endsWith('=403')), blocked.join(' '));
+  const del = await nativeDelete(acct, 'pass', acct.uid);
+  const pass = await rpc(acct.token, 'pass_get', {});
+  record('T-18 native DeleteStorageObjects of the own pass → rejected (permission 0)', del >= 400 && pass.envelope?.ok === true,
+    `delete HTTP ${del}; pass_get ${errCode(pass)}`);
+
+  const key = `smoke-${Date.now()}`;
+  const save = await nativeWrite(acct, 'save', key, { v: 1, b64: 'c21va2U=' }, 1, 1);
+  const pub = await nativeWrite(acct, 'public', key, { value: { name: 'smoke' } }, 2, 1);
+  const cleanup = [await nativeDelete(acct, 'save', key), await nativeDelete(acct, 'public', key)];
+  record('T-18 cloud save: native writes to save and public → accepted (and deletable by the owner)',
+    save === 200 && pub === 200 && cleanup.every((s) => s === 200), `save=${save} public=${pub} delete=${cleanup.join(',')}`);
+}
+
+/** T-19: concurrent claims, a failed premium payment, and a season close that pays three accounts. */
+async function passChecks(ct, adminKey, serverKey) {
+  const { P1, P2 } = await freshAccounts(serverKey, 'pass', ['P1', 'P2']);
+  await rpc(P1.token, 'pass_get', {});
+  const w0 = await walletOf(P1);
+  const claims = await Promise.all([1, 2].map(() => rpc(P1.token, 'pass_claim', { level: 1, track: 'free' })));
+  const w1 = await walletOf(P1);
+  const paid = (await ledgerOf(ct, P1.uid)).filter((l) => String(l.metadata.idempotencyKey ?? '').startsWith(`pass:${P1.uid}:`));
+  const codes = claims.map(errCode).sort();
+  record('T-19 two concurrent pass_claim of one level → one reward',
+    codes.join(',') === 'CONFLICT,ok' && w0 && w1 && w1.coins - w0.coins === 200 && paid.length === 1,
+    `claims ${codes.join(',')}; wallet +${w0 && w1 ? w1.coins - w0.coins : '?'}; ledger rows ${paid.length}`);
+
+  await fund(ct, P2.uid, { coins: 0, gems: 10 });
+  const buy = await rpc(P2.token, 'pass_buy_premium', {});
+  const after = await rpc(P2.token, 'pass_get', {});
+  const w2 = await walletOf(P2);
+  const rows = (await ledgerOf(ct, P2.uid)).length;
+  record('T-19 pass_buy_premium without enough gems → INSUFFICIENT_FUNDS, nothing changes',
+    errCode(buy) === 'INSUFFICIENT_FUNDS' && after.envelope?.data?.premiumPurchased === false && w2?.gems === 10 && rows === 0,
+    `${errCode(buy)}; premium=${after.envelope?.data?.premiumPurchased}; gems=${w2?.gems}; ledger rows ${rows}`);
+
+  if (!adminKey) {
+    record('T-19 season close with 3 accounts pays the 3', false, 'no admin key');
+    return;
+  }
+  // Three records of a drill season (the real one ends in 2027): levels 1-3 reached
+  // (free: 200 + 200 + 250 coins); C2 already claimed level 1.
+  const season = `smoke_${Date.now()}`;
+  const s = await freshAccounts(serverKey, 'close', ['C1', 'C2', 'C3']);
+  const expected = { C1: 650, C2: 450, C3: 650 };
+  for (const [name, acct] of Object.entries(s)) {
+    await rpc(acct.token, 'pass_get', {});
+    const value = {
+      schemaVersion: 1, userId: acct.uid, seasonId: season, xp: 400,
+      claimedFree: name === 'C2' ? [1] : [], claimedPremium: [], premiumPurchased: false, seasonClosed: false,
+    };
+    await consoleSend(ct, 'PUT', objectPath('pass', acct.uid, acct.uid), { value: JSON.stringify(value), permission_read: 1, permission_write: 0 });
+  }
+  const run = await rpc(null, 'admin_pass_season_close', { adminKey, seasonId: season }, { httpKey: ENV_HTTP_KEY });
+  const details = [];
+  let allPaid = run.envelope?.data?.state === 'settled';
+  for (const [name, acct] of Object.entries(s)) {
+    const list = await rpc(acct.token, 'inbox_list', {});
+    const msg = (list.envelope?.data?.messages ?? []).find((m) => m.id === `pass_end:${season}`);
+    const before = await walletOf(acct);
+    const claim = await rpc(acct.token, 'inbox_claim', { messageId: `pass_end:${season}` });
+    const now = await walletOf(acct);
+    const gain = before && now ? now.coins - before.coins : null;
+    if (msg?.reward?.coins !== expected[name] || errCode(claim) !== 'ok' || gain !== expected[name]) allPaid = false;
+    details.push(`${name} msg=${msg?.reward?.coins ?? 'none'} +${gain}`);
+  }
+  const again = await rpc(null, 'admin_pass_season_close', { adminKey, seasonId: season }, { httpKey: ENV_HTTP_KEY });
+  record('T-19 season close with 3 accounts pays the 3 (unclaimed reached levels to the inbox)',
+    allPaid && again.envelope?.data?.state === 'settled',
+    `${errCode(run)} state=${run.envelope?.data?.state} settled=${run.envelope?.data?.settled}; ${details.join('; ')}`);
+}
+
+/** Today's daily row of an account through the console, or null. */
+async function dailyRow(ct, uid) {
+  const date = new Date().toISOString().slice(0, 10);
+  const got = await consoleGet(ct, objectPath('missions_daily', `${uid}/${date}`, uid));
+  return got.status === 200 && typeof got.body?.value === 'string' ? { value: JSON.parse(got.body.value), date } : null;
+}
+
+/** T-20: concurrent mission claims, and a reroll without gems. */
+async function missionChecks(ct, serverKey) {
+  const { M1, M2 } = await freshAccounts(serverKey, 'missions', ['M1', 'M2']);
+  await rpc(M1.token, 'missions_get', {});
+  const row = await dailyRow(ct, M1.uid);
+  if (row === null) {
+    record('T-20 two concurrent mission_claim → one reward', false, 'no daily row');
+  } else {
+    // Complete the first mission (as a race would) through the console.
+    const first = row.value.missions[0];
+    const target = 1000;
+    row.value.missions[0] = { ...first, progress: target, completed: true };
+    await consoleSend(ct, 'PUT', objectPath('missions_daily', `${M1.uid}/${row.date}`, M1.uid),
+      { value: JSON.stringify(row.value), permission_read: 1, permission_write: 0 });
+    const w0 = await walletOf(M1);
+    const claims = await Promise.all([1, 2].map(() => rpc(M1.token, 'mission_claim', { missionId: first.missionId, kind: 'daily' })));
+    const w1 = await walletOf(M1);
+    const key = `mission:daily:${row.date}:${first.missionId}:${M1.uid}`;
+    const paid = (await ledgerOf(ct, M1.uid)).filter((l) => l.metadata.idempotencyKey === key);
+    const reward = claims.find((c) => c.envelope?.ok)?.envelope.data.reward?.coins ?? 0;
+    const codes = claims.map(errCode).sort();
+    record('T-20 two concurrent mission_claim → one reward (key with the date)',
+      codes.join(',') === 'CONFLICT,ok' && w0 && w1 && w1.coins - w0.coins === reward && paid.length === (reward > 0 ? 1 : 0),
+      `claims ${codes.join(',')}; wallet +${w0 && w1 ? w1.coins - w0.coins : '?'} (reward ${reward}); ledger rows ${paid.length}`);
+  }
+
+  await fund(ct, M2.uid, { coins: 0, gems: 0 });
+  const before = await rpc(M2.token, 'missions_get', {});
+  const ids = (before.envelope?.data?.daily?.missions ?? []).map((m) => m.missionId);
+  const rr = await rpc(M2.token, 'mission_reroll', { missionId: ids[0], useGems: true });
+  const after = await rpc(M2.token, 'missions_get', {});
+  const ids2 = (after.envelope?.data?.daily?.missions ?? []).map((m) => m.missionId);
+  record('T-20 mission_reroll without gems → INSUFFICIENT_FUNDS, the mission does not change',
+    errCode(rr) === 'INSUFFICIENT_FUNDS' && ids.length > 0 && ids.join(',') === ids2.join(','),
+    `${errCode(rr)}; missions ${ids.join(',')} → ${ids2.join(',')}`);
+}
+
+/** T-20: a race finished before the first missions_get / achievements_get counts. */
+async function earlyProgressCheck(ct, acct) {
+  const achv = await consoleGet(ct, objectPath('achievements', acct.uid, acct.uid));
+  const stored = achv.status === 200 ? JSON.parse(achv.body.value) : null;
+  const daily = await dailyRow(ct, acct.uid);
+  const got = await rpc(acct.token, 'achievements_get', {});
+  const card = (got.envelope?.data?.achievements ?? []).find((a) => a.achievementId === 'ach_10_races');
+  const missions = await rpc(acct.token, 'missions_get', {});
+  const dailyProgress = (missions.envelope?.data?.daily?.missions ?? []).reduce((n, m) => n + m.progress, 0);
+  record('T-20 a race before the first missions_get / achievements_get counts',
+    stored?.progress?.ach_10_races === 1 && card?.progress === 1 && Number(achv.body?.permission_write ?? 1) === 0,
+    `achievements row before *_get: ${stored ? `ach_10_races=${stored.progress?.ach_10_races}` : 'missing'}; achievements_get ${card?.progress}; daily row before *_get ${daily ? 'yes' : 'no'} (progress now ${dailyProgress})`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
   const env = readEnv();
   const serverKey = env.NAKAMA_SERVER_KEY;
   const httpKey = env.NAKAMA_RUNTIME_HTTP_KEY;
+  ENV_HTTP_KEY = httpKey ?? '';
   if (!serverKey) throw new Error('NAKAMA_SERVER_KEY missing in .env');
 
   let bin = null;
@@ -1343,9 +1576,22 @@ async function main() {
   // F3 profile and version gate (T-14) while the race clocks run.
   await profileAndVersionChecks({ k: f3k }, a);
 
+  // F5 (T-18, T-19, T-20) while the race clocks run.
+  if (ct4 && httpKey) {
+    await withAdminKey(ct4, async (adminKey) => {
+      await storagePermissionChecks(ct4, adminKey, a);
+      await passChecks(ct4, adminKey, serverKey);
+    });
+    await missionChecks(ct4, serverKey);
+  } else {
+    record('F5 storage and progression checks', null, 'console credentials or NAKAMA_RUNTIME_HTTP_KEY not in .env');
+  }
+
   if (f1) await matchmakerScenario(f1.m);
   if (race) await finishPrivateRace(fresh, race);
   else record('1-player private race closes', null, '--skip-race');
+  // T-20: that race came before any missions_get / achievements_get of `fresh`.
+  if (race && ct4) await earlyProgressCheck(ct4, fresh);
   if (f3) await finishF3Races(f3, 'quick');
   else record('T-13 wins_week / ranked order (needs races)', null, '--skip-race');
   const f1Retry = f1?.three ? await finishF1Races(f1.p, f1.three, f1.h, f1.claimRace, bin) : null;
