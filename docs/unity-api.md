@@ -1569,7 +1569,8 @@ Idempotent — second call returns the current state without re-charging.
   "seasonId":         "s1",
   "premiumPurchased": true,
   "priceGems":        800,
-  "newGemsBalance":   9200
+  "newGemsBalance":   9200,
+  "newBalance":       { "coins": 0, "gems": 9200 }
 }
 ```
 
@@ -1873,7 +1874,9 @@ The `store_get` RPC (chunk 8) decorates matching SKUs with `basePrice`,
 special offer in `profile.activeSpecialOffers`. The client should
 display `finalPrice` in the store UI; if `activeSpecialOfferId` is
 present, show a "Limited time" badge with the offer id (for analytics
-attribution on the client side).
+attribution on the client side). `store_buy` charges exactly that
+`finalPrice` (same function, server clock) and reports it as
+`pricePaid` (plan T-12).
 
 ### 21.3 Anti-cheat (operator)
 

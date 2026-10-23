@@ -26,30 +26,61 @@ Pack contents grant `coins` and/or `gems` from the catalog table.
 | Helper | Purpose |
 |---|---|
 | `walletGet(nk, userId)` | read current `{ coins, gems }`; missing currencies coerced to 0 |
-| `grant(nk, userId, changeset, metadata, idempotencyKey)` | credit (positive amounts only); idempotent on `(userId, key)` for 7 days |
-| `spend(nk, userId, changeset, metadata, idempotencyKey)` | debit (positive amounts internally negated); idempotent; pre-check for `INSUFFICIENT_FUNDS` |
+| `grant(nk, userId, changeset, metadata, idempotencyKey, opts?)` | credit (positive amounts only); idempotent on `(userId, key)`, durably |
+| `spend(nk, userId, changeset, metadata, idempotencyKey, opts?)` | debit (positive amounts internally negated); idempotent; `INSUFFICIENT_FUNDS` decided by the wallet transaction |
+| `moveWallet(nk, userId, key, moves, opts?)` | several signed moves (e.g. price + pack contents) and the caller's storage writes (`opts.extraWrites`, CAS versions honoured) in one transaction |
+| `revert(nk, userId, key, metadata)` | compensating movement: undo what `key` applied and mark it `reverted`, so the same key applies again |
 | `applyLedger(nk, userId, metadata, idempotencyKey)` | write a ledger marker without changing the balance (e.g. first-win-of-day stamps) |
 | `formatLedgerMetadata(meta)` / `parseLedgerMetadata(s)` | compact `reason:sourceId[;k=v,...]` packing (≤ 200 bytes) |
 
-### Idempotency
+### One transaction per movement (plan T-11)
 
-Every wallet mutation carries an idempotency key of the form
-`<scope>:<userId>:<refId>:<suffix>`. The 7-day TTL is enforced via
-`nk.localcachePut` (per-process, resets on restart — intentional: a
-restart must not leave grants half-applied).
+Every movement is ONE `nk.multiUpdate(undefined, writes, undefined,
+walletUpdates, true)` (3.27 JS binding):
 
-Common patterns:
+1. the idempotency record `idem/<userId>/<key>` (`core/idempotency.ts`;
+   the key is hashed to `sha256:<hex>` when longer than 128 characters),
+   written with version `*` (create only), or with the version read when
+   the record was `reverted`;
+2. the caller's storage writes (a garage, a pass record…);
+3. the wallet updates, each with its ledger row (`updateLedger`).
 
-| RPC | Spend key | Refund key | Pack grant key | Pack reverse |
-|---|---|---|---|---|
-| `car_buy` | `garage:buy:{userId}:{carId}` | `garage:buy:refund:{userId}:{carId}` | — | — |
-| `car_upgrade` | `garage:upgrade:{userId}:{carId}:{line}:{newLevel}` | `garage:upgrade:refund:...` | — | — |
-| `store_buy` (car/cosmetic) | `store:buy:{kind}:{userId}:{refId}` | `store:buy:{kind}:{userId}:{refId}:refund` | — | — |
-| `store_buy` (pack) | `store:buy:pack:{userId}:{refId}` | `store:buy:pack:{userId}:{refId}:refund` | `store:buy:pack:{userId}:{refId}:pack` | `store:buy:pack:{userId}:{refId}:pack:reverse` |
+Storage writes run first, then the wallets (`SELECT … FOR UPDATE`); a
+storage version mismatch ("version check failed") or a negative balance
+("wallet update rejected negative value") rolls everything back. So:
+
+| Situation | Result |
+|---|---|
+| key already `applied` | replay: nothing moves, the stored `result` comes back |
+| N concurrent movements, same key | one commits; the others lose the `*` create and replay |
+| a caller write lost its CAS | `CONFLICT` (`details.reason = 'VERSION_CONFLICT'`), nothing charged; the retry charges normally |
+| short balance | `INSUFFICIENT_FUNDS` (a cheap pre-check avoids the transaction; under concurrency the transaction decides) |
+| Nakama restarts | the record is in Postgres: a retry replays, it never pays or charges twice |
+
+Keys never expire, so a key must name everything that makes the
+movement unique: missions carry their day/week, pass rewards their
+season, club creation the group id.
+
+Common keys:
+
+| RPC | Key | Delivered in the same transaction |
+|---|---|---|
+| `car_buy` | `garage:buy:{userId}:{carId}` | garage (new car) |
+| `car_upgrade` | `garage:upgrade:{userId}:{carId}:{line}:{newLevel}` | garage (upgrade level) |
+| `store_buy` | `store:buy:{kind}:{userId}:{refId}` | garage (car, cosmetic or pack mark) + pack contents as a second move |
+| `pass_buy_premium` | `pass:premium:{userId}:{seasonId}` | — (flag CAS after; on exhaustion `revert`) |
+| race payout | `race:{sessionId}:{userId}` | — |
+
+There is no refund key any more: a delivery that is a storage write
+shares the charge's transaction, and a flow that cannot (the pass flag
+today) undoes the charge with `revert`, which frees the key.
 
 ### Ledger format
 
-`nk.walletLedgerUpdate(userId, changeset, { reason: 'reward:race_123;sessionId=abc,confidence=quorum' }, idempotencyKey)`
+Each wallet update carries `metadata: { reason, idempotencyKey }` and
+`updateLedger = true`, so Nakama inserts one `wallet_ledger` row per
+update. (`nk.walletLedgerUpdate(itemId, metadata)` only edits the
+metadata of an existing row; it never records a movement.)
 
 The `reason` field is packed as `reason:sourceId[;k=v,key2=value2,...]`
 extras (kept searchable in ops). Source IDs:
@@ -64,28 +95,19 @@ extras (kept searchable in ops). Source IDs:
 
 Extras (optional, separated by `;`): `sessionId=`, `confidence=quorum|client|server`, `mode=quick|ranked|private|time_trial`.
 
-### D3 caveat — atomic-ish wallet + storage
-
-Nakama 3.27 JS runtime does NOT expose wallet operations inside
-`nk.multiUpdate` (see [[nakama-js-runtime-leaderboards]] §17).
-Therefore every RPC combining the two uses the **compensating-refund
-pattern**:
-
-1. **Spend** via `spend(nk, userId, ...)` — idempotency key claimed, balance mutated, ledger entry written.
-2. **CAS write** the garage / storage object with the version captured before the spend.
-3. **On conflict**: the storage write throws → handler catches → `grant(nk, userId, refundChangeset, ..., ':refund' suffix)` issues a refund with a SEPARATE idempotency key so a retry of the original spend won't double-debit, and the refund itself can't be claimed twice.
-
-For packs the same pattern repeats for the pack contents grant (a
-second `grant` call after the spend succeeds, with `:pack` suffix;
-reversed with `:pack:reverse` on CAS conflict).
-
 ### Rewards — `rewards.ts`
 
 `computeReward(mode, size, rank, confidence, isFirstWinOfDay)` returns
 `{ coins, gems, xp }`. See `modules/src/economy/rewards.ts`. Tunables
-per mode/size are in `modules/src/catalogs/rewards.json`. The
-subscriber (`subscriber.ts`) listens for `RaceCompleted` events and
-calls `grant` + `applyLedger` per finisher.
+per mode/size are in `modules/src/catalogs/rewards.json`. The race close
+(`race/close.ts`) calls `handleRaceCompletedForEconomy` synchronously and
+`grant` + `applyLedger` run per finisher; only the earned currencies go in
+the changeset (`grant` rejects a zero amount).
+
+> The `economy` and `progression` subscriptions on the bus listen to
+> `race.completed`, while the bus publishes `RaceCompleted`: they never
+> run, and must not be "fixed" to `RaceCompleted` without removing the
+> synchronous call (profile XP is not idempotent, audit 05 f16).
 
 > The `RaceCompleted` payload is NOT enriched with rewards
 > ([[carvideogamebackend-phase3-chunk5]]) — clients compute rewards
@@ -93,21 +115,32 @@ calls `grant` + `applyLedger` per finisher.
 > wallet via `wallet_get` for verification. Server-side rewards are
 > authoritative.
 
+### `newBalance` and `changeset` shape
+
+Every money RPC answers `newBalance` as `{ coins, gems }` and every
+`changeset` as `{currencyId: amount}` (T-12; `iap_purchase`,
+`ad_watched`, `club_create` and `admin_iap_refund` sent the coins number
+before). `pass_buy_premium` keeps `newGemsBalance` and adds `newBalance`;
+`mission_claim` adds `newBalance`.
+
 ### `wallet_get` RPC
 
 See §16.6 of `docs/unity-api.md`. Returns the current `{ coins, gems,
-pending, ledger }` view. Sub-millisecond server cost; called by the
+pending, ledger }` view (`ledger.last30dCount` from
+`walletLedgerList().items`). Sub-millisecond server cost; called by the
 header HUD after every wallet mutation.
 
 ### Tests
 
 | Suite | Cases |
 |---|---|
-| `tests/unit/wallet.test.ts` | grant/spend/ledger/idempotency/insufficient-funds/metadata packing |
+| `tests/unit/wallet.test.ts` | grant/spend/moveWallet/revert/ledger rows/durable idempotency (restart, race, failed write)/insufficient funds/metadata packing |
+| `tests/unit/idempotency.test.ts` | record key, create-only write, read-back, 3.27 failure messages |
 | `tests/unit/rewards.test.ts` | reward table per mode/size/rank/confidence + first-win-of-day bonus |
 | `tests/e2e/wallet.test.ts` | round-trip balance, post-grant reflection, FORBIDDEN/UNAUTHENTICATED |
 | `tests/e2e/phase3-flow.test.ts` | new-user lifecycle: wallet_get → garage_get → store_buy → car_upgrade → wallet_get |
-| `tests/e2e/refund-safety.test.ts` | forced CAS failure → spend is refunded via :refund grant |
+| `tests/e2e/refund-safety.test.ts` | lost garage CAS → nothing charged, retry charges once; 10 racing buys charge once; pass refund then rebuy |
+| `tests/e2e/race_payout.test.ts` | closing submit pays with its ledger row; lazy close pays |
 
 ### Future (not in scope)
 

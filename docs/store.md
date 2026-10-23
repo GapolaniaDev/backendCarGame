@@ -2,7 +2,7 @@
 
 Phase 3 commerce. The store reads the catalog, applies the player's
 filters, returns sections the client can render, and processes
-purchases via the compensating-refund pattern.
+purchases in one wallet transaction (charge + delivery, plan T-11).
 
 ## File layout
 
@@ -95,8 +95,8 @@ client can render them with a "Solo hoy" badge.
 | `coin_sack_small` | Bolsa monedas pequeña | +1000 | — | 800 |
 | `coin_sack_large` | Bolsa monedas grande | +5000 | — | 3500 |
 
-Pack contents are granted in the same spend as the offer price; if the
-CAS garage write fails, the pack grant is reversed (see D3 caveat).
+Pack contents are a second move of the purchase's wallet transaction:
+if the garage CAS write fails, neither the price nor the contents move.
 
 Adding a new pack = (a) entry in `PACK_TABLE`, (b) entry in
 `store.json` catalog with `kind: 'pack'`, `refId` matching the pack id.
@@ -105,41 +105,55 @@ Adding a new pack = (a) entry in `PACK_TABLE`, (b) entry in
 
 Returns `{ dailySeed, sections }`. Auto-creates the garage on first
 call so a fresh player can browse the store before opening the garage
-tab. See §16.7 of `docs/unity-api.md`.
+tab. See §16.7 of `docs/unity-api.md`. Maintenance-gated
+(`SERVICE_UNAVAILABLE`); the min-version gate is not applied because the
+Unity client sends no `clientVersion` (T-14 owns the version gate).
+
+Each listed offer is `{ offer, isDailyOffer, basePrice, finalPrice,
+activeSpecialOfferId?, owned }`. Prices are `{coins, gems}`.
+`finalPrice` is what `store_buy` charges right now (plan T-12):
+`store/pricing.ts` computes it for both RPCs from the player's
+`activeSpecialOffers` and the **server** clock. `owned` is additive;
+owned offers are not listed, so a listed one says `false`.
+
+### Special offers
+
+A `special_offer` event (`events.json`) discounts the offer whose
+`offerId` is its `payload.sku` by `payload.discountPct` (a charged
+currency never drops to 0). When the events catalog loads, a
+`special_offer` whose SKU is not a store offer id is dropped with a
+single `special_offer dropped, sku is not a store offer: …` warning per load (HT-80). The four bundled special
+offers name SKUs that are not store offers, so today none applies.
 
 ## `store_buy` RPC
 
-The compensating-refund pattern in detail for `store_buy`:
+One transaction per purchase (plan T-11, `docs/economy.md`):
 
 1. Look up offer in catalog (`NOT_FOUND` if absent).
-2. Check expiry (`BAD_REQUEST` if expired).
+2. Check expiry with the server clock (`BAD_REQUEST` if expired).
+   `nowMs` in the request is ignored.
 3. Auto-create garage if absent (`INTERNAL` on write failure).
 4. Ownership check (`CONFLICT` if already).
-6. Level check (`FORBIDDEN` if below).
-7. **Spend** via `spend(nk, userId, { coins: offer.priceCoins, gems: offer.priceGems }, { reason: 'store', sourceId: offer.offerId }, 'store:buy:{kind}:{userId}:{refId}')`.
-9. **Pack content grant** (if applicable): `grant(nk, userId, pack.changeset, ..., ':pack')`.
-10. **CAS write** the garage.
-12. On CAS conflict: refund the spend via `:refund` + reverse the pack grant via `:pack:reverse`. Response = `CONFLICT`.
-13. Return `{ delivery, newBalance }`.
+5. Level check (`FORBIDDEN` if below).
+6. Assemble the delivery (new garage; catalog drift → `INTERNAL`, nothing charged).
+7. Price = `finalPrice` (same function as `store_get`).
+8. `moveWallet(…, 'store:buy:{kind}:{userId}:{refId}', [−price, +pack contents], { extraWrites: [garage CAS write] })`.
+9. Return `{ delivery, newBalance, pricePaid }` (`pricePaid` additive).
+
+A lost garage CAS or a short balance changes nothing, so a retry (or a
+rebuy) charges normally; concurrent calls for the same offer charge once
+and answer what the winner delivered.
 
 | Error | When |
 |---|---|
 | `NOT_FOUND` | offer not in catalog |
 | `BAD_REQUEST` | offer expired |
-| `CONFLICT` | car/cosmetic/pack already owned OR CAS conflict (refund issued — retry safely) |
-| `INSUFFICIENT_FUNDS` | wallet balance < offer price |
+| `CONFLICT` | car/cosmetic/pack already owned OR concurrent garage update (nothing charged — retry) |
+| `INSUFFICIENT_FUNDS` | wallet balance < price |
 | `FORBIDDEN` | player level below `requiredLevel` |
+| `SERVICE_UNAVAILABLE` | maintenance |
 
 See §16.8 of `docs/unity-api.md`.
-
-## D3 caveat — same as `docs/economy.md`
-
-The wallet + storage combination uses spend-first / CAS-second /
-refund-on-conflict. The window where a player could be charged without
-receiving the item is the duration of one CAS write (sub-millisecond
-in normal load, but it can spike under storage back-pressure).
-Operators monitor this via the `:refund`-suffixed ledger entries —
-a sudden uptick indicates a storage write latency regression.
 
 ## Tests
 
@@ -147,9 +161,10 @@ a sudden uptick indicates a storage write latency regression.
 |---|---|
 | `tests/unit/store-catalog.test.ts` | validator + load + freeze |
 | `tests/unit/store-rotation-filter.test.ts` | daily rotation determinism, filter cases (car/cosmetic/pack owned), expiry, level_low, isDailyOffer flag (16 cases) |
+| `tests/unit/store_pricing.test.ts` | charged = shown with an active special offer, unknown SKUs dropped, `owned`, client `nowMs` ignored, maintenance gate |
 | `tests/e2e/store.test.ts` | store_get filters owned + level-gated; store_buy success paths for car/cosmetic/pack + INSUFFICIENT_FUNDS + CONFLICT + FORBIDDEN + NOT_FOUND (14 cases) |
 | `tests/e2e/phase3-flow.test.ts` | end-to-end integration |
-| `tests/e2e/refund-safety.test.ts` | CAS failure → spend refunded + pack grant reversed |
+| `tests/e2e/refund-safety.test.ts` | lost garage CAS → nothing charged, pack not kept, rebuy charges; 10 racing buys charge once |
 
 ## Future (not in scope)
 

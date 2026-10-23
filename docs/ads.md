@@ -58,7 +58,7 @@ Returns:
   rewardId: 'impression-id',
   tier: 'small',
   coinsGranted: 5,
-  newBalance: 5,
+  newBalance: { coins: 5, gems: 0 },  // {coins, gems} since T-12
   nextEligibleAtUtc: 1700000300000,  // now + 5min
   dailyCount: 1,
   dailyCap: 10,

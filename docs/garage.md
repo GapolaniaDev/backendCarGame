@@ -61,13 +61,13 @@ authentication channels that the runtime exposes in 3.27:
 Other channels (Facebook, Google, Game Center) rely on the first
 `garage_get` call to auto-create — same code path, lazy.
 
-## Decision 3 — compensating-refund (storage + wallet)
+## Decision 3 — charge and delivery in one transaction (storage + wallet)
 
-`car_buy`, `car_upgrade`, and `cosmetic_equip`/`store_buy`-with-money
-all combine wallet mutation with garage CAS. Nakama 3.27 JS runtime
-does not support wallet ops inside `nk.multiUpdate`, so the
-compensating-refund pattern is used (see [[carvideogamebackend-phase3-chunk7]]
-and §D3 in `docs/economy.md`).
+`car_buy`, `car_upgrade` and `store_buy` combine a wallet movement with
+the garage CAS write. Since plan T-11 both go in the same
+`nk.multiUpdate` (the 3.27 JS binding takes wallet updates in its 4th
+argument): `moveWallet(…, { extraWrites: [garageWrite(next, version)] })`.
+See "One transaction per movement" in `docs/economy.md`.
 
 ## Decision 2 — full garage in one call
 
@@ -113,21 +113,14 @@ the `ranked` variant (used by matchmaking for fairness scoring).
 The ranked variant (`computeStatsRanked`) factors in the player's
 upgrade levels against the match's `mode`-weighted target.
 
-## D3 caveat — same as `docs/economy.md`
-
-Storage + wallet atomicity is **compensating-refund**, not truly
-atomic. The user-visible semantics are:
+## D3 — what the player sees
 
 | Order | What happens |
 |---|---|
-| spend → CAS success | spend applies, item delivered |
-| spend → CAS conflict | spend is refunded via grant() with `:refund` suffix, item NOT delivered, response = `CONFLICT` |
-| spend → CAS conflict → retry | second spend hits the same idempotency key and skips the debit; CAS now succeeds, item delivered |
-| spend → server crash mid-flow | spend is half-applied (post-mortem audit reveals) — no refund issued, but the player can contact support with the idempotency key for manual reversal |
-
-The 4th case is rare (server crash between `nk.walletUpdate` and
-`nk.storageWrite`) and is the reason we keep ledger entries — ops
-can correlate `(sessionId, sourceId)` for manual review.
+| charge + CAS in one transaction, success | charged once, item delivered |
+| the garage changed since the read (CAS lost) | nothing charged, nothing delivered, response = `CONFLICT`; the retry charges normally |
+| short balance | `INSUFFICIENT_FUNDS`, nothing written |
+| server crash mid-call | the transaction either committed or not; a retry replays (durable key) |
 
 ## Tests
 
@@ -139,7 +132,7 @@ can correlate `(sessionId, sourceId)` for manual review.
 | `tests/e2e/garage.test.ts` | first-auth auto-create, garage_get round-trip |
 | `tests/e2e/garage-mutations.test.ts` | car_buy / car_upgrade / cosmetic_equip / loadout_set (15 cases) |
 | `tests/e2e/phase3-flow.test.ts` | new-user lifecycle end-to-end |
-| `tests/e2e/refund-safety.test.ts` | forced CAS failure → spend refunded |
+| `tests/e2e/refund-safety.test.ts` | lost garage CAS → nothing charged; the retry charges once |
 
 ## Future (not in scope)
 
