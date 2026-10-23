@@ -50,9 +50,9 @@ export function walletAdjust(
 
   // nk.walletUpdate returns the resulting balance on the production
   // runtime; we ignore it and re-read via walletGet for symmetry with
-  // the rest of the codebase.
+  // the rest of the codebase. The ledger row keeps the admin reason.
   try {
-    nk.walletUpdate(input.userId, changeset);
+    nk.walletUpdate(input.userId, changeset, { reason: `admin:${input.reason}`.slice(0, 200) }, true);
   } catch (e) {
     logger.error('admin_wallet_adjust: walletUpdate failed for %s: %s', input.userId, e instanceof Error ? e.message : String(e));
     return { ok: false, error: { code: 'INTERNAL', message: 'walletUpdate failed' } };

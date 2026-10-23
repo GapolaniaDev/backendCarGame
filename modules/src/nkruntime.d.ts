@@ -247,18 +247,24 @@ export interface INakama {
   /**
    * Atomic multi-update (storage + wallet + ledger in a single transaction).
    *
-   * JS runtime signature (verified v3.27.0): all five args are positional
-   * arrays/values. The `{storage_write: ...}` envelope shape is the
-   * nakama-common Go API, NOT what the JS runtime accepts.
+   * JS runtime signature (verified v3.27.0, `runtime_javascript_nakama.go`
+   * `multiUpdate`): all five args are positional arrays/values. The
+   * `{storage_write: ...}` envelope shape is the nakama-common Go API, NOT
+   * what the JS runtime accepts. Storage writes run first, then the wallet
+   * updates (`SELECT ... FOR UPDATE`, a negative balance aborts the whole
+   * transaction with "wallet update rejected negative value"); a storage
+   * version mismatch aborts it with "version check failed". With
+   * `updateLedger` each wallet update also inserts a ledger row carrying
+   * its `metadata`.
    *
    * Pass `undefined` for any slot you don't need.
    */
   multiUpdate(
     accountUpdates: undefined,
-    storageWrites: IStorageObject[],
+    storageWrites: IStorageObject[] | undefined,
     storageDeletes: undefined,
-    walletUpdates: undefined,
-    updateLedger: undefined,
+    walletUpdates: IWalletUpdate[] | undefined,
+    updateLedger: boolean | undefined,
   ): IMultiUpdateResult;
 
   // ── Local cache (per-process, in-memory) ──
@@ -332,20 +338,31 @@ export interface INakama {
     query?: string | null,
   ): Array<{ matchId: string; authoritative: boolean; size: number; label: string | null }>;
 
-  // ── Wallet ──
-  walletUpdate(userId: string, changeset: Record<string, number>): Record<string, number>;
-  walletsUpdate(changesets: Record<string, Record<string, number>>): Record<string, Record<string, number>>;
-  walletLedgerUpdate(
+  // ── Wallet ── (verified v3.27.0, `runtime_javascript_nakama.go`)
+  /**
+   * Apply a signed changeset; `updateLedger` also inserts a ledger row
+   * with `metadata`. Throws "wallet update rejected negative value" when a
+   * balance would go below zero.
+   */
+  walletUpdate(
     userId: string,
     changeset: Record<string, number>,
     metadata?: Record<string, unknown>,
-    idempotencyKey?: string,
-  ): void;
+    updateLedger?: boolean,
+  ): IWalletUpdateResult;
+  walletsUpdate(updates: IWalletUpdate[], updateLedger?: boolean): IWalletUpdateResult[];
+  /**
+   * Merge `metadata` into an EXISTING ledger row, found by its id. It does
+   * not move money nor create a row (an unknown id fails with
+   * "sql: no rows in result set").
+   */
+  walletLedgerUpdate(itemId: string, metadata: Record<string, unknown>): Record<string, unknown>;
+  /** Newest first: `{ items, cursor }` (`cursor` null on the last page). */
   walletLedgerList(
     userId: string,
     limit?: number,
     cursor?: string,
-  ): { entries: Record<string, unknown>[]; cursor: string };
+  ): { items: Record<string, unknown>[]; cursor: string | null };
 
   // ── Notifications ──
   notificationSend(
@@ -511,27 +528,28 @@ export interface IStorageListRequest {
   index?: string;
 }
 
-export type IMultiUpdateOp =
-  | { storage_write: IStorageObject; storage_delete?: never; wallet_update?: never; wallet_ledger_update?: never }
-  | { storage_delete: IStorageKey & { version?: string }; storage_write?: never; wallet_update?: never; wallet_ledger_update?: never }
-  | { wallet_update: { user_id: string; changeset: Record<string, number> }; storage_write?: never; storage_delete?: never; wallet_ledger_update?: never }
-  | {
-      wallet_ledger_update: {
-        user_id: string;
-        changeset: Record<string, number>;
-        metadata?: Record<string, unknown>;
-        idempotency_key?: string;
-      };
-      storage_write?: never;
-      storage_delete?: never;
-      wallet_update?: never;
-    };
-
 export interface IMultiUpdateResult {
   /** Per-storage-write acks (collection, key, userId, version). */
   storageWriteAcks: IStorageObjectAck[];
-  /** Per-wallet-update results (userId, updated, previous). */
-  walletUpdateAcks: unknown[];
+  /** Per-wallet-update results, in the order of the updates. */
+  walletUpdateAcks: IWalletUpdateResult[];
+}
+
+/** One wallet update for `multiUpdate` / `walletsUpdate`. */
+export interface IWalletUpdate {
+  userId: string;
+  /** Signed deltas (whole numbers). */
+  changeset: Record<string, number>;
+  /** Stored on the ledger row when the call records the ledger. */
+  metadata?: Record<string, unknown>;
+}
+
+export interface IWalletUpdateResult {
+  userId: string;
+  /** Wallet after the update. */
+  updated: Record<string, number>;
+  /** Wallet before the update. */
+  previous: Record<string, number>;
 }
 
 export interface ILeaderboard {

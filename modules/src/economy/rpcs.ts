@@ -105,7 +105,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Count the number of ledger entries for `userId` created within the
- * last 30 days. Uses `nk.walletLedgerList` which returns entries in
+ * last 30 days. Uses `nk.walletLedgerList`, whose `items` come in
  * reverse-chronological order; we stop at the first one older than
  * the window to avoid a full scan.
  *
@@ -117,7 +117,7 @@ function countLedgerLast30d(nk: INakama, userId: string): number {
   const cutoff = now - 30 * DAY_MS;
   try {
     const result = nk.walletLedgerList(userId, 100, '');
-    const items = result?.entries ?? [];
+    const items = result?.items ?? [];
     let count = 0;
     for (const entry of items) {
       const ct = (entry as { createTime?: number })?.createTime;

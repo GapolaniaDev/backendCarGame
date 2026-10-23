@@ -28,6 +28,8 @@ import type {
   IStorageObject,
   IStorageObjectAck,
   IUser,
+  IWalletUpdate,
+  IWalletUpdateResult,
   RpcFunction,
   ShutdownFn,
 } from '../../modules/src/nkruntime';
@@ -151,7 +153,7 @@ class FakeNakamaCore {
   readonly users = new Map<string, IUser>();
   /** userId → currency balances. Lazily populated by walletUpdate. */
   readonly wallets = new Map<string, Record<string, number>>();
-  /** userId → ledger entries (oldest first). Populated by walletLedgerUpdate. */
+  /** userId → ledger entries (oldest first). Appended by wallet updates with `updateLedger`. */
   readonly ledger = new Map<string, Record<string, unknown>[]>();
   /**
    * provider:customId → userId. Maintained by `accountLinkCustom` and
@@ -247,98 +249,162 @@ class FakeNakamaCore {
     this.cache.clear();
   }
 
-  // ── Wallet ──
+  // ── Wallet ── (mirrors the v3.27.0 JS bindings, `runtime_javascript_nakama.go`)
   /**
-   * Apply a per-currency delta to the user's wallet. Returns the
-   * resulting balance map. Mirrors the production `nk.walletUpdate`
-   * signature: positive numbers credit, negative numbers debit, unknown
-   * currencies are created lazily.
+   * Apply a signed changeset. Like production, a balance that would go
+   * negative throws "wallet update rejected negative value at path '<id>'"
+   * and changes nothing; with `updateLedger` a ledger row is appended.
+   * Returns `{ userId, updated, previous }`.
    */
-  walletUpdate(userId: string, changeset: Record<string, number>): Record<string, number> {
-    const wallet = this.wallets.get(userId) ?? {};
-    for (const [currency, delta] of Object.entries(changeset)) {
-      if (typeof delta !== 'number' || !Number.isFinite(delta)) continue;
-      wallet[currency] = (wallet[currency] ?? 0) + delta;
-    }
-    this.wallets.set(userId, wallet);
-    return { ...wallet };
-  }
-
-  /**
-   * Append a ledger entry. Mirrors the production signature:
-   * `(userId, changeset, metadata, idempotencyKey)`. The stub keeps
-   * the entries in insertion order so callers can list them back via
-   * `walletLedgerList` if they want.
-   */
-  walletLedgerUpdate(
+  walletUpdate(
     userId: string,
     changeset: Record<string, number>,
     metadata?: Record<string, unknown>,
-    _idempotencyKey?: string,
-  ): void {
-    let bucket = this.ledger.get(userId);
-    if (!bucket) {
-      bucket = [];
-      this.ledger.set(userId, bucket);
-    }
-    bucket.push({
-      changeset: { ...changeset },
-      metadata: metadata ?? {},
-      timestamp: Date.now(),
-    });
+    updateLedger?: boolean,
+  ): IWalletUpdateResult {
+    const [result] = this.applyWalletUpdates([{ userId, changeset, ...(metadata ? { metadata } : {}) }], updateLedger === true);
+    return result as IWalletUpdateResult;
+  }
+
+  walletsUpdate(updates: IWalletUpdate[], updateLedger?: boolean): IWalletUpdateResult[] {
+    return this.applyWalletUpdates(updates, updateLedger === true);
   }
 
   /**
-   * List the most recent ledger entries for a user. Returns the last
-   * `limit` entries and an empty cursor (the stub doesn't paginate).
+   * Production semantics: merge `metadata` into the EXISTING ledger row
+   * `itemId`; an unknown id fails like Postgres does ("sql: no rows in
+   * result set"). It never moves money.
+   */
+  walletLedgerUpdate(itemId: string, metadata: Record<string, unknown>): Record<string, unknown> {
+    for (const bucket of this.ledger.values()) {
+      const row = bucket.find((r) => r['id'] === itemId);
+      if (row) {
+        row['metadata'] = { ...(row['metadata'] as Record<string, unknown>), ...metadata };
+        return { ...row };
+      }
+    }
+    throw new Error('failed to update user wallet ledger: sql: no rows in result set');
+  }
+
+  /**
+   * Newest first, like production (`{ items, cursor }`; the stub does
+   * not paginate).
    */
   walletLedgerList(
     userId: string,
     limit?: number,
     _cursor?: string,
-  ): { entries: Record<string, unknown>[]; cursor: string } {
-    const bucket = this.ledger.get(userId) ?? [];
-    const slice = limit !== undefined ? bucket.slice(-limit) : bucket.slice();
-    return { entries: slice, cursor: '' };
+  ): { items: Record<string, unknown>[]; cursor: string | null } {
+    const bucket = (this.ledger.get(userId) ?? []).slice().reverse();
+    const slice = limit !== undefined ? bucket.slice(0, limit) : bucket;
+    return { items: slice.map((r) => ({ ...r })), cursor: null };
   }
 
+  /**
+   * One transaction, like production: every storage version is checked
+   * (`*` = must not exist, any other = must match) and every wallet
+   * update is computed before anything is applied, so a lost CAS or a
+   * negative balance changes nothing ("version check failed" /
+   * "rejected negative value").
+   */
   multiUpdate(
     _accountUpdates: unknown,
     storageWrites: IStorageObject[] | undefined,
     _storageDeletes: unknown,
-    _walletUpdates: unknown,
-    _updateLedger: unknown,
+    walletUpdates: IWalletUpdate[] | undefined,
+    updateLedger: boolean | undefined,
   ): IMultiUpdateResult {
+    for (const obj of storageWrites ?? []) {
+      const cur = this.store.get(storageKeyString(obj));
+      const v = obj.version;
+      if (v === '*' ? cur !== undefined : (v !== undefined && v !== '' && cur?.version !== v)) {
+        throw new Error('error running multi update: Storage write rejected - version check failed.');
+      }
+    }
+    // Computes (and validates) the wallets first; applies them below.
+    const planned = this.planWalletUpdates(walletUpdates ?? []);
+
     const storageWriteAcks: IStorageObjectAck[] = [];
     const now = new Date().toISOString();
+    for (const obj of storageWrites ?? []) {
+      this.versionCounter += 1;
+      const version = formatVersion(this.versionCounter);
+      const stored: IStorageObject = {
+        collection: obj.collection,
+        key: obj.key,
+        userId: obj.userId,
+        value: obj.value,
+        version,
+        permissionRead: obj.permissionRead ?? 0,
+        permissionWrite: obj.permissionWrite ?? 0,
+        createTime: now,
+        updateTime: now,
+        expiresAt: obj.expiresAt ?? null,
+      };
+      this.store.set(storageKeyString(obj), stored);
+      storageWriteAcks.push({
+        collection: obj.collection,
+        key: obj.key,
+        userId: obj.userId,
+        version,
+      });
+    }
+    const walletUpdateAcks = this.commitWalletUpdates(planned, updateLedger === true);
+    return { storageWriteAcks, walletUpdateAcks };
+  }
 
-    if (storageWrites) {
-      for (const obj of storageWrites) {
-        this.versionCounter += 1;
-        const version = formatVersion(this.versionCounter);
-        const stored: IStorageObject = {
-          collection: obj.collection,
-          key: obj.key,
-          userId: obj.userId,
-          value: obj.value,
-          version,
-          permissionRead: obj.permissionRead ?? 0,
-          permissionWrite: obj.permissionWrite ?? 0,
-          createTime: now,
-          updateTime: now,
-          expiresAt: obj.expiresAt ?? null,
-        };
-        this.store.set(storageKeyString(obj), stored);
-        storageWriteAcks.push({
-          collection: obj.collection,
-          key: obj.key,
-          userId: obj.userId,
-          version,
+  private applyWalletUpdates(updates: IWalletUpdate[], updateLedger: boolean): IWalletUpdateResult[] {
+    return this.commitWalletUpdates(this.planWalletUpdates(updates), updateLedger);
+  }
+
+  /** Sequential per user, as in `updateWallets`; throws before any write. */
+  private planWalletUpdates(updates: IWalletUpdate[]): Array<{ update: IWalletUpdate; result: IWalletUpdateResult }> {
+    const working = new Map<string, Record<string, number>>();
+    const out: Array<{ update: IWalletUpdate; result: IWalletUpdateResult }> = [];
+    for (const update of updates) {
+      const before = working.get(update.userId) ?? { ...(this.wallets.get(update.userId) ?? {}) };
+      const after = { ...before };
+      for (const [currency, delta] of Object.entries(update.changeset)) {
+        if (typeof delta !== 'number' || !Number.isInteger(delta)) {
+          throw new TypeError('expects changeset values to be whole numbers');
+        }
+        const next = (after[currency] ?? 0) + delta;
+        if (next < 0) {
+          throw new Error(`error running multi update: wallet update rejected negative value at path '${currency}'`);
+        }
+        after[currency] = next;
+      }
+      working.set(update.userId, after);
+      out.push({ update, result: { userId: update.userId, previous: { ...before }, updated: { ...after } } });
+    }
+    return out;
+  }
+
+  private commitWalletUpdates(
+    planned: Array<{ update: IWalletUpdate; result: IWalletUpdateResult }>,
+    updateLedger: boolean,
+  ): IWalletUpdateResult[] {
+    for (const { update, result } of planned) {
+      // A new object per update: a balance a test read earlier stays a
+      // snapshot (the old stub mutated the map entry in place, audit 05 f14).
+      this.wallets.set(update.userId, { ...result.updated });
+      if (updateLedger) {
+        let bucket = this.ledger.get(update.userId);
+        if (!bucket) {
+          bucket = [];
+          this.ledger.set(update.userId, bucket);
+        }
+        bucket.push({
+          id: randomUUID(),
+          userId: update.userId,
+          changeset: { ...update.changeset },
+          metadata: { ...(update.metadata ?? {}) },
+          createTime: Math.floor(Date.now() / 1000),
+          updateTime: Math.floor(Date.now() / 1000),
         });
       }
     }
-
-    return { storageWriteAcks, walletUpdateAcks: [] };
+    return planned.map((p) => p.result);
   }
 
   sha256Hash(input: string): string {
@@ -772,7 +838,7 @@ export class FakeNakama {
   readonly users: Map<string, IUser>;
   /** userId → wallet balances. Populated by `walletUpdate`. */
   readonly wallets: Map<string, Record<string, number>>;
-  /** userId → ledger entries (insertion order). Populated by `walletLedgerUpdate`. */
+  /** userId → ledger entries (insertion order). Appended by wallet updates with `updateLedger`. */
   readonly ledger: Map<string, Record<string, unknown>[]>;
   /** provider:customId → userId. Maintained by `accountLinkCustom`. */
   readonly links: Map<string, string>;

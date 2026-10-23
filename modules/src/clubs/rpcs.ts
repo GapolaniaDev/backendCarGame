@@ -304,7 +304,9 @@ export function club_create_impl(
       reason: 'club',
       sourceId: caller.id,
     },
-    `club_create:${caller.id}`,
+    // The group is in the key: wallet keys are durable (T-11), and a
+    // player who left a club may found another one.
+    `club_create:${caller.id}:${group.groupId}`,
   );
   if (!spendResult.ok) {
     if (groupCreateSucceeded) {

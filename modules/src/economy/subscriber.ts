@@ -12,7 +12,7 @@ import {
   isPrivateRacePaid,
   sizeKeyForEvent,
 } from './rewards';
-import { grant, applyLedger, type WalletView } from './wallet';
+import { grant, applyLedger, walletGet, type WalletView } from './wallet';
 import type { LedgerMetadata, Reward, WalletChangeset } from './types';
 
 export interface RewardSubscriberDeps {
@@ -131,7 +131,9 @@ function applyForPlayer(
     sessionId: event.sessionId,
     mode: event.mode,
   };
-  const grantResp = grant(nk, result.userId, changeset, metadata, grantKey);
+  const grantResp = Object.keys(changeset).length > 0
+    ? grant(nk, result.userId, changeset, metadata, grantKey)
+    : { ok: true as const, data: walletGet(nk, result.userId) };
   if (!grantResp.ok) {
     logger.warn(
       'race reward grant failed sid=%s user=%s: %s',
@@ -142,7 +144,7 @@ function applyForPlayer(
   }
   const newBalance = grantResp.ok
     ? grantResp.data
-    : { coins: 0, gems: 0 };
+    : walletGet(nk, result.userId);
 
   // 4) First-win-of-day stamp: write to profile, plus a ledger marker.
   if (isFirstWinOfDay) {
@@ -189,7 +191,12 @@ function rewardsToChangeset(rewards: Reward[]): WalletChangeset {
     if (r.kind === 'coins') coins += r.amount ?? 0;
     else if (r.kind === 'gems') gems += r.amount ?? 0;
   }
-  return { coins, gems };
+  // Only the currencies actually earned: `grant` rejects a zero amount, so
+  // a race without gems used to pay nothing at all (T-11).
+  const out: WalletChangeset = {};
+  if (coins > 0) out.coins = coins;
+  if (gems > 0) out.gems = gems;
+  return out;
 }
 
 /**

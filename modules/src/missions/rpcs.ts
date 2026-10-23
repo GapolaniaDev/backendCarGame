@@ -297,7 +297,10 @@ export const mission_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   if (Object.keys(changeset).length > 0) {
     const meta: LedgerMetadata = { reason: 'mission', sourceId: 'mission_claim' };
-    const grantKey = `mission:${kind}:${missionId}:${userId}`;
+    // The period is in the key: wallet keys are durable (T-11) and a
+    // mission id comes back in later days / weeks.
+    const period = kind === 'daily' ? dateUtc : weekUtc;
+    const grantKey = `mission:${kind}:${period}:${missionId}:${userId}`;
     const grantResp = grant(nk, userId, changeset, meta, grantKey);
     if (!grantResp.ok) return toJson(grantResp);
   }

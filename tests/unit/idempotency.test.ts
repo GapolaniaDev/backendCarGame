@@ -1,135 +1,70 @@
-// Unit tests for the idempotency helper.
-//
-// The helper relies on `nk.localcacheGet/Put` semantics, which we stub
-// with a plain in-memory Map. We don't need the rest of the Nakama API
-// for this file.
+// Unit tests for the durable idempotency records (plan T-11, audit PC-11).
+// The movement itself (the record written in the wallet's multiUpdate)
+// is covered by `wallet.test.ts`; these cover the record helpers.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { describe, it, expect } from 'vitest';
 
-import type { INakama } from '../../modules/src/nkruntime';
-import { withIdempotency } from '../../modules/src/core/idempotency';
-import { ok, err } from '../../modules/src/core/response';
+import type { INakama, IStorageObject } from '../../modules/src/nkruntime';
+import {
+  IDEMPOTENCY_COLLECTION,
+  IDEMPOTENCY_STORAGE_KEY_MAX,
+  idempotencyStorageKey,
+  idempotencyWrite,
+  isNegativeWallet,
+  isVersionConflict,
+  readIdempotency,
+  type IdempotencyRecord,
+} from '../../modules/src/core/idempotency';
 
-interface NkStub {
-  store: Map<string, unknown>;
-  nk: INakama;
-}
-
-function makeNkStub(): NkStub {
-  const store = new Map<string, unknown>();
-  const nk = {
-    localcacheGet<T>(key: string): T | null {
-      return store.has(key) ? (store.get(key) as T) : null;
-    },
-    localcachePut<T>(key: string, value: T): void {
-      store.set(key, value);
-    },
+function makeNk(objects: IStorageObject[] = []): INakama {
+  return {
+    sha256Hash: (s: string) => createHash('sha256').update(s).digest('hex'),
+    storageRead: (keys: Array<{ collection: string; key: string; userId?: string }>) =>
+      objects.filter((o) => keys.some((k) => k.collection === o.collection && k.key === o.key && k.userId === o.userId)),
   } as unknown as INakama;
-  return { store, nk };
 }
 
-describe('withIdempotency', () => {
-  let stub: NkStub;
-  beforeEach(() => {
-    stub = makeNkStub();
+const record = (key: string): IdempotencyRecord => ({
+  schemaVersion: 1,
+  key,
+  state: 'applied',
+  changeset: { coins: -100 },
+  appliedAt: 1,
+});
+
+describe('core/idempotency', () => {
+  it('uses the key itself as storage key when it fits, a sha256 otherwise', () => {
+    const nk = makeNk();
+    expect(idempotencyStorageKey(nk, 'store:buy:car:u1:civic_r')).toBe('store:buy:car:u1:civic_r');
+    const long = 'k'.repeat(IDEMPOTENCY_STORAGE_KEY_MAX + 1);
+    expect(idempotencyStorageKey(nk, long)).toBe(`sha256:${createHash('sha256').update(long).digest('hex')}`);
+    expect(idempotencyStorageKey(nk, long).length).toBeLessThanOrEqual(IDEMPOTENCY_STORAGE_KEY_MAX);
   });
 
-  it('runs the function once and caches the response', async () => {
-    let calls = 0;
-    const { nk } = stub;
-    const scope = 'race_submit_result';
-    const key = 'abc';
-
-    const a = await withIdempotency<string>(nk, { scope, key }, async () => {
-      calls++;
-      return ok('hello');
+  it('builds a server-only, create-only write (version *) unless a version is given', () => {
+    const nk = makeNk();
+    const create = idempotencyWrite(nk, 'u1', record('k1'), null);
+    expect(create).toMatchObject({
+      collection: IDEMPOTENCY_COLLECTION, key: 'k1', userId: 'u1', version: '*', permissionRead: 0, permissionWrite: 0,
     });
-    expect(a.replayed).toBe(false);
-    expect(a.result).toEqual(ok('hello'));
-    expect(calls).toBe(1);
-
-    const b = await withIdempotency<string>(nk, { scope, key }, async () => {
-      calls++;
-      return ok('hello again');
-    });
-    expect(b.replayed).toBe(true);
-    expect(b.result).toEqual(ok('hello'));
-    expect(calls).toBe(1);
+    expect(idempotencyWrite(nk, 'u1', record('k1'), 'v7').version).toBe('v7');
   });
 
-  it('caches err responses as well as ok', async () => {
-    const { nk } = stub;
-    const e = err('CONFLICT', 'session closed');
-    const a = await withIdempotency(nk, { scope: 'x', key: 'k' }, () => Promise.resolve(e));
-    expect(a.result.ok).toBe(false);
-
-    let calls = 0;
-    const b = await withIdempotency(nk, { scope: 'x', key: 'k' }, () => {
-      calls++;
-      return Promise.resolve(ok('should not run'));
-    });
-    expect(b.replayed).toBe(true);
-    expect(b.result).toEqual(e);
-    expect(calls).toBe(0);
+  it('reads a record back with its version, or null', () => {
+    const nk = makeNk([{
+      collection: IDEMPOTENCY_COLLECTION, key: 'k1', userId: 'u1', value: record('k1') as never,
+      version: 'v3', permissionRead: 0, permissionWrite: 0,
+    }]);
+    expect(readIdempotency(nk, 'u1', 'k1')).toEqual({ record: record('k1'), version: 'v3' });
+    expect(readIdempotency(nk, 'u2', 'k1')).toBeNull();
+    expect(readIdempotency(nk, 'u1', 'k2')).toBeNull();
   });
 
-  it('treats different scopes as independent', async () => {
-    const { nk } = stub;
-    let calls = 0;
-
-    const a = await withIdempotency(nk, { scope: 'A', key: '1' }, async () => {
-      calls++;
-      return ok('A1');
-    });
-    const b = await withIdempotency(nk, { scope: 'B', key: '1' }, async () => {
-      calls++;
-      return ok('B1');
-    });
-    expect(a.replayed).toBe(false);
-    expect(b.replayed).toBe(false);
-    expect(calls).toBe(2);
-  });
-
-  it('treats different keys under same scope as independent', async () => {
-    const { nk } = stub;
-    let calls = 0;
-
-    const a = await withIdempotency(nk, { scope: 'X', key: 'k1' }, async () => {
-      calls++;
-      return ok('one');
-    });
-    const b = await withIdempotency(nk, { scope: 'X', key: 'k2' }, async () => {
-      calls++;
-      return ok('two');
-    });
-    expect(a.replayed).toBe(false);
-    expect(b.replayed).toBe(false);
-    expect(calls).toBe(2);
-  });
-
-  it('does not cache when fn throws', async () => {
-    const { nk } = stub;
-    let calls = 0;
-
-    await expect(
-      withIdempotency(nk, { scope: 'X', key: 'throw' }, () => {
-        calls++;
-        throw new Error('boom');
-      }),
-    ).rejects.toThrow('boom');
-
-    // Second call should re-execute.
-    const r = await withIdempotency(nk, { scope: 'X', key: 'throw' }, () => {
-      calls++;
-      return ok('recovered');
-    });
-    expect(r.replayed).toBe(false);
-    expect(r.result).toEqual(ok('recovered'));
-    expect(calls).toBe(2);
-  });
-
-  it('clears cache across tests (stub store is fresh per test)', () => {
-    const { store } = stub;
-    expect(store.size).toBe(0);
+  it('recognises the 3.27 multiUpdate failures', () => {
+    expect(isVersionConflict(new Error('error running multi update: Storage write rejected - version check failed.'))).toBe(true);
+    expect(isNegativeWallet({ message: "error running multi update: wallet update rejected negative value at path 'coins'" })).toBe(true);
+    expect(isVersionConflict(new Error('db down'))).toBe(false);
+    expect(isNegativeWallet('db down')).toBe(false);
   });
 });
