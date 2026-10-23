@@ -51,6 +51,17 @@
 //     clientVersion pass the version gate and a lower clientVersion gets
 //     UPGRADE_REQUIRED (config_get too, whose minClientVersion is the
 //     LiveOps one);
+//   - F4 accounts, inbox and LiveOps (plan T-15, T-16, T-17): the old
+//     link secret is not in modules/index.js and a token signed with it is
+//     rejected; a native custom link earns the bonus once; a link conflict
+//     resolves with the owner's session (open) and the keeper's (resolve),
+//     deleting that real account; account_delete of K3 (races, a purchase,
+//     a friend) leaves 0 objects in every collection of core/collections.ts,
+//     no system row keyed by it, no friend mirror edge and no leaderboard
+//     record; before the restart, legacy liveops_inbox entries are seeded
+//     through the console and the migration marker deleted, and after it a
+//     season reward and a tournament notice are in inbox_list, two
+//     concurrent claims of the season reward pay once;
 //   - `docker compose logs nakama` since the last boot: no error-level
 //     lines, no "rpc registration failed", no "auto-create failed",
 //     periodic service-ticker ticks, and the cost of loading the runtime
@@ -63,6 +74,7 @@
 // Target: 127.0.0.1 unless --host is given explicitly.
 
 import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1008,6 +1020,210 @@ async function afterRestartChecks(econ, f1Retry) {
   }
 }
 
+// ── F4: accounts, inbox and LiveOps (plan T-15, T-16, T-17) ─────────────────
+/** The secret the removed `account/token.ts` signed link tokens with (audit 06 f11). */
+const LEGACY_LINK_SECRET = ['p5v4', 'account', 'link', 'test', 'secret', 'do', 'not', 'ship'].join('-');
+const SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
+/** Collection names of the central registry (core/collections.ts). */
+const REGISTRY = [...readFileSync(resolve(ROOT, 'modules', 'src', 'core', 'collections.ts'), 'utf8')
+  .matchAll(/(?:name: |userOwned\()'([a-z_]+)'/g)].map((m) => m[1]);
+
+async function consoleGet(ct, path) {
+  const res = await fetch(`${CONSOLE_BASE}${path}`, { headers: { Authorization: `Bearer ${ct}` } });
+  let body = null;
+  try { body = await res.json(); } catch { body = null; }
+  return { status: res.status, body };
+}
+
+async function consoleSend(ct, method, path, body) {
+  const res = await fetch(`${CONSOLE_BASE}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ct}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return res.status;
+}
+
+const objectPath = (collection, key, uid) => `/v2/console/storage/${collection}/${encodeURIComponent(key)}/${uid}`;
+
+/** Custom-id authentication; `create: false` is how a client proves it owns an identity. */
+async function authCustom(serverKey, id, create) {
+  const basic = Buffer.from(`${serverKey}:`).toString('base64');
+  const r = await http('POST', `/v2/account/authenticate/custom?create=${create}`, {
+    body: { id },
+    headers: { Authorization: `Basic ${basic}` },
+  });
+  return r.status === 200 && r.json?.token ? { token: r.json.token, uid: jwtClaims(r.json.token).uid } : { status: r.status };
+}
+
+async function linkCustomNative(acct, id) {
+  return (await http('POST', '/v2/account/link/custom', { body: { id }, headers: { Authorization: `Bearer ${acct.token}` } })).status;
+}
+
+function legacyLinkToken(provider, customId) {
+  const payload = Buffer.from(JSON.stringify({ provider, customId, exp: Math.floor(Date.now() / 1000) + 600 })).toString('base64url');
+  return `v1.${provider}.${payload}.${createHmac('sha256', LEGACY_LINK_SECRET).update(payload).digest('base64url')}`;
+}
+
+/** T-15: no token or secret; native links, the bonus once, conflicts with both sessions. */
+async function linkingScenario(serverKey, ct) {
+  const bundle = readFileSync(resolve(ROOT, 'modules', 'index.js'), 'utf8');
+  record('T-15 the old link secret is not in modules/index.js', !bundle.includes(LEGACY_LINK_SECRET) && !bundle.includes('account-link-test-secret'),
+    bundle.includes(LEGACY_LINK_SECRET) ? 'FOUND' : 'absent');
+
+  const l = await freshAccounts(serverKey, 'link', ['L1', 'L3']);
+  const forged = await rpc(l.L1.token, 'account_link', { provider: 'custom', token: legacyLinkToken('custom', `smoke-forged-${Date.now()}`) });
+  const w0 = await walletOf(l.L1);
+  record('T-15 a token signed with the old secret is rejected (nothing linked or paid)',
+    errCode(forged) === 'BAD_REQUEST' && forged.envelope?.error?.details?.reason === 'NATIVE_LINK_REQUIRED' && w0?.coins === 0,
+    `${errCode(forged)} ${forged.envelope?.error?.details?.reason ?? ''} coins=${w0?.coins}`);
+
+  const linked = await linkCustomNative(l.L1, `smoke-${Date.now()}-L1-custom`);
+  const first = await rpc(l.L1.token, 'account_link', {});
+  const second = await rpc(l.L1.token, 'account_link', { provider: 'custom' });
+  const w1 = await walletOf(l.L1);
+  record('T-15 native link → account_link pays the 500-coin bonus once',
+    linked === 200 && first.envelope?.data?.bonusClaimed === true && second.envelope?.data?.bonusClaimed === false && w1?.coins === 500,
+    `link HTTP ${linked}; first ${errCode(first)} bonus=${first.envelope?.data?.bonusClaimed} providers=${JSON.stringify(first.envelope?.data?.providers)}; second bonus=${second.envelope?.data?.bonusClaimed}; coins=${w1?.coins}`);
+
+  // Conflict: L2 owns the identity; L3 wants it.
+  const shared = `smoke-${Date.now()}-shared-custom`;
+  const l2 = await authCustom(serverKey, shared, true);
+  const refused = await linkCustomNative(l.L3, shared);
+  const proven = await authCustom(serverKey, shared, false);
+  const opened = await rpc(proven.token, 'account_link_resolve_conflict', { step: 'open' });
+  const token = opened.envelope?.data?.conflictToken;
+  const resolved = await rpc(l.L3.token, 'account_link_resolve_conflict', { step: 'resolve', conflictToken: token, choice: 'link', confirmText: 'TRANSFER' });
+  const gone = ct ? (await consoleGet(ct, `/v2/console/account/${l2.uid}`)).status : null;
+  const relinked = await linkCustomNative(l.L3, shared);
+  const owner = await authCustom(serverKey, shared, false);
+  record('T-15 conflict: open with the owner’s session, resolve deletes that real account, the identity re-links natively',
+    refused === 409 && proven.uid === l2.uid && opened.envelope?.data?.target?.userId === l2.uid
+      && resolved.envelope?.data?.resolved === 'linked' && (gone === null || gone === 404) && relinked === 200 && owner.uid === l.L3.uid,
+    `native link HTTP ${refused}; open ${errCode(opened)} target=${opened.envelope?.data?.target?.userId === l2.uid ? 'owner' : '?'}; resolve ${errCode(resolved)}; old account ${gone ?? 'n/a'}; re-link HTTP ${relinked}; identity → ${owner.uid === l.L3.uid ? 'L3' : owner.uid ?? owner.status}`);
+}
+
+/** Every leaderboard id (console listing) with a record of `uid`, read with another player's session. */
+async function boardsWith(ct, reader, uid) {
+  const listed = await consoleGet(ct, '/v2/console/leaderboard');
+  const ids = (listed.body?.leaderboards ?? []).map((x) => x.id);
+  const found = [];
+  for (const id of ids) {
+    const r = await http('GET', `/v2/leaderboard/${encodeURIComponent(id)}?owner_ids=${uid}&limit=1`, { headers: { Authorization: `Bearer ${reader.token}` } });
+    if ((r.json?.owner_records ?? []).length > 0 || (r.json?.records ?? []).some((x) => x.owner_id === uid)) found.push(id);
+  }
+  return { ids, found };
+}
+
+/** T-16: account_delete of an account with races, a purchase and a friend leaves nothing behind. */
+async function deleteScenario(ct, target, friend) {
+  if (!ct) {
+    record('T-16 account_delete leaves 0 objects in every registry collection', null, 'console login failed');
+    return;
+  }
+  await rpc(target.token, 'garage_get', GATE);
+  await fund(ct, target.uid);
+  const offer = (await storeOffers(target) ?? []).filter((o) => o.offer.kind === 'cosmetic' && o.finalPrice.coins > 0 && o.finalPrice.gems === 0)
+    .sort((x, y) => x.finalPrice.coins - y.finalPrice.coins)[0];
+  const bought = offer ? await rpc(target.token, 'store_buy', { offerId: offer.offer.offerId }) : null;
+  const code = (await rpc(target.token, 'friend_code_get', {})).envelope?.data?.code;
+  const added = code ? await rpc(friend.token, 'friend_add_by_code', { code }) : null;
+  const mirror = objectPath('friends_edge', target.uid, friend.uid);
+  const before = await consoleGet(ct, `/v2/console/storage?user_id=${target.uid}`);
+  const boardsBefore = await boardsWith(ct, friend, target.uid);
+  const mirrorBefore = (await consoleGet(ct, mirror)).status;
+  record('T-16 the account to delete has races, a purchase and a friend',
+    bought?.envelope?.ok === true && added?.envelope?.ok === true && mirrorBefore === 200 && boardsBefore.found.length > 0,
+    `boards=${boardsBefore.found.join(',') || 'none'} buy=${bought ? errCode(bought) : 'no offer'} friend=${added ? errCode(added) : 'no code'} objects=${(before.body?.objects ?? []).length}`);
+
+  const del = await rpc(target.token, 'account_delete', { confirmText: 'DELETE' });
+  const s = del.envelope?.data?.summary;
+  record('T-16 account_delete ok', del.envelope?.ok === true,
+    s ? `storage=${s.storageDeleted} refs=${s.referencesRemoved} boards=${s.boardsDeleted} collections=${(s.collectionsAffected ?? []).length}` : errCode(del));
+
+  const leftovers = [];
+  for (const collection of REGISTRY) {
+    const r = await consoleGet(ct, `/v2/console/storage?collection=${collection}&user_id=${target.uid}`);
+    const n = (r.body?.objects ?? []).filter((o) => o.user_id === target.uid).length;
+    if (r.status !== 200 || n > 0) leftovers.push(`${collection}=${r.status === 200 ? n : `HTTP ${r.status}`}`);
+  }
+  const all = await consoleGet(ct, `/v2/console/storage?user_id=${target.uid}`);
+  const keyed = [];
+  for (const [collection, key] of [['race_active', target.uid], ['anti_cheat_marks', target.uid], ['race_sessions', `last_closed/${target.uid}`]]) {
+    if ((await consoleGet(ct, objectPath(collection, key, SYSTEM_USER))).status !== 404) keyed.push(`${collection}/${key}`);
+  }
+  const mirrorAfter = (await consoleGet(ct, mirror)).status;
+  record(`T-16 storageList of each of the ${REGISTRY.length} registry collections → 0 objects of the user`,
+    REGISTRY.length >= 60 && leftovers.length === 0 && (all.body?.objects ?? []).length === 0 && keyed.length === 0 && mirrorAfter === 404,
+    `${leftovers.join(', ') || 'all 0'}; any collection=${(all.body?.objects ?? []).length}; system rows keyed by the user=${keyed.join(',') || 'none'}; friend's mirror edge HTTP ${mirrorAfter}`);
+  const boardsAfter = await boardsWith(ct, friend, target.uid);
+  const account = (await consoleGet(ct, `/v2/console/account/${target.uid}`)).status;
+  const session = await rpc(target.token, 'wallet_get', GATE);
+  record('T-16 the user is in no leaderboard and the account is gone',
+    boardsAfter.found.length === 0 && account === 404 && session.status === 401,
+    `boards with a record: ${boardsAfter.found.join(',') || 'none'} (of ${boardsAfter.ids.length}); console account HTTP ${account}; old session HTTP ${session.status}`);
+}
+
+const LEGACY_SEASON_ID = 'season_2-rank-4';
+
+/** T-17: seed liveops_inbox as the pre-T-17 server wrote it and re-arm the boot migration. */
+async function seedLegacyInbox(ct, serverKey) {
+  const { I1: acct } = await freshAccounts(serverKey, 'inbox', ['I1']);
+  await rpc(acct.token, 'garage_get', GATE);
+  const nowMs = Date.now();
+  const tournamentId = `tournament:smoke-${nowMs}:prize:${acct.uid}:1`;
+  const entries = [
+    // The amount is forged on purpose: the migration takes it from the tier of rank 4.
+    { rewardId: LEGACY_SEASON_ID, type: 'season_bronze', payload: { coins: 999_999, cosmetics: [], note: 'Season 1 — Bronze tier (rank 4-10)' } },
+    { rewardId: tournamentId, type: 'tournament_prize', payload: { coins: 400, note: 'Tournament prize: rank 1' } },
+  ];
+  const writes = [];
+  for (const e of entries) {
+    writes.push(await consoleSend(ct, 'PUT', objectPath('liveops_inbox', `${acct.uid}/${e.rewardId}`, acct.uid), {
+      value: JSON.stringify({ schemaVersion: 1, userId: acct.uid, createdAt: nowMs, expiresAt: null, claimed: false, ...e }),
+      permission_read: 1,
+      permission_write: 1,
+    }));
+  }
+  const marker = await consoleSend(ct, 'DELETE', objectPath('migrations', 'inbox_v1', SYSTEM_USER));
+  const ok = writes.every((w) => w === 200) && marker === 200;
+  record('T-17 legacy liveops_inbox entries seeded and the migration re-armed', ok, `writes ${writes.join(',')} marker DELETE ${marker}`);
+  return ok ? { acct, tournamentId } : null;
+}
+
+/** After the restart: the legacy rewards are in inbox_list, the season one pays once under concurrency. */
+async function inboxChecks(ct, seeded) {
+  const { acct, tournamentId } = seeded;
+  const legacyLeft = (await consoleGet(ct, `/v2/console/storage?collection=liveops_inbox&user_id=${acct.uid}`)).body?.objects ?? [];
+  const marker = (await consoleGet(ct, objectPath('migrations', 'inbox_v1', SYSTEM_USER))).status;
+  const list = await rpc(acct.token, 'inbox_list', {});
+  const msgs = list.envelope?.data?.messages ?? [];
+  const season = msgs.find((m) => m.id === LEGACY_SEASON_ID);
+  const notice = msgs.find((m) => m.id === tournamentId);
+  record('T-17 boot migration: season reward and tournament notice appear in inbox_list',
+    legacyLeft.length === 0 && marker === 200 && season?.kind === 'reward' && season?.reward?.coins === 1000
+      && notice?.kind === 'system' && notice?.granted?.coins === 400 && notice?.reward === undefined,
+    `legacy left=${legacyLeft.length} marker HTTP ${marker}; season ${season ? `${season.kind} coins=${season.reward?.coins}` : 'missing'}; tournament ${notice ? `${notice.kind} granted=${notice.granted?.coins}` : 'missing'}`);
+
+  const w0 = await walletOf(acct);
+  const claims = await Promise.all([1, 2].map(() => rpc(acct.token, 'inbox_claim', { messageId: LEGACY_SEASON_ID })));
+  const third = await rpc(acct.token, 'inbox_claim', { messageId: LEGACY_SEASON_ID });
+  const w1 = await walletOf(acct);
+  const ledger = await ledgerOf(ct, acct.uid);
+  const paid = ledger.filter((l) => l.metadata.idempotencyKey === `inbox:${LEGACY_SEASON_ID}`);
+  const codes = claims.map(errCode).sort();
+  record('T-17 two concurrent inbox_claim of the season reward → one payment',
+    codes.join(',') === 'CONFLICT,ok' && errCode(third) === 'CONFLICT' && w0 && w1 && w1.coins - w0.coins === 1000
+      && paid.length === 1 && paid[0].changeset.coins === 1000,
+    `claims ${codes.join(',')} then ${errCode(third)}; wallet +${w0 && w1 ? w1.coins - w0.coins : '?'}; ledger rows ${paid.length}`);
+
+  const ack = await rpc(acct.token, 'inbox_claim', { messageId: tournamentId });
+  const w2 = await walletOf(acct);
+  record('T-17 a tournament notice is acknowledged without paying again',
+    ack.envelope?.ok === true && ack.envelope.data.newBalance === undefined && w1 && w2 && w2.coins === w1.coins,
+    `${errCode(ack)} wallet ${w1?.coins} → ${w2?.coins}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
@@ -1104,6 +1320,10 @@ async function main() {
     record('http_key call without session → UNAUTHENTICATED', null, 'NAKAMA_RUNTIME_HTTP_KEY not in .env');
   }
 
+  // F4 (T-15): native linking, no token or secret in the bundle.
+  const ct4 = await consoleToken(env);
+  await linkingScenario(serverKey, ct4);
+
   // Minimal F0 flow (what BackendSmoke needs first).
   const cfg = await rpc(a.token, 'config_get', {});
   record('config_get ok with serverTimeMs', cfg.envelope?.ok === true && typeof cfg.envelope?.data?.serverTimeMs === 'number', errCode(cfg));
@@ -1132,6 +1352,10 @@ async function main() {
   if (f3) {
     await finishF3Races(f3, 'ranked');
     await leaderboardChecks(f3);
+    // F4 (T-16): K3 has raced (quick + ranked); delete it last.
+    await deleteScenario(ct4, f3k.K3, c);
+  } else {
+    record('T-16 account_delete of an account with a race', null, '--skip-race');
   }
 
   if (bin) {
@@ -1141,10 +1365,13 @@ async function main() {
 
   // Restart last: the log checks above cover the run before it.
   if (bin && econ && !SKIP_RESTART) {
+    // F4 (T-17): legacy inbox entries, migrated by the next boot.
+    const seeded = ct4 ? await seedLegacyInbox(ct4, serverKey) : null;
     const up = await restartNakama(bin);
     record('Nakama restarted (same compose files) and answering', up, '');
     if (up) {
       await afterRestartChecks(econ, f1Retry);
+      if (seeded) await inboxChecks(ct4, seeded);
       const { started, lines } = nakamaLogsSinceBoot(bin);
       recordErrors('logs: no error-level lines since the restart', classifyErrors(parseLogLines(lines)), started);
     }
