@@ -361,6 +361,8 @@ export interface PassBuyPremiumOutput {
   premiumPurchased: true;
   priceGems: number;
   newGemsBalance: number;
+  /** Additive (T-12): `{coins, gems}` like every money RPC. */
+  newBalance: { coins: number; gems: number };
 }
 
 /**
@@ -413,6 +415,7 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
       premiumPurchased: true as const,
       priceGems,
       newGemsBalance: currentGems(nk, userId),
+      newBalance: walletGet(nk, userId),
     } satisfies PassBuyPremiumOutput));
   }
 
@@ -446,6 +449,7 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
         premiumPurchased: true as const,
         priceGems,
         newGemsBalance: spendResult.balance,
+        newBalance: walletGet(nk, userId),
       } satisfies PassBuyPremiumOutput));
     } catch (e) {
       logger.warn(
@@ -466,6 +470,7 @@ export const pass_buy_premium_impl: RpcHandler = (ctx, logger, nk, body) => {
           premiumPurchased: true as const,
           priceGems,
           newGemsBalance: currentGems(nk, userId),
+          newBalance: walletGet(nk, userId),
         } satisfies PassBuyPremiumOutput));
       }
       version = fresh.version;

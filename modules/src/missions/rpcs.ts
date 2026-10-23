@@ -13,7 +13,7 @@ import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
-import { grant, spend } from '../economy/wallet';
+import { grant, spend, walletGet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import { utcDate, utcWeek } from '../core/time';
 import { addPassXp } from '../pass/pass_repo';
@@ -339,6 +339,8 @@ export const mission_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
     missionId,
     reward,
     kind,
+    // Additive (T-12): `{coins, gems}` like every money RPC.
+    newBalance: walletGet(nk, userId),
     xpGranted: passXpGranted,
     passLevel: passNewLevel,
     levelUps: passLevelUps,

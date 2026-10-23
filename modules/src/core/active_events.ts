@@ -20,20 +20,41 @@ import {
 
 let CACHED: ScheduledEvent[] | null = null;
 
+/**
+ * Validate and cache the events catalog. With `storeOfferIds`, a
+ * `special_offer` whose `payload.sku` is not a store offer id is dropped
+ * with a warning (plan T-12, HT-80): the store could neither show nor
+ * sell it.
+ */
 export function loadEventsCatalog(
   logger: ILogger,
   raw: unknown,
   _nk: unknown,
+  storeOfferIds?: ReadonlySet<string>,
 ): ScheduledEvent[] {
   const v = validateEventsFile(raw);
   if (!v.ok) {
     throw new Error(`events catalog invalid: ${v.reason}`);
   }
-  CACHED = v.value.events;
+  const kept: ScheduledEvent[] = [];
+  const dropped: string[] = [];
+  for (const e of v.value.events) {
+    const sku = (e.payload as { sku?: unknown }).sku;
+    if (storeOfferIds !== undefined && e.kind === 'special_offer'
+      && (typeof sku !== 'string' || !storeOfferIds.has(sku))) {
+      dropped.push(`${e.id} (sku ${String(sku)})`);
+      continue;
+    }
+    kept.push(e);
+  }
+  if (dropped.length > 0) {
+    logger.warn('events catalog: special_offer dropped, sku is not a store offer: %s', dropped.join(', '));
+  }
+  CACHED = kept;
   logger.info(
     'events catalog loaded: version=%d events=%d',
     v.value.version,
-    v.value.events.length,
+    kept.length,
   );
   return CACHED;
 }

@@ -44,7 +44,15 @@ import type {
   StoreSection,
   StoreOffer,
 } from './types';
-import { getEventsCatalog } from '../core/active_events';
+import { assertNotInMaintenance } from '../core/liveops';
+import {
+  basePrice,
+  finalPrice,
+  findStoreOffer,
+  specialOfferPricing,
+  type OfferPrice,
+  type SpecialOfferPricing,
+} from './pricing';
 import { readProfile } from '../profiles/storage';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
@@ -61,13 +69,25 @@ export interface StoreGetOutput {
   /** Sections after rotation + filtering. */
   sections: ReadonlyArray<{
     section: { id: StoreSection['id']; displayName: string };
-    offers: ReadonlyArray<{ offer: StoreOffer; isDailyOffer: boolean }>;
+    offers: ReadonlyArray<{
+      offer: StoreOffer;
+      isDailyOffer: boolean;
+      basePrice: OfferPrice;
+      /** What `store_buy` charges right now (T-12). */
+      finalPrice: OfferPrice;
+      activeSpecialOfferId?: string;
+      /** Additive (T-12). Owned offers are hidden, so a listed one is false. */
+      owned: boolean;
+    }>;
   }>;
 }
 
 export interface StoreBuyInput {
   offerId: string;
-  /** Optional client-supplied "now" for deterministic tests. */
+  /**
+   * Ignored since T-12: prices, discounts and expiry use the server
+   * clock, so a client cannot buy inside a past discount window.
+   */
   nowMs?: number;
   callerUserId: string;
 }
@@ -79,6 +99,8 @@ export interface StoreBuyOutput {
     | { kind: 'cosmetic'; refId: string }
     | { kind: 'pack'; refId: string; changeset: { coins?: number; gems?: number } };
   newBalance: { coins: number; gems: number };
+  /** Additive (T-12): the price charged, equal to `store_get` `finalPrice`. */
+  pricePaid: OfferPrice;
 }
 
 export type RpcHandler = (
@@ -97,6 +119,11 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
+  // LiveOps gate (T-12, audit X2-d): maintenance only. The Unity client
+  // sends no clientVersion, so the min-version half would reject it; the
+  // version gate is T-14's.
+  const maint = assertNotInMaintenance(logger, nk, userId);
+  if (maint !== null) return toJson(maint);
 
   const nowMs = parsed.value.nowMs ?? Date.now();
   const catalog = getStoreCatalog();
@@ -133,11 +160,9 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   // Phase 8 Chunk 8: read the player's `activeSpecialOffers` so we can
   // decorate each visible offer with basePrice/finalPrice and an
   // optional `activeSpecialOfferId`. The list is reconciled by the
-  // 5min `startEventScanner`; a profile without the field simply sees
-  // no discount (default path).
-  const profile = readProfile(nk, userId);
-  const activeOfferIds = new Set<string>(profile?.activeSpecialOffers ?? []);
-  const pricingByOffer = computeSpecialOfferPricing(activeOfferIds, nowMs);
+  // events scanner; a profile without the field simply sees no discount.
+  // The server clock decides the discount window, as in store_buy (T-12).
+  const pricingByOffer = playerPricing(nk, userId, Date.now());
 
   const filtered = rotated.map((section) => {
     const { visible } = filterOffersForSection(section, ctxFilter);
@@ -149,17 +174,10 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
         return {
           offer,
           isDailyOffer: v.isDailyOffer,
-          basePrice: {
-            coins: typeof offer.priceCoins === 'number' ? offer.priceCoins : 0,
-            gems: typeof offer.priceGems === 'number' ? offer.priceGems : 0,
-          },
-          finalPrice: pricing
-            ? pricing.finalPrice
-            : {
-                coins: typeof offer.priceCoins === 'number' ? offer.priceCoins : 0,
-                gems: typeof offer.priceGems === 'number' ? offer.priceGems : 0,
-              },
+          basePrice: basePrice(offer),
+          finalPrice: finalPrice(offer, pricingByOffer),
           ...(pricing ? { activeSpecialOfferId: pricing.eventId } : {}),
+          owned: isOwned(offer, ctxFilter),
         };
       }),
     };
@@ -188,11 +206,14 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   const callerId = requireCallerId(ctx, parsed.value);
   if (!callerId.ok) return callerId.error;
   const userId = callerId.id;
+  const maint = assertNotInMaintenance(logger, nk, userId);
+  if (maint !== null) return toJson(maint);
 
-  const nowMs = parsed.value.nowMs ?? Date.now();
+  // The server clock only (T-12): expiry and discount windows.
+  const nowMs = Date.now();
 
   // 1) Look up the offer in the catalog.
-  const offer = findOffer(parsed.value.offerId);
+  const offer = findStoreOffer(parsed.value.offerId);
   if (!offer) {
     return toJson(err('NOT_FOUND', `offer not in catalog: ${parsed.value.offerId}`));
   }
@@ -282,9 +303,11 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     return toJson(err('CONFLICT', `delivery failed: ${(e as Error).message} — nothing was charged`));
   }
 
+  // The price store_get showed: same function, same clock (T-12, PC-20).
+  let pricePaid = finalPrice(offer, playerPricing(nk, userId, nowMs));
   const moves: WalletMove[] = [];
   const priceChangeset: Record<string, number> = {};
-  for (const [k, v] of Object.entries(positiveAmounts({ coins: offer.priceCoins, gems: offer.priceGems }))) {
+  for (const [k, v] of Object.entries(positiveAmounts(pricePaid))) {
     priceChangeset[k] = -v;
   }
   if (Object.keys(priceChangeset).length > 0) moves.push({ changeset: priceChangeset, metadata });
@@ -293,7 +316,7 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
   const moved = moveWallet(nk, userId, grantKey, moves, {
     extraWrites: [garageWrite(nextGarage, garageVersion)],
-    result: { delivery },
+    result: { delivery, pricePaid },
   });
   if (!moved.ok) {
     if (moved.error.code === 'CONFLICT') {
@@ -304,8 +327,9 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
   if (moved.data.replayed) {
     // A concurrent call with the same key bought it: answer what it delivered.
-    const stored = (moved.data.record.result as { delivery?: StoreBuyOutput['delivery'] } | undefined)?.delivery;
-    if (stored) delivery = stored;
+    const stored = moved.data.record.result as Partial<Pick<StoreBuyOutput, 'delivery' | 'pricePaid'>> | undefined;
+    if (stored?.delivery) delivery = stored.delivery;
+    if (stored?.pricePaid) pricePaid = stored.pricePaid;
   }
 
   // 8) The balance after the movement (the pack contents included).
@@ -320,66 +344,26 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
     offerId: offer.offerId,
     kind: offer.kind,
     refId: offer.refId,
-    priceCoins: offer.priceCoins ?? 0,
-    priceGems: offer.priceGems ?? 0,
+    priceCoins: pricePaid.coins,
+    priceGems: pricePaid.gems,
     finalBalance,
   });
-  return toJson(ok({ delivery, newBalance: finalBalance }));
+  return toJson(ok({ delivery, newBalance: finalBalance, pricePaid }));
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-interface SpecialOfferPricing {
-  eventId: string;
-  finalPrice: { coins: number; gems: number };
+/** Special-offer pricing of the player's active offers at `nowMs`. */
+function playerPricing(nk: INakama, userId: string, nowMs: number): Map<string, SpecialOfferPricing> {
+  const profile = readProfile(nk, userId);
+  return specialOfferPricing(new Set<string>(profile?.activeSpecialOffers ?? []), nowMs);
 }
 
-/**
- * Map offerId → special-offer pricing when the player has a `special_offer`
- * event whose `payload.sku` targets that offerId. Multiple matching events
- * are deduped by offerId (the player can only see the discount once per
- * offer even if two events match). Returns an empty map when no active
- * special offer applies.
- */
-function computeSpecialOfferPricing(
-  activeOfferIds: ReadonlySet<string>,
-  nowUtc: number,
-): Map<string, SpecialOfferPricing> {
-  if (activeOfferIds.size === 0) return new Map();
-  const catalog = getEventsCatalog();
-  const out = new Map<string, SpecialOfferPricing>();
-  for (const ev of catalog) {
-    if (!activeOfferIds.has(ev.id)) continue;
-    if (ev.kind !== 'special_offer') continue;
-    const startsAt = Date.parse(ev.startsAtUtc);
-    const endsAt = Date.parse(ev.endsAtUtc);
-    if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt)) continue;
-    if (!(startsAt <= nowUtc && nowUtc < endsAt)) continue;
-    const payload = ev.payload as { sku?: unknown; discountPct?: unknown };
-    if (typeof payload.sku !== 'string' || payload.sku.length === 0) continue;
-    if (out.has(payload.sku)) continue; // first one wins
-    const offer = findOffer(payload.sku);
-    if (!offer) continue;
-    const baseCoins = typeof offer.priceCoins === 'number' ? offer.priceCoins : 0;
-    const baseGems = typeof offer.priceGems === 'number' ? offer.priceGems : 0;
-    const pct = typeof payload.discountPct === 'number' && Number.isFinite(payload.discountPct)
-      ? Math.max(0, Math.min(100, payload.discountPct))
-      : 0;
-    const finalCoins = pct > 0 && baseCoins > 0 ? Math.max(1, Math.floor(baseCoins * (100 - pct) / 100)) : baseCoins;
-    const finalGems = pct > 0 && baseGems > 0 ? Math.max(1, Math.floor(baseGems * (100 - pct) / 100)) : baseGems;
-    out.set(offer.offerId, { eventId: ev.id, finalPrice: { coins: finalCoins, gems: finalGems } });
-  }
-  return out;
-}
-
-function findOffer(offerId: string): StoreOffer | null {
-  const catalog = getStoreCatalog();
-  for (const section of catalog.sections) {
-    for (const o of section.offers) {
-      if (o.offerId === offerId) return o;
-    }
-  }
-  return null;
+/** The ownership rule of the store filter, for the `owned` flag. */
+function isOwned(offer: StoreOffer, ctx: FilterContext): boolean {
+  if (offer.kind === 'car') return ctx.ownedCarIds.has(offer.refId);
+  if (offer.kind === 'cosmetic') return ctx.ownedCosmeticIds.has(offer.refId);
+  return ctx.purchasedPackIds.has(offer.refId);
 }
 
 /** The strictly positive whole amounts of a `{coins, gems}` price/changeset. */

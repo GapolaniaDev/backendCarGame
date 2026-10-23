@@ -4067,6 +4067,7 @@ components:
       required:
         - "coins"
         - "gems"
+      description: "`{currencyId: amount}` over the two soft currencies. Every money RPC answers `newBalance` with this shape (T-12)."
     Reward:
       type: "object"
       description: "Recompensa (todas las claves opcionales)"
@@ -4418,13 +4419,6 @@ components:
               description: "Epoch en milisegundos (UTC)"
               format: "int64"
             - type: "null"
-        basePrice:
-          type: "integer"
-          description: "Solo si hay oferta especial activa"
-        finalPrice:
-          type: "integer"
-        activeSpecialOfferId:
-          type: "string"
       required:
         - "offerId"
         - "kind"
@@ -5440,6 +5434,24 @@ components:
                       "$ref": "#/components/schemas/StoreOffer"
                     isDailyOffer:
                       type: "boolean"
+                    basePrice:
+                      "$ref": "#/components/schemas/Price"
+                      description: "Catalog price."
+                    finalPrice:
+                      "$ref": "#/components/schemas/Price"
+                      description: "What store_buy charges now (special-offer discount included); equal to StoreBuyData.pricePaid."
+                    activeSpecialOfferId:
+                      type: "string"
+                      description: "The special_offer event behind finalPrice, when one applies."
+                    owned:
+                      type: "boolean"
+                      description: "Additive (T-12). Owned offers are not listed, so a listed one is false."
+                  required:
+                    - "offer"
+                    - "isDailyOffer"
+                    - "basePrice"
+                    - "finalPrice"
+                    - "owned"
     StoreBuyRequest:
       type: "object"
       properties:
@@ -5464,7 +5476,7 @@ components:
           type: "string"
         nowMs:
           type: "integer"
-          description: "Epoch en milisegundos (UTC)"
+          description: "Ignored (T-12): store_buy prices, discounts and expiry use the server clock."
           format: "int64"
       required:
         - "offerId"
@@ -5498,8 +5510,12 @@ components:
                       type: "integer"
                     gems:
                       type: "integer"
+                  description: "Pack contents as `{currencyId: amount}`."
         newBalance:
           "$ref": "#/components/schemas/Wallet"
+        pricePaid:
+          "$ref": "#/components/schemas/Price"
+          description: "Additive (T-12): the price charged, equal to the finalPrice store_get showed."
     RaceSessionCreateRequest:
       type: "object"
       properties:
@@ -6073,6 +6089,9 @@ components:
           type: "array"
           items:
             type: "integer"
+        newBalance:
+          "$ref": "#/components/schemas/Wallet"
+          description: "Additive (T-12)."
     MissionRerollRequest:
       type: "object"
       properties:
@@ -6310,6 +6329,9 @@ components:
           type: "integer"
         newGemsBalance:
           type: "integer"
+        newBalance:
+          "$ref": "#/components/schemas/Wallet"
+          description: "Additive (T-12)."
     FriendCodeGetRequest:
       type: "object"
       properties:
@@ -6590,7 +6612,8 @@ components:
         costPaid:
           type: "integer"
         newBalance:
-          type: "integer"
+          "$ref": "#/components/schemas/Wallet"
+          description: "Was the coins number until T-12."
     ClubGetRequest:
       type: "object"
       properties:
@@ -7213,6 +7236,7 @@ components:
               format: "int64"
         newBalance:
           "$ref": "#/components/schemas/Wallet"
+          description: "Was sent as the coins number until T-12."
     IapSubscriptionStatusRequest:
       type: "object"
       properties:
@@ -7311,7 +7335,8 @@ components:
         coinsGranted:
           type: "integer"
         newBalance:
-          type: "integer"
+          "$ref": "#/components/schemas/Wallet"
+          description: "Was the coins number until T-12."
         nextEligibleAtUtc:
           type: "integer"
           description: "Epoch en milisegundos (UTC)"
@@ -7380,3 +7405,14 @@ components:
             - "ok"
             - "data"
         - "$ref": "#/components/schemas/Err"
+    Price:
+      type: "object"
+      description: "A price as `{currencyId: amount}`; 0 = that currency is not charged."
+      properties:
+        coins:
+          type: "integer"
+        gems:
+          type: "integer"
+      required:
+        - "coins"
+        - "gems"

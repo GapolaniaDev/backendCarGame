@@ -240,7 +240,8 @@ export interface AdminIapRefundInput {
 export interface AdminIapRefundOutput {
   refundedAtUtc: number;
   amountRefunded: number;
-  newBalance: number;
+  /** `{coins, gems}` like every money RPC (T-12; was the coins number). */
+  newBalance: { coins: number; gems: number };
   adminUserId: string;
 }
 
@@ -327,7 +328,7 @@ export const admin_iap_refund_impl: RpcHandler = (ctx, logger, nk, body) => {
   const out: AdminIapRefundOutput = {
     refundedAtUtc: nowUtc,
     amountRefunded: amount,
-    newBalance: r.data.coins,
+    newBalance: r.data,
     adminUserId,
   };
   return JSON.stringify(ok(out));

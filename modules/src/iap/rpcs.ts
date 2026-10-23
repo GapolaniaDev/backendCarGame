@@ -104,7 +104,8 @@ export interface IapPurchaseOutput {
   purchaseId: string;
   packId: string;
   content: IapPurchaseContent;
-  newBalance?: number;
+  /** `{coins, gems}` like every money RPC (T-12; was the coins number). */
+  newBalance?: WalletView;
   newSubscriptionExpiresAtUtc?: number;
   idempotent: boolean;
 }
@@ -217,7 +218,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       purchaseId: input.transactionId,
       packId: existing.packId,
       content: packContent(existing.content),
-      ...(typeof balance.coins === 'number' ? { newBalance: balance.coins } : {}),
+      newBalance: balance,
       ...(existing.content.expiresAtUtc !== undefined
         ? { newSubscriptionExpiresAtUtc: existing.content.expiresAtUtc }
         : {}),
@@ -265,7 +266,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   const plan = planGrant(pack, isFirstTime, nowUtc);
 
   // 7. Grant.
-  let newBalance: number | undefined;
+  let newBalance: WalletView | undefined;
   if (totalCoins(plan) > 0) {
     const r: Resp<WalletView> = grant(
       nk,
@@ -282,7 +283,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       });
       return fail(asCode(r.error?.code), r.error?.message ?? 'grant failed');
     }
-    newBalance = r.data.coins;
+    newBalance = r.data;
   }
   if (plan.cosmeticId !== undefined) {
     const obj = readGarageObject(nk, userId);
@@ -371,7 +372,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       );
       if (r2.ok) {
         monthlyCoinsApplied = plan.monthlyCoins ?? 0;
-        if (newBalance === undefined) newBalance = r2.data.coins;
+        if (newBalance === undefined) newBalance = r2.data;
       }
     }
 
@@ -405,7 +406,7 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
     content: plan,
     grantedAtUtc: nowUtc,
     idempotencyKey,
-    ...(newBalance !== undefined ? { newBalance } : {}),
+    ...(newBalance !== undefined ? { newBalance: newBalance.coins } : {}),
     isFirstTime,
   };
   writePurchase(nk, input.transactionId, record);

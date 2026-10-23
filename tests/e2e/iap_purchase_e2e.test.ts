@@ -98,7 +98,7 @@ describe('iap_purchase RPC e2e (Phase 9 Chunk 3)', () => {
     const content = d.content as Record<string, number>;
     expect(content.coinsGranted).toBe(100);
     expect(content.firstTimeBonus).toBe(50);
-    expect(d.newBalance).toBe(150);
+    expect(d.newBalance.coins).toBe(150);
   });
 
   it('replay with the same transactionId returns idempotent: true and the same newBalance', () => {
@@ -116,7 +116,7 @@ describe('iap_purchase RPC e2e (Phase 9 Chunk 3)', () => {
     const r2 = callRpc(bundle, nak, 'user-A', { ...args, receiptData: 'garbage' });
     expect(r2.ok).toBe(true);
     expect(r2.data!.idempotent).toBe(true);
-    expect(r2.data!.newBalance).toBe(balance1);
+    expect(r2.data!.newBalance).toEqual(balance1);
   });
 
   it('second purchase of the same pack skips the first-time bonus', () => {
@@ -149,8 +149,8 @@ describe('iap_purchase RPC e2e (Phase 9 Chunk 3)', () => {
     expect(r2.ok).toBe(true);
     // First purchase: 100 + 50 (first-time bonus) = 150.
     // Second purchase: 100 only (first-time bonus already consumed) = 250.
-    expect(r1.data!.newBalance).toBe(150);
-    expect(r2.data!.newBalance).toBe(250);
+    expect(r1.data!.newBalance.coins).toBe(150);
+    expect(r2.data!.newBalance.coins).toBe(250);
   });
 
   // ─── Cross-user fraud ───────────────────────────────────────────────

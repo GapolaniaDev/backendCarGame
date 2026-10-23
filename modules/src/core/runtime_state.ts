@@ -29,7 +29,7 @@ import { loadProfilesCatalog, type RawProfilesFile } from '../profiles/catalog';
 import { loadRewardsCatalog, type RawRewardsFile } from '../economy/catalog';
 import { loadLevelsCatalog, type RawLevelsFile } from '../progression/catalog';
 import { loadGarageCatalog, type RawGarageFiles } from '../garage/catalog';
-import { loadStoreCatalog, type RawStoreFile } from '../store/catalog';
+import { getStoreCatalog, loadStoreCatalog, type RawStoreFile } from '../store/catalog';
 import { loadRankedConfig, type RawRankedConfigFile } from '../ranked/config';
 import { loadSeasonsCatalog, type RawSeasonsFile } from '../ranked/seasons';
 import { loadLiveOpsConfig, type RawLiveOpsFile } from '../liveops/mm_config';
@@ -148,10 +148,20 @@ function loadRuntimeCatalogs(logger: ILogger, nk: INakama): void {
     mtCat.value.severityThresholds.high,
     mtCat.value.cooldownDays);
 
-  loadEventsCatalog(logger, eventsJson as unknown as RawEventsFile, nk);
+  // After the store: a special offer must name a store offer (T-12).
+  loadEventsCatalog(logger, eventsJson as unknown as RawEventsFile, nk, storeOfferIds());
   loadTournamentsCatalog(logger, tournamentsJson);
   loadIapPacksCatalog(logger, iapPacksJson);
   loadAdRewardsCatalog(logger, adRewardsJson);
+}
+
+/** Offer ids of the loaded store catalog. */
+function storeOfferIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const section of getStoreCatalog().sections) {
+    for (const offer of section.offers) ids.add(offer.offerId);
+  }
+  return ids;
 }
 
 /** Build the race bus with the default `RaceCompleted` subscribers. */

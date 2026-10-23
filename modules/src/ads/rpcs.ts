@@ -68,7 +68,8 @@ export interface AdWatchedOutput {
   rewardId: string;
   tier: AdTier;
   coinsGranted: number;
-  newBalance: number;
+  /** `{coins, gems}` like every money RPC (T-12; was the coins number). */
+  newBalance: WalletView;
   nextEligibleAtUtc: number;
   dailyCount: number;
   dailyCap: number;
@@ -152,7 +153,7 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
       rewardId: input.impressionId,
       tier: existing.tier,
       coinsGranted: existing.coinsGranted,
-      newBalance: balance.coins,
+      newBalance: balance,
       nextEligibleAtUtc: existing.grantedAtUtc + tierRow.cooldownSeconds * 1000,
       dailyCount: 0, // caller can re-fetch the daily count from a follow-up if needed
       dailyCap: AD_DAILY_CAP,
@@ -212,7 +213,7 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!r.ok) {
     return fail(asCode(r.error?.code), r.error?.message ?? 'grant failed');
   }
-  const newBalance = r.data.coins;
+  const newBalance = r.data;
 
   // 6. Update sidecar rows.
   writeAdLastWatched(nk, userId, input.tier, {
@@ -232,7 +233,7 @@ export const ad_watched_impl: RpcHandler = (ctx, logger, nk, body) => {
     watchedAtUtc: input.watchedAtUtc,
     grantedAtUtc: nowUtc,
     coinsGranted: tierRow.coins,
-    newBalance,
+    newBalance: newBalance.coins,
     idempotencyKey: idemKey,
   };
   writeAdWatchLog(nk, userId, input.impressionId, log);

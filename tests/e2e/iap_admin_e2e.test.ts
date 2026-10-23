@@ -244,13 +244,13 @@ describe('admin_iap_refund (Phase 9 Chunk 6)', () => {
     const recent = Date.now() - 7 * 86_400_000; // 7 days ago, within 90d window
     seedPurchase(env, 'u1', 'tx-1', { grantedAtUtc: recent, content: { coins: 100, firstTimeBonus: 0 } });
 
-    const r = call<{ refundedAtUtc: number; amountRefunded: number; newBalance: number; adminUserId: string }>(
+    const r = call<{ refundedAtUtc: number; amountRefunded: number; newBalance: { coins: number; gems: number }; adminUserId: string }>(
       env, 'admin_iap_refund', 'admin-1', { adminKey: ADMIN_KEY, userId: 'u1', transactionId: 'tx-1', reason: 'duplicate' },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.amountRefunded).toBe(100);
-    expect(r.data.newBalance).toBe(400);
+    expect(r.data.newBalance.coins).toBe(400);
     expect(r.data.adminUserId).toBe('admin-1');
     expect(typeof r.data.refundedAtUtc).toBe('number');
 
@@ -283,7 +283,7 @@ describe('admin_iap_refund (Phase 9 Chunk 6)', () => {
     env.fakeNakama.wallets.set('u1', { coins: 500, gems: 0 });
     const recent = Date.now() - 7 * 86_400_000;
     seedPurchase(env, 'u1', 'tx-1', { grantedAtUtc: recent, content: { coins: 100, firstTimeBonus: 0 } });
-    const first = call<{ newBalance: number }>(
+    const first = call<{ newBalance: { coins: number; gems: number } }>(
       env, 'admin_iap_refund', 'admin-1',
       { adminKey: ADMIN_KEY, userId: 'u1', transactionId: 'tx-1', reason: 'first' },
     );
@@ -579,7 +579,7 @@ describe('admin_iap_revenue_stats_get (Phase 9 Chunk 6)', () => {
       adminKey: ADMIN_KEY, fromDate: dateOnly, toDate: dateOnly,
     });
     // Refund invalidates.
-    const refundRes = call<{ newBalance: number }>(env, 'admin_iap_refund', 'admin-1', {
+    const refundRes = call<{ newBalance: { coins: number; gems: number } }>(env, 'admin_iap_refund', 'admin-1', {
       adminKey: ADMIN_KEY, userId: 'u1', transactionId: 'tx-1', reason: 'test',
     });
     if (!refundRes.ok) {

@@ -245,7 +245,7 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
       lastWatchedAtUtc: 0,
       lastImpressionId: '',
     });
-    const r = call<{ coinsGranted: number; newBalance: number }>(
+    const r = call<{ coinsGranted: number; newBalance: { coins: number; gems: number } }>(
       bundle, nak, 'user-A', 'ad_watched', {
         tier: 'small', provider: 'mock', adUnitId: 'unit-1',
         impressionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -255,7 +255,7 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.coinsGranted).toBe(5);
-    expect(r.data.newBalance).toBe(5);
+    expect(r.data.newBalance.coins).toBe(5);
     expect(countEvents(bundle, 'ad_watch_granted')).toBe(1);
   });
 
@@ -512,7 +512,7 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
     }]);
     nak.wallets.set('user-A', { coins: 200, gems: 0 });
 
-    const r = call<{ amountRefunded: number; newBalance: number }>(
+    const r = call<{ amountRefunded: number; newBalance: { coins: number; gems: number } }>(
       bundle, nak, 'admin-1', 'admin_iap_refund', {
         adminKey: ADMIN_KEY, userId: 'user-A', transactionId: 'tx-refund-1', reason: 'customer complaint',
       },
@@ -520,7 +520,7 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.amountRefunded).toBe(100);
-    expect(r.data.newBalance).toBe(100);
+    expect(r.data.newBalance.coins).toBe(100);
 
     // inbox entry
     const inbox = Array.from(nak.store.values()).find(

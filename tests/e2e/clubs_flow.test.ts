@@ -46,7 +46,7 @@ interface ClubCreateOutput {
   clubId: string;
   name: string;
   costPaid: number;
-  newBalance: number;
+  newBalance: { coins: number; gems: number };
 }
 
 interface ClubGetOutput {
@@ -198,7 +198,7 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.data.costPaid).toBe(5000);
-      expect(res.data.newBalance).toBe(5000);
+      expect(res.data.newBalance.coins).toBe(5000);
       expect(res.data.name).toBe('Fast Lane');
       expect(res.data.clubId.length).toBeGreaterThan(0);
 

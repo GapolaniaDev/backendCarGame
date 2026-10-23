@@ -314,7 +314,7 @@ export function club_create_impl(
     }
     return toJson(spendResult);
   }
-  const newBalance = spendResult.data.coins;
+  const newBalance = spendResult.data;
 
   // Persist metadata + lifetime counter.
   const now = Date.now();

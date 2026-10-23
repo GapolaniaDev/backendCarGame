@@ -9,6 +9,7 @@
 // Uses the bundled catalogs so the test is self-contained — no fixture
 // files beyond what the bundle already ships.
 
+import storeJson from '../../modules/src/catalogs/store.json';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   FakeContext,
@@ -308,16 +309,23 @@ describe('phase8 full flow e2e (Chunk 10)', () => {
 
   // ─── Events flow (5 cases) ────────────────────────────────────────────────
 
-  it('E1: event_list returns bundled xp_double / featured_track / special_offer', () => {
-    const r = call<{ events: Array<{ id: string; kind: string; isActive: boolean }> }>(
+  it('E1: event_list returns bundled xp_double / featured_track; no special_offer with an unknown SKU', () => {
+    const r = call<{ events: Array<{ id: string; kind: string; isActive: boolean; payload?: { sku?: string } }> }>(
       env, 'event_list', HOST, {},
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const kinds = new Set(r.data.events.map((e) => e.kind));
-    for (const k of ['xp_double', 'featured_track', 'special_offer']) {
+    for (const k of ['xp_double', 'featured_track']) {
       expect(kinds.has(k)).toBe(true);
     }
+    // T-12 (HT-80): the four bundled special offers name SKUs that are not
+    // store offers, so the catalog drops them at load.
+    const offerIds = new Set(storeJson.sections.flatMap((sec) => sec.offers.map((o) => o.offerId)));
+    for (const e of r.data.events.filter((x) => x.kind === 'special_offer')) {
+      expect(offerIds.has(String(e.payload?.sku))).toBe(true);
+    }
+    expect(env.logger.lines.some((l) => /special_offer dropped.*evt_offer_gem_pack_50off/.test(l))).toBe(true);
   });
 
   it('E2: store_get returns basePrice === finalPrice when no special offer is active', () => {
@@ -335,25 +343,17 @@ describe('phase8 full flow e2e (Chunk 10)', () => {
     }
   });
 
-  it('E3: store_get applies discount when profile.activeSpecialOffers matches a sku', () => {
-    // Hand-write a profile + an active offer the catalog matches.
+  it('E3: a dropped special offer (unknown SKU) never discounts anything', () => {
+    // Pricing with a valid special offer is covered by tests/unit/store_pricing.test.ts.
     seedProfile(env, 'p8-buyer', 5, { activeSpecialOffers: ['evt_offer_gem_pack_50off'] });
-    env.fakeNakama.store.set(`garage/p8-buyer/p8-buyer`, {
-      collection: 'garage', key: 'p8-buyer', userId: 'p8-buyer',
-      value: { schemaVersion: 1, userId: 'p8-buyer', cars: [], cosmeticsBag: [], purchasedPacks: [], updatedAt: 0 },
-      version: 'v00000001', permissionRead: 0, permissionWrite: 0,
-      createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00Z', expiresAt: null,
-    });
-    const r = call<{ sections: Array<{ offers: Array<{ offer: { offerId: string; priceCoins?: number }; basePrice: { coins: number; gems: number }; finalPrice: { coins: number; gems: number }; activeSpecialOfferId?: string }> }> }>(
+    const r = call<{ sections: Array<{ offers: Array<{ basePrice: { coins: number; gems: number }; finalPrice: { coins: number; gems: number }; activeSpecialOfferId?: string }> }> }>(
       env, 'store_get', 'p8-buyer', { callerUserId: 'p8-buyer' },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const all = r.data.sections.flatMap((s) => s.offers);
-    const offer = all.find((o) => o.offer.offerId === 'gem_pack_500_50off');
-    if (offer !== undefined && offer.basePrice.coins > 0) {
-      expect(offer.finalPrice.coins).toBeLessThan(offer.basePrice.coins);
-      expect(offer.activeSpecialOfferId).toBe('evt_offer_gem_pack_50off');
+    for (const o of r.data.sections.flatMap((s) => s.offers)) {
+      expect(o.finalPrice).toEqual(o.basePrice);
+      expect(o.activeSpecialOfferId).toBeUndefined();
     }
   });
 

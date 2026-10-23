@@ -146,7 +146,8 @@ export interface ClubCreateOutput {
   clubId: string;
   name: string;
   costPaid: number;
-  newBalance: number;
+  /** `{coins, gems}` like every money RPC (T-12; was the coins number). */
+  newBalance: { coins: number; gems: number };
 }
 
 // ─── Chunk 4 output shapes ──────────────────────────────────────────────────

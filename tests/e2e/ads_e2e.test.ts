@@ -90,7 +90,7 @@ describe('ad_watched e2e (Phase 9 Chunk 5)', () => {
     if (!r.ok) throw new Error('ad_watched failed: ' + JSON.stringify(r));
     expect(r.data!.tier).toBe('small');
     expect(r.data!.coinsGranted).toBe(5);
-    expect(r.data!.newBalance).toBe(5);
+    expect(r.data!.newBalance.coins).toBe(5);
     expect(r.data!.idempotent).toBe(false);
     expect(r.data!.dailyCount).toBe(1);
     expect(r.data!.dailyCap).toBe(10);
@@ -117,7 +117,7 @@ describe('ad_watched e2e (Phase 9 Chunk 5)', () => {
     });
     if (!r.ok) throw new Error('ad_watched failed: ' + JSON.stringify(r));
     expect(r.data!.coinsGranted).toBe(15);
-    expect(r.data!.newBalance).toBe(15);
+    expect(r.data!.newBalance.coins).toBe(15);
   });
 
   it('happy path: xlarge tier grants 60 coins', () => {
@@ -143,7 +143,7 @@ describe('ad_watched e2e (Phase 9 Chunk 5)', () => {
     expect(r2.data!.idempotent).toBe(true);
     expect(r2.data!.coinsGranted).toBe(5);
     // No double grant — balance still 5.
-    expect(r2.data!.newBalance).toBe(5);
+    expect(r2.data!.newBalance.coins).toBe(5);
     // Daily count still 1.
     expect(r2.data!.dailyCount).toBe(0); // placeholder for replay (idempotent path)
   });
