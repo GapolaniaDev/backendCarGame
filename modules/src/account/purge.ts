@@ -1,120 +1,181 @@
-// Phase 5 Chunk 5 — Account purge helpers.
+// Account purge (plan T-16, audit 06 f13).
 //
-// `purgeUserStorage(nk, userId)` walks every storage collection and
-// deletes every object owned by the user. This is the GDPR-compliant
-// path: we cannot enumerate a closed list because the system
-// accumulates new ones over phases (Phase 4 added `ranked`, `ranked_progress`,
-// Phase 5 Chunk 3 added `inbox`, Chunk 4 added `account_link_conflict`,
-// future phases will add more).
+// `purgeUserStorage` walks every collection of the central registry
+// (`core/collections.ts`): it deletes the objects the user owns, then
+// applies each collection's rules for objects that name the user without
+// being owned by them (system rows keyed by the user id, friends' mirror
+// edges, invites the user sent, leaderboard snapshots…).
 //
-// `purgeFromLeaderboards(nk, userId)` deletes every leaderboard
-// record for the user across all authoritative tables.
+// `purgeFromLeaderboards` removes the user's record from every Nakama
+// leaderboard (3.27: `leaderboardList(limit 1-100, cursor)`).
 //
-// Caveats:
-//   - `abandons/{userId}` and `pc-account/{userId}` are derived caches
-//     (admin cleanup cron in Chunk 6) — explicitly SKIPPED here so
-//     the FK-cleanup cron has a stable target.
-//   - Race sessions: the helper leaves `race_sessions/{sid}` objects
-//     in place but flags the user's roster entry as `abandoned: true`
-//     so the close-time ordering still records them as DNF. The
-//     session row is owned by the SYSTEM user, not the player, so
-//     `purgeUserStorage` doesn't touch it; the abandon path lives in
-//     `removePlayerFromAll` (Phase 2), invoked by the RPC handler
-//     before this helper is called.
+// `nk.accountDeleteId` (called after both) also cascades in Postgres:
+// owned storage, friends (`user_edge`), wallet ledger, notifications,
+// leaderboard records and group memberships. The explicit purge covers
+// what the cascade cannot see and makes the summary exact.
 
-import type { IStorageKey, INakama } from '../nkruntime';
-import type { ILogger } from '../nkruntime';
+import type { ILogger, INakama, IStorageKey, IStorageObject } from '../nkruntime';
+import { COLLECTIONS, type CollectionSpec, type PurgeRule } from '../core/collections';
 import { listStorage } from '../core/storage';
-
-/**
- * Collections that are NOT owned by a single user and that the
- * purge helper MUST skip. These are derived caches whose lifecycle
- * is owned by a cron or admin sweep.
- */
-const SKIP_COLLECTIONS: ReadonlySet<string> = new Set([
-  // Derived caches — cleaned by admin_cleanup_race_sessions (Chunk 6).
-  'abandons',
-  'pc-account',
-]);
+import { SYSTEM_USER_ID } from '../race/constants';
 
 const PAGE_LIMIT = 100;
-const MAX_PAGES = 50; // 100 × 50 = 5000 entries — safely over the per-user ceiling.
+/** Owned objects: 100 × 50 = 5000 per collection, over the per-user ceiling. */
+const MAX_OWNER_PAGES = 50;
+/** Scans of other owners' objects: 100 × 200 = 20 000 per collection. */
+const MAX_SCAN_PAGES = 200;
 
 export interface PurgeResult {
+  /** Objects owned by the user, or keyed by them, that were deleted. */
   storageDeleted: number;
-  /** collections where at least one entry was deleted. */
+  /** Collections where at least one object was deleted or rewritten. */
   collectionsAffected: string[];
+  /** Objects of other owners deleted or rewritten because they named the user. */
+  referencesRemoved: number;
 }
 
-/**
- * Walk every storage object owned by `userId` and delete it.
- * Pagination-safe: loops until storageList returns no further
- * cursor or hits the safety cap.
- *
- * Returns the number of objects deleted plus the list of affected
- * collections (useful for the RPC summary).
- */
-export function purgeUserStorage(nk: INakama, userId: string): PurgeResult {
-  let deleted = 0;
+export function purgeUserStorage(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  registry: readonly CollectionSpec[] = COLLECTIONS,
+): PurgeResult {
+  let storageDeleted = 0;
+  let referencesRemoved = 0;
   const affected = new Set<string>();
 
-  // The runtime's `storageList` filter is collection-scoped; we don't
-  // have a "list everything owned by X" endpoint. Walk every known
-  // collection explicitly. New collections must register their prefix
-  // in `KNOWN_COLLECTIONS` below — that's the conservative half; the
-  // user-facing behaviour still uses an explicit walk so we can
-  // guarantee no other user's data is touched.
-  for (const collection of KNOWN_COLLECTIONS) {
-    if (SKIP_COLLECTIONS.has(collection)) continue;
-    let cursor = '';
-    let page = 0;
-    do {
-      const result = listStorage(nk, {
-        collection,
-        userId,
-        limit: PAGE_LIMIT,
-        cursor,
-      });
-      const keys: IStorageKey[] = [];
-      for (const obj of result.objects) {
-        if (obj.userId !== userId) continue;
-        keys.push({ collection, key: obj.key, userId });
-      }
-      if (keys.length > 0) {
-        nk.storageDelete(keys);
-        deleted += keys.length;
-        if (keys.length > 0) affected.add(collection);
-      }
-      cursor = result.cursor ?? '';
-      page += 1;
-      if (page >= MAX_PAGES) break;
-    } while (cursor !== '' && page < MAX_PAGES);
+  for (const spec of registry) {
+    const owned = deleteOwned(nk, spec.name, userId);
+    storageDeleted += owned;
+    let refs = 0;
+    for (const rule of spec.purge) {
+      const r = applyRule(nk, logger, spec.name, rule, userId);
+      storageDeleted += r.keyed;
+      refs += r.references;
+    }
+    referencesRemoved += refs;
+    if (owned > 0 || refs > 0) affected.add(spec.name);
   }
-
-  return { storageDeleted: deleted, collectionsAffected: Array.from(affected).sort() };
+  return { storageDeleted, collectionsAffected: Array.from(affected).sort(), referencesRemoved };
 }
 
-/**
- * Conservative whitelist of collections owned (or partially owned) by
- * user accounts. New phases that introduce a per-user storage
- * collection MUST add its name here.
- *
- * Note: this list is the **target** for GDPR — it should NOT include
- * the SKIP_COLLECTIONS set; the helper already filters those.
- */
-export const KNOWN_COLLECTIONS: readonly string[] = [
-  'profiles',
-  'garage',
-  'garage_loadout',
-  'garage_packs',
-  'inbox',
-  'account_link_conflict',
-  'ranked',
-  'ranked_progress',
-  'wallet_audit',
-  // Leaderboards of every variety — records only (definitions stay).
-  'leaderboard_records',
-];
+function deleteOwned(nk: INakama, collection: string, userId: string): number {
+  let deleted = 0;
+  // Deleting while paging would shift the cursor: list first, then delete.
+  const keys: IStorageKey[] = [];
+  let cursor = '';
+  for (let page = 0; page < MAX_OWNER_PAGES; page++) {
+    const res = listStorage(nk, { collection, userId, limit: PAGE_LIMIT, cursor });
+    for (const o of res.objects) {
+      if (o.userId === userId) keys.push({ collection, key: o.key, userId });
+    }
+    cursor = res.cursor;
+    if (cursor === '') break;
+  }
+  for (let i = 0; i < keys.length; i += PAGE_LIMIT) {
+    const batch = keys.slice(i, i + PAGE_LIMIT);
+    nk.storageDelete(batch);
+    deleted += batch.length;
+  }
+  return deleted;
+}
+
+/** Every object of `collection` (all owners, or one owner), paged. */
+function scan(nk: INakama, collection: string, ownerId?: string): IStorageObject[] {
+  const out: IStorageObject[] = [];
+  let cursor = '';
+  for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+    const res = listStorage(nk, {
+      collection,
+      ...(ownerId !== undefined ? { userId: ownerId } : {}),
+      limit: PAGE_LIMIT,
+      cursor,
+    });
+    out.push(...res.objects);
+    cursor = res.cursor;
+    if (cursor === '') break;
+  }
+  return out;
+}
+
+function applyRule(
+  nk: INakama,
+  logger: ILogger,
+  collection: string,
+  rule: PurgeRule,
+  userId: string,
+): { keyed: number; references: number } {
+  switch (rule.kind) {
+    case 'systemKey': {
+      const key = rule.key(userId);
+      const found = nk.storageRead([{ collection, key, userId: SYSTEM_USER_ID }]);
+      if (found.length === 0) return { keyed: 0, references: 0 };
+      nk.storageDelete([{ collection, key, userId: SYSTEM_USER_ID }]);
+      return { keyed: 1, references: 0 };
+    }
+    case 'systemKeySuffix': {
+      const suffix = rule.suffix(userId);
+      const keys = scan(nk, collection, SYSTEM_USER_ID)
+        .filter((o) => o.key.endsWith(suffix))
+        .map((o) => ({ collection, key: o.key, userId: SYSTEM_USER_ID }));
+      deleteKeys(nk, keys);
+      return { keyed: keys.length, references: 0 };
+    }
+    case 'keyIsUser': {
+      const keys = scan(nk, collection)
+        .filter((o) => o.key === userId && o.userId !== userId)
+        .map((o) => ({ collection, key: o.key, userId: o.userId ?? '' }));
+      deleteKeys(nk, keys);
+      return { keyed: 0, references: keys.length };
+    }
+    case 'valueField': {
+      const keys = scan(nk, collection)
+        .filter((o) => o.userId !== userId && (o.value as Record<string, unknown> | undefined)?.[rule.field] === userId)
+        .map((o) => ({ collection, key: o.key, userId: o.userId ?? '' }));
+      deleteKeys(nk, keys);
+      return { keyed: 0, references: keys.length };
+    }
+    case 'entries': {
+      let rewritten = 0;
+      for (const o of scan(nk, collection)) {
+        if (o.userId === userId) continue;
+        const value = o.value as Record<string, unknown> | undefined;
+        const list = value?.[rule.field];
+        if (!Array.isArray(list)) continue;
+        const kept = list.filter((e) => (e as { userId?: unknown } | null)?.userId !== userId);
+        if (kept.length === list.length) continue;
+        try {
+          nk.storageWrite([{
+            collection,
+            key: o.key,
+            userId: o.userId ?? '',
+            value: { ...value, [rule.field]: kept },
+            permissionRead: o.permissionRead ?? 0,
+            permissionWrite: o.permissionWrite ?? 0,
+            ...(o.version !== undefined ? { version: o.version } : {}),
+          }]);
+          rewritten += 1;
+        } catch (e) {
+          // A concurrent writer won the CAS; its next write keeps the entry
+          // only if it re-adds the user, which a deleted account cannot do.
+          logger.warn(
+            'account purge: %s/%s entries rewrite lost its CAS: %s',
+            collection, o.key, e instanceof Error ? e.message : String(e),
+          );
+        }
+      }
+      return { keyed: 0, references: rewritten };
+    }
+  }
+}
+
+function deleteKeys(nk: INakama, keys: IStorageKey[]): void {
+  for (let i = 0; i < keys.length; i += PAGE_LIMIT) {
+    nk.storageDelete(keys.slice(i, i + PAGE_LIMIT));
+  }
+}
+
+// ─── Leaderboards ────────────────────────────────────────────────────────────
 
 export interface LeaderboardPurgeResult {
   boardsDeleted: number;
@@ -122,46 +183,40 @@ export interface LeaderboardPurgeResult {
 }
 
 /**
- * Walk every leaderboard table and remove the user's records. The
- * definitions themselves stay (other players still need them).
- *
- * The runtime exposes `leaderboardRecordDelete(id, ownerId)`; we
- * iterate via `leaderboardList()` and try every table.
- *
- * Throws from `leaderboardRecordDelete` are logged and swallowed
- * (a missing record is a non-fatal no-op).
+ * Remove the user's record from every leaderboard (definitions stay).
+ * Only boards that hold a record are touched, so the count is exact.
  */
 export function purgeFromLeaderboards(
   nk: INakama,
   logger: ILogger,
   userId: string,
 ): LeaderboardPurgeResult {
-  let deleted = 0;
-  const affected = new Set<string>();
-  let lbsResult: { leaderboards: Array<{ id: string }>; cursor: string };
-  try {
-    // `category=''` is "all" — the runtime treats empty string as
-    // unfiltered. Pass a high `limit` so a populated catalog is captured
-    // in one page; pagination is acceptable here too.
-    lbsResult = nk.leaderboardList('', 1000, '');
-  } catch (e) {
-    logger.warn('purgeFromLeaderboards: leaderboardList failed: %s', e instanceof Error ? e.message : String(e));
-    return { boardsDeleted: 0, boardsAffected: [] };
-  }
-  for (const lb of lbsResult.leaderboards) {
+  const affected: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_OWNER_PAGES; page++) {
+    let res: { leaderboards: Array<{ id: string }>; cursor?: string | null };
     try {
-      nk.leaderboardRecordDelete(lb.id, userId);
-      deleted += 1;
-      affected.add(lb.id);
+      res = nk.leaderboardList(PAGE_LIMIT, cursor);
     } catch (e) {
-      // Most common cause: the user never recorded on this board —
-      // `leaderboardRecordDelete` throws "record not found" in
-      // production. Swallow + log.
-      logger.info(
-        'purgeFromLeaderboards: skipped %s for %s: %s',
-        lb.id, userId, e instanceof Error ? e.message : String(e),
-      );
+      logger.error('account purge: leaderboardList failed: %s', e instanceof Error ? e.message : String(e));
+      break;
     }
+    for (const lb of res.leaderboards ?? []) {
+      try {
+        const owned = nk.leaderboardRecordsList(lb.id, [userId], 0);
+        if ((owned.ownerRecords ?? []).length === 0) continue;
+        nk.leaderboardRecordDelete(lb.id, userId);
+        affected.push(lb.id);
+      } catch (e) {
+        logger.warn(
+          'account purge: leaderboard %s for %s: %s',
+          lb.id, userId, e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+    if (typeof res.cursor !== 'string' || res.cursor.length === 0) break;
+    cursor = res.cursor;
   }
-  return { boardsDeleted: deleted, boardsAffected: Array.from(affected).sort() };
+  affected.sort();
+  return { boardsDeleted: affected.length, boardsAffected: affected };
 }

@@ -1,345 +1,112 @@
-// Phase 5 Chunk 4 — Account linking workflow:
+// Account linking (plan T-15, P-02: native linking).
 //
-//   linkAccount(...)
-//     1. verifyToken() → customId (rejects bad/expired/unknown-provider)
-//     2. nk.accountLinkCustom(provider, userId, customId)
-//        — on `ACCOUNT_LINK_CONFIRM_REQUIRED` throw, persist a conflict
-//          record under `account_link_conflict/{userId}` and return
-//          the conflict handle.
-//        — on success, seal `accountLinkBonusClaimed = true` in the
-//          profile and grant 500 coins (idempotent via
-//          `accountLinkBonus:<userId>`).
+// The client links identities with the Nakama client API
+// (`LinkGoogleAsync`, `LinkAppleAsync`, `LinkEmailAsync`,
+// `LinkCustomAsync`, …). Nakama verifies the provider token, so the
+// server never sees or signs a link token, and no secret lives in the
+// bundle (the old HMAC test token, audit 06 f11, is gone).
 //
-//   resolveConflict(...)
-//     1. Load the conflict record by token (verifying it belongs to
-//        the caller and is not expired).
-//     2. `choice === 'cancel'` → drop the record, return `cancelled`.
-//     3. `choice === 'link'`    → `nk.accountDeleteId(targetUserId, ...)`
-//        then `nk.accountLinkCustom(...)` again on the source, seal
-//        the bonus, and credit it.
+//   claimLinkBonus — after a native link, credits the one-time 500-coin
+//     bonus when `accountGetId` reports a linked identity. The profile
+//     flag and the coins go in one wallet movement (`moveWallet`), so a
+//     failure leaves both untouched and a retry pays once.
 //
-// `grantLinkBonus` is shared between the two paths so the
-// "500 coins once per account" invariant is enforced in exactly one
-// place — idempotency key derives from the source userId (the one
-// that survives the link).
+//   Conflict — a native link of an identity that belongs to another
+//   account fails with `AlreadyExists` (HTTP 409). The client then
+//   authenticates with that identity (`create: false`), which Nakama
+//   verifies, and gets a session of the other account (the target):
+//     1. `openConflict` (target's session) records the target in
+//        `account_link_conflict/<token>` and returns the token;
+//     2. `resolveConflict` (the session that stays) with
+//        `choice: 'link'` deletes the target with the full account
+//        purge, which frees its identities, and the client links them
+//        again natively; `choice: 'cancel'` drops the record.
+//   Both sessions are needed, so a caller can only delete an account it
+//   has authenticated as (audit 06 f12: no placeholder account).
 
-import type { ILogger, INakama } from '../nkruntime';
-import { grant, walletGet } from '../economy/wallet';
+import type { ILogger, INakama, IStorageObject } from '../nkruntime';
+import { err, ok, type Resp } from '../core/response';
+import { moveWallet, walletGet } from '../economy/wallet';
 import {
-  readProfile,
-  writeProfileCreate,
-  writeProfileUpdate,
-  ensureAccountLinkField,
   defaultProfile,
+  ensureAccountLinkField,
+  PROFILES_COLLECTION,
+  type ProfileRecord,
 } from '../profiles/storage';
+import { SYSTEM_USER_ID } from '../race/constants';
 import {
   ACCOUNT_LINK_BONUS_COINS,
   ACCOUNT_LINK_BONUS_IDEMP_PREFIX,
+  ACCOUNT_LINK_CONFIRM_TEXT,
   ACCOUNT_LINK_CONFLICT_COLLECTION,
   ACCOUNT_LINK_CONFLICT_TTL_MS,
-  ACCOUNT_LINK_CONFIRM_TEXT,
-  isAccountLinkProvider,
   type AccountLinkConflict,
   type AccountLinkConflictAccount,
-  type AccountLinkConflictOutput,
-  type AccountLinkOutput,
-  type AccountLinkProvider,
+  type AccountLinkConflictOpenOutput,
   type AccountLinkResolveConflictOutput,
 } from './types';
-import { verifyToken } from './token';
+import { deleteAccount } from './delete';
+import { linkedProviders } from './identities';
 
-export type LinkAccountResult =
-  | { kind: 'linked'; bonusClaimed: boolean; newBalance?: { coins: number; gems: number } }
-  | { kind: 'conflict'; conflict: AccountLinkConflictOutput }
-  | { kind: 'error'; code: 'BAD_REQUEST' | 'NOT_FOUND'; message: string };
+const BONUS_CAS_ATTEMPTS = 3;
 
-export type ResolveConflictResult =
-  | { kind: 'linked'; affectedAccountDeleted: boolean; bonusClaimed: boolean; newBalance?: { coins: number; gems: number } }
-  | { kind: 'cancelled' }
-  | { kind: 'error'; code: 'BAD_REQUEST' | 'NOT_FOUND' | 'FORBIDDEN'; message: string };
+// ─── Link bonus ──────────────────────────────────────────────────────────────
 
-/**
- * Drive the link flow: verify the token, attempt the runtime link,
- * branch on conflict vs success. The token's `customId` is derived
- * server-side; the client never sees it back.
- */
-export function linkAccount(
-  nk: INakama,
-  logger: ILogger,
-  userId: string,
-  provider: unknown,
-  token: string,
-  nowMs: number,
-): LinkAccountResult {
-  if (!isAccountLinkProvider(provider)) {
-    return { kind: 'error', code: 'BAD_REQUEST', message: `unknown provider: ${String(provider)}` };
-  }
-  if (typeof token !== 'string' || token.length === 0) {
-    return { kind: 'error', code: 'BAD_REQUEST', message: 'token is required' };
-  }
-  const verified = verifyToken(nk, token);
-  if (!verified.ok) {
-    return { kind: 'error', code: 'BAD_REQUEST', message: `token rejected: ${verified.reason}` };
-  }
-  const customId = verified.customId;
-
-  try {
-    nk.accountLinkCustom(provider, userId, customId);
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    if (message.includes('ACCOUNT_LINK_CONFIRM_REQUIRED')) {
-      const target = lookupUserByCustomId(nk, provider, customId);
-      const conflict = writeConflict(nk, provider, customId, userId, target, nowMs);
-      logger.warn(
-        'account_link conflict user=%s provider=%s customId=%s token=%s',
-        userId, provider, customId, conflict.token,
-      );
-      return {
-        kind: 'conflict',
-        conflict: {
-          conflictToken: conflict.token,
-          expiresAt: new Date(conflict.expiresAt).toISOString(),
-          source: conflict.sourceAccount,
-          target: conflict.targetAccount,
-        },
-      };
-    }
-    logger.error('accountLinkCustom unexpected error: %s', message);
-    return { kind: 'error', code: 'BAD_REQUEST', message: `link rejected: ${message}` };
-  }
-
-  // Success path — seal the bonus flag and credit 500 coins.
-  const bonusResult = grantLinkBonus(nk, logger, userId, nowMs);
-  return { kind: 'linked', bonusClaimed: bonusResult.bonusClaimed, ...(bonusResult.newBalance !== undefined ? { newBalance: bonusResult.newBalance } : {}) };
+export interface LinkBonusOutcome {
+  bonusClaimed: boolean;
+  newBalance?: { coins: number; gems: number };
 }
 
 /**
- * Drive the conflict-resolution flow: cancel or link-with-destroy.
+ * Credit the link bonus ONCE per account: the `accountLinkBonusClaimed`
+ * profile flag (CAS) and the coins are one `moveWallet` with the durable
+ * key `accountLinkBonus:<userId>`. Concurrent calls pay once; a lost
+ * profile CAS retries with a fresh read.
  */
-export function resolveConflict(
-  nk: INakama,
-  logger: ILogger,
-  callerUserId: string,
-  input: {
-    conflictToken: string;
-    choice: 'link' | 'cancel';
-    confirmText?: string;
-  },
-  nowMs: number,
-): ResolveConflictResult {
-  const conflict = readConflict(nk, callerUserId);
-  if (conflict === null) {
-    return { kind: 'error', code: 'NOT_FOUND', message: 'no pending conflict for this user' };
-  }
-  if (conflict.token !== input.conflictToken) {
-    return { kind: 'error', code: 'NOT_FOUND', message: 'conflict token mismatch' };
-  }
-  if (conflict.expiresAt <= nowMs) {
-    deleteConflict(nk, callerUserId);
-    return { kind: 'error', code: 'NOT_FOUND', message: 'conflict expired' };
-  }
+export function claimLinkBonus(nk: INakama, logger: ILogger, userId: string, nowMs: number): Resp<LinkBonusOutcome> {
+  for (let attempt = 1; attempt <= BONUS_CAS_ATTEMPTS; attempt++) {
+    const read = nk.storageRead([{ collection: PROFILES_COLLECTION, key: userId, userId }])[0];
+    const profile: ProfileRecord = read
+      ? (read.value as unknown as ProfileRecord)
+      : defaultProfile(userId, nowMs, 'Player');
+    if (ensureAccountLinkField(profile)) return ok({ bonusClaimed: false });
 
-  if (input.choice === 'cancel') {
-    deleteConflict(nk, callerUserId);
-    logger.info('account_link_resolve cancelled user=%s', callerUserId);
-    return { kind: 'cancelled' };
-  }
-
-  // choice === 'link'
-  if (input.confirmText !== ACCOUNT_LINK_CONFIRM_TEXT) {
-    return {
-      kind: 'error',
-      code: 'BAD_REQUEST',
-      message: `confirmation required: pass confirmText="${ACCOUNT_LINK_CONFIRM_TEXT}"`,
-    };
-  }
-  const targetUserId = conflict.targetAccount.userId;
-  try {
-    nk.accountDeleteId(targetUserId, false);
-  } catch (e) {
-    logger.error('accountDeleteId(target=%s) failed: %s', targetUserId, e instanceof Error ? e.message : String(e));
-    return { kind: 'error', code: 'BAD_REQUEST', message: 'failed to delete conflicting account' };
-  }
-  try {
-    nk.accountLinkCustom(conflict.provider, callerUserId, conflict.customId);
-  } catch (e) {
-    logger.error('accountLinkCustom re-link failed for user=%s: %s', callerUserId, e instanceof Error ? e.message : String(e));
-    return { kind: 'error', code: 'BAD_REQUEST', message: 're-link failed' };
-  }
-  deleteConflict(nk, callerUserId);
-
-  const bonus = grantLinkBonus(nk, logger, callerUserId, nowMs);
-  logger.info(
-    'account_link_resolve linked user=%s deleted=%s bonus=%s',
-    callerUserId, targetUserId, String(bonus.bonusClaimed),
-  );
-  return {
-    kind: 'linked',
-    affectedAccountDeleted: true,
-    bonusClaimed: bonus.bonusClaimed,
-    ...(bonus.newBalance !== undefined ? { newBalance: bonus.newBalance } : {}),
-  };
-}
-
-/**
- * Read the live conflict for the given user, if any. Returns null when
- * no conflict is recorded.
- */
-export function readConflict(nk: INakama, userId: string): AccountLinkConflict | null {
-  const result = nk.storageRead([
-    { collection: ACCOUNT_LINK_CONFLICT_COLLECTION, key: userId, userId },
-  ]);
-  const obj = result[0];
-  if (!obj) return null;
-  return obj.value as unknown as AccountLinkConflict;
-}
-
-export function deleteConflict(nk: INakama, userId: string): void {
-  nk.storageDelete([{ collection: ACCOUNT_LINK_CONFLICT_COLLECTION, key: userId, userId }]);
-}
-
-/**
- * Credit the link bonus for the given user, ONCE. The flag
- * `profile.accountLinkBonusClaimed` is the durable idempotency gate —
- * we read it, and only credit when `false`. The CAS write seals the
- * flag; a concurrent double-link would read `true` and skip.
- *
- * The wallet idempotency key is `accountLinkBonus:<userId>` so a
- * retried grant (against a CAS conflict) cannot double-credit even if
- * the flag write succeeds twice.
- */
-export function grantLinkBonus(
-  nk: INakama,
-  logger: ILogger,
-  userId: string,
-  nowMs: number,
-): { bonusClaimed: boolean; newBalance?: { coins: number; gems: number } } {
-  let existing = readProfile(nk, userId);
-  if (existing === null) {
-    // Profile is created lazily — defensive, since the after-auth hook
-    // normally seeds it.
-    existing = defaultProfile(userId, nowMs, 'Player');
-    writeProfileCreate(nk, existing);
-  }
-  if (ensureAccountLinkField(existing)) {
-    // Already claimed — caller treats this as a no-op link.
-    logger.info('accountLink bonus already claimed user=%s', userId);
-    return { bonusClaimed: false };
-  }
-
-  // CAS write to seal the flag before granting. A concurrent claim
-  // racing us sees the same `false`, both write `true`, only the
-  // first write wins; the loser reads back `true` and skips.
-  const readWithVersion = nk.storageRead([
-    { collection: 'profiles', key: userId, userId },
-  ])[0];
-  if (!readWithVersion) {
-    return { bonusClaimed: false };
-  }
-  const sealed: typeof existing = { ...existing, accountLinkBonusClaimed: true };
-  try {
-    writeProfileUpdate(nk, sealed, readWithVersion.version ?? '');
-  } catch {
-    // CAS conflict — re-read, if a peer sealed it first, treat as
-    // already-claimed.
-    const reread = readProfile(nk, userId);
-    if (reread && ensureAccountLinkField(reread)) {
-      logger.info('accountLink bonus raced user=%s', userId);
-      return { bonusClaimed: false };
-    }
-    throw new Error('profile CAS conflict and bonus not sealed by peer');
-  }
-
-  // Credit the wallet. Use a deterministic idempotency key so a
-  // retry re-applies cleanly.
-  const resp = grant(
-    nk,
-    userId,
-    { coins: ACCOUNT_LINK_BONUS_COINS },
-    { reason: 'admin', sourceId: 'accountLinkBonus' },
-    `${ACCOUNT_LINK_BONUS_IDEMP_PREFIX}${userId}`,
-  );
-  if (!resp.ok) {
-    logger.error('accountLink grant failed user=%s: %s', userId, resp.error.message);
-    return { bonusClaimed: false };
-  }
-  const newBalance = resp.data;
-  logger.info(
-    'accountLink bonus credited user=%s coins=%d balance=(%d,%d)',
-    userId, ACCOUNT_LINK_BONUS_COINS, newBalance.coins, newBalance.gems,
-  );
-  return { bonusClaimed: true, newBalance: { coins: newBalance.coins, gems: newBalance.gems } };
-}
-
-// ─── Internals ───────────────────────────────────────────────────────────────
-
-/**
- * Look up the user that owns `(provider, customId)`. The fake runtime
- * keeps a `links` map (`nk.links`); production `nk.accountLinkCustom`
- * would surface the target userId via a follow-up query (`accountsGetCustom`
- * or equivalent). For unit-test parity we model the lookup as a runtime
- * query over the link map.
- *
- * Returns a summary used to populate the conflict record's target.
- */
-function lookupUserByCustomId(
-  nk: INakama,
-  provider: AccountLinkProvider,
-  customId: string,
-): AccountLinkConflictAccount {
-  const links = (nk as unknown as { links?: Map<string, string> }).links;
-  const targetUserId = links?.get(`${provider}:${customId}`);
-  if (typeof targetUserId === 'string' && targetUserId.length > 0) {
-    return summariseAccount(nk, targetUserId);
-  }
-  // Placeholder for runtimes that don't expose the link map — the
-  // conflict record still gets written with a fallback target.
-  const now = Date.now();
-  return {
-    userId: 'target-account',
-    createdAt: now,
-    profile: { name: 'Other Player', level: 1, xp: 0, coins: 0, gems: 0 },
-  };
-}
-
-function writeConflict(
-  nk: INakama,
-  provider: AccountLinkProvider,
-  customId: string,
-  sourceUserId: string,
-  target: AccountLinkConflictAccount,
-  nowMs: number,
-): AccountLinkConflict {
-  const source = summariseAccount(nk, sourceUserId);
-  const conflict: AccountLinkConflict = {
-    schemaVersion: 1,
-    token: nk.uuidv4(),
-    sourceAccount: source,
-    targetAccount: target,
-    provider,
-    customId,
-    expiresAt: nowMs + ACCOUNT_LINK_CONFLICT_TTL_MS,
-    createdAt: nowMs,
-  };
-  nk.storageWrite([
-    {
-      collection: ACCOUNT_LINK_CONFLICT_COLLECTION,
-      key: sourceUserId,
-      userId: sourceUserId,
-      value: conflict as unknown as Record<string, unknown>,
+    const sealed: IStorageObject = {
+      collection: PROFILES_COLLECTION,
+      key: userId,
+      userId,
+      value: { ...profile, accountLinkBonusClaimed: true } as unknown as Record<string, unknown>,
       permissionRead: 0,
       permissionWrite: 0,
-    },
-  ]);
-  return conflict;
+      version: read?.version ?? '*',
+    };
+    const moved = moveWallet(
+      nk,
+      userId,
+      `${ACCOUNT_LINK_BONUS_IDEMP_PREFIX}${userId}`,
+      [{ changeset: { coins: ACCOUNT_LINK_BONUS_COINS }, metadata: { reason: 'admin', sourceId: 'accountLinkBonus' } }],
+      { extraWrites: [sealed] },
+    );
+    if (moved.ok) {
+      if (moved.data.replayed) return ok({ bonusClaimed: false });
+      logger.info('accountLink bonus credited user=%s coins=%d', userId, ACCOUNT_LINK_BONUS_COINS);
+      return ok({ bonusClaimed: true, newBalance: moved.data.balance });
+    }
+    if (moved.error.code !== 'CONFLICT') return moved;
+    logger.warn('accountLink bonus CAS lost user=%s attempt=%d', userId, attempt);
+  }
+  return err('CONFLICT', 'concurrent profile update; nothing was credited, please retry', { reason: 'VERSION_CONFLICT' });
 }
 
-function summariseAccount(nk: INakama, userId: string): AccountLinkConflictAccount {
-  const profile = readProfile(nk, userId);
+// ─── Conflict ────────────────────────────────────────────────────────────────
+
+export function summariseAccount(nk: INakama, userId: string): AccountLinkConflictAccount {
+  const read = nk.storageRead([{ collection: PROFILES_COLLECTION, key: userId, userId }])[0];
+  const profile = read ? (read.value as unknown as ProfileRecord) : null;
   const wallet = walletGet(nk, userId);
   return {
     userId,
-    createdAt: profile?.createdAt ?? Date.now(),
+    createdAt: profile?.createdAt ?? 0,
     profile: {
       name: profile?.displayName ?? 'Player',
       level: profile?.progression?.level ?? 1,
@@ -350,68 +117,106 @@ function summariseAccount(nk: INakama, userId: string): AccountLinkConflictAccou
   };
 }
 
-export { isAccountLinkProvider };
-export type { AccountLinkConflict, AccountLinkOutput, AccountLinkResolveConflictOutput };
-
 /**
- * Phase 5 Chunk 5 — Unlink every custom-auth provider from the given
- * user. The runtime's `nk.unlinkCustom(provider, userId)` throws when
- * the user has no link for that provider — we swallow that case so
- * the caller doesn't have to enumerate providers. We do NOT unlink
- * the device auth — the runtime treats device-auth as the primary
- * credential, and tearing it down would prevent the user from ever
- * re-authenticating to verify the deletion.
- *
- * We can't read the user's link list from the runtime in 3.27 JS
- * (no `nk.accountExportId` exposed cleanly via the typed surface —
- * `accountExportId` is available but returns a large opaque string).
- * We rely on the local `links` map (`nk.links`) for the unit-tested
- * view and iterate every known provider; in production this would
- * walk `accountExportId`'s JSON for the per-provider fields.
+ * Step 1, with the session of the account that owns the identity. The
+ * caller proved it controls the target by authenticating as it.
  */
-export function unlinkAllCustomAuths(
+export function openConflict(
   nk: INakama,
   logger: ILogger,
-  userId: string,
-): { unlinked: string[] } {
-  const links = (nk as unknown as { links?: Map<string, string> }).links;
-  const unlinked: string[] = [];
-  if (!links) {
-    // Runtime doesn't expose the link map. Best effort: try every
-    // known provider, swallow the not-linked error.
-    for (const provider of ['apple', 'google', 'email', 'custom'] as const) {
-      try {
-        nk.unlinkCustom(provider, userId);
-        unlinked.push(provider);
-      } catch (e) {
-        logger.info(
-          'unlinkAllCustomAuths: %s not linked for %s: %s',
-          provider, userId, e instanceof Error ? e.message : String(e),
-        );
-      }
-    }
-    return { unlinked };
+  targetUserId: string,
+  nowMs: number,
+): Resp<AccountLinkConflictOpenOutput> {
+  const providers = linkedProviders(nk, targetUserId);
+  if (providers === null) return err('NOT_FOUND', 'account not found');
+  if (providers.length === 0) {
+    return err('CONFLICT', 'this account has no linked identity to transfer', { reason: 'NOT_LINKED' });
   }
-  // Test/stub path — pull the providers we actually know about.
-  const providers = new Set<string>();
-  for (const k of Array.from(links.keys())) {
-    if (links.get(k) === userId) {
-      const provider = k.split(':', 1)[0];
-      if (provider !== undefined && provider.length > 0) {
-        providers.add(provider);
-      }
-    }
+  const conflict: AccountLinkConflict = {
+    schemaVersion: 2,
+    token: nk.uuidv4(),
+    targetUserId,
+    targetProviders: providers,
+    expiresAt: nowMs + ACCOUNT_LINK_CONFLICT_TTL_MS,
+    createdAt: nowMs,
+  };
+  nk.storageWrite([
+    {
+      collection: ACCOUNT_LINK_CONFLICT_COLLECTION,
+      key: conflict.token,
+      userId: SYSTEM_USER_ID,
+      value: conflict as unknown as Record<string, unknown>,
+      permissionRead: 0,
+      permissionWrite: 0,
+    },
+  ]);
+  logger.info('account_link conflict opened target=%s providers=%j', targetUserId, providers);
+  return ok({
+    conflictToken: conflict.token,
+    expiresAt: new Date(conflict.expiresAt).toISOString(),
+    target: summariseAccount(nk, targetUserId),
+  });
+}
+
+export interface ResolveConflictInput {
+  conflictToken: string;
+  choice: 'link' | 'cancel';
+  confirmText?: string;
+}
+
+/**
+ * Step 2, with the session of the account that stays. `link` deletes the
+ * target (full purge, `deleteAccount`), which frees its identities for a
+ * native re-link; `cancel` drops the record.
+ */
+export function resolveConflict(
+  nk: INakama,
+  logger: ILogger,
+  callerUserId: string,
+  input: ResolveConflictInput,
+  nowMs: number,
+): Resp<AccountLinkResolveConflictOutput> {
+  const conflict = readConflict(nk, input.conflictToken);
+  if (conflict === null) return err('NOT_FOUND', 'conflict not found');
+  if (conflict.expiresAt <= nowMs) {
+    deleteConflict(nk, input.conflictToken);
+    return err('NOT_FOUND', 'conflict expired');
   }
-  for (const provider of providers) {
-    try {
-      nk.unlinkCustom(provider, userId);
-      unlinked.push(provider);
-    } catch (e) {
-      logger.warn(
-        'unlinkAllCustomAuths: failed %s for %s: %s',
-        provider, userId, e instanceof Error ? e.message : String(e),
-      );
-    }
+  if (input.choice === 'cancel') {
+    deleteConflict(nk, input.conflictToken);
+    logger.info('account_link_resolve cancelled user=%s target=%s', callerUserId, conflict.targetUserId);
+    return ok({ resolved: 'cancelled' });
   }
-  return { unlinked };
+  if (conflict.targetUserId === callerUserId) {
+    return err('BAD_REQUEST', 'resolve the conflict from the account that keeps the identity, not the one being deleted');
+  }
+  if (input.confirmText !== ACCOUNT_LINK_CONFIRM_TEXT) {
+    return err('BAD_REQUEST', `confirmation required: pass confirmText="${ACCOUNT_LINK_CONFIRM_TEXT}"`);
+  }
+  if (linkedProviders(nk, conflict.targetUserId) === null) {
+    deleteConflict(nk, input.conflictToken);
+    return err('NOT_FOUND', 'the other account no longer exists');
+  }
+  const deleted = deleteAccount(nk, logger, conflict.targetUserId);
+  if (!deleted.ok) return deleted;
+  deleteConflict(nk, input.conflictToken);
+  logger.warn(
+    'account_link_resolve linked user=%s deleted=%s relink=%j',
+    callerUserId, conflict.targetUserId, conflict.targetProviders,
+  );
+  return ok({ resolved: 'linked', affectedAccountDeleted: true, relinkProviders: conflict.targetProviders });
+}
+
+function readConflict(nk: INakama, token: string): AccountLinkConflict | null {
+  const obj = nk.storageRead([
+    { collection: ACCOUNT_LINK_CONFLICT_COLLECTION, key: token, userId: SYSTEM_USER_ID },
+  ])[0];
+  if (!obj) return null;
+  const v = obj.value as Partial<AccountLinkConflict>;
+  if (v.schemaVersion !== 2 || typeof v.targetUserId !== 'string') return null;
+  return v as AccountLinkConflict;
+}
+
+function deleteConflict(nk: INakama, token: string): void {
+  nk.storageDelete([{ collection: ACCOUNT_LINK_CONFLICT_COLLECTION, key: token, userId: SYSTEM_USER_ID }]);
 }

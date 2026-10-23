@@ -149,6 +149,19 @@ export class FakeLogger implements ILogger {
  * Lives in a separate class so the Proxy that throws on unknown methods
  * has a real backing object to forward to.
  */
+/** Identities linked to a fake account (`accountGetId` fields). */
+export interface FakeIdentities {
+  appleId?: string;
+  googleId?: string;
+  facebookId?: string;
+  facebookInstantGameId?: string;
+  gamecenterId?: string;
+  steamId?: string;
+  email?: string;
+  customId?: string;
+  devices?: string[];
+}
+
 class FakeNakamaCore {
   readonly store = new Map<string, IStorageObject>();
   readonly cache = new Map<string, unknown>();
@@ -158,13 +171,13 @@ class FakeNakamaCore {
   /** userId → ledger entries (oldest first). Appended by wallet updates with `updateLedger`. */
   readonly ledger = new Map<string, Record<string, unknown>[]>();
   /**
-   * provider:customId → userId. Maintained by `accountLinkCustom` and
-   * `accountDeleteId` so the conflict-detection logic mirrors the
-   * production runtime. The first link of a (provider, customId) pair
-   * succeeds; a subsequent attempt with a *different* userId throws
-   * the literal string `'ACCOUNT_LINK_CONFIRM_REQUIRED'`.
+   * userId → identities linked natively (what `accountGetId` reports).
+   * Tests link with `FakeNakama.linkIdentity`, standing in for the
+   * client's `LinkGoogleAsync` & co. (plan T-15).
    */
-  readonly links = new Map<string, string>();
+  readonly identities = new Map<string, FakeIdentities>();
+  /** Accounts removed by `accountDeleteId`: `accountGetId` throws for them. */
+  readonly deletedAccounts = new Set<string>();
   private versionCounter = 0;
 
   storageRead(keys: IStorageKey[]): IStorageObject[] {
@@ -543,8 +556,12 @@ class FakeNakamaCore {
     this.deletedLeaderboards.add(id);
   }
 
-  leaderboardList(): { leaderboards: ILeaderboard[]; cursor: string } {
-    return { leaderboards: Array.from(this.leaderboards.values()), cursor: '' };
+  /** 3.27: `leaderboardList(limit 1-100, cursor)`; one page, `cursor` null. */
+  leaderboardList(limit?: number, _cursor?: string): { leaderboards: ILeaderboard[]; cursor: string | null } {
+    if (limit !== undefined && (typeof limit !== 'number' || limit < 1 || limit > 100)) {
+      throw new TypeError('limit must be 1-100');
+    }
+    return { leaderboards: Array.from(this.leaderboards.values()), cursor: null };
   }
 
   /** 3.27 shape: sortOrder 0 asc / 1 desc, operator by its proto name. Unknown ids are skipped. */
@@ -871,14 +888,25 @@ class FakeNakamaCore {
     bucket.add(userId);
   }
 
+  /**
+   * 3.27 shape (`accountToJsObject`): `user` with the provider ids,
+   * `wallet`, `email`, `customId`, `devices`. The flat `userId` /
+   * `username` of the older stub stay for callers that read them.
+   */
   accountGetId(userId: string): unknown {
     if (userId === SYSTEM_USER_ID) return null;
+    if (this.deletedAccounts.has(userId)) throw new Error('error getting account: user not found');
     const now = new Date().toISOString();
     // The IUser d.ts declares `disableTime: true` (literal), but the real
     // Nakama JS runtime returns a unix-seconds number or null. The spec
     // for this stub asks for `null`; we cast through `unknown` to satisfy
     // the type without lying at runtime.
     const wallet = this.wallets.get(userId);
+    const ids = this.identities.get(userId) ?? {};
+    const user: Record<string, unknown> = { userId, username: 'fake-user', displayName: '', createTime: 0, updateTime: 0 };
+    for (const f of ['appleId', 'googleId', 'facebookId', 'facebookInstantGameId', 'gamecenterId', 'steamId'] as const) {
+      if (ids[f] !== undefined) user[f] = ids[f];
+    }
     const fake = {
       userId,
       username: 'fake-user',
@@ -887,48 +915,58 @@ class FakeNakamaCore {
       disableTime: null,
       metadata: {},
       wallet: wallet ? { ...wallet } : {},
+      user,
+      ...(ids.email !== undefined ? { email: ids.email } : {}),
+      ...(ids.customId !== undefined ? { customId: ids.customId } : {}),
+      ...(ids.devices !== undefined ? { devices: ids.devices.map((id) => ({ id })) } : {}),
     };
     return fake;
   }
 
-  accountLinkCustom(
-    provider: string,
-    userId: string,
-    customId: string,
-  ): void {
-    const key = `${provider}:${customId}`;
-    const existing = this.links.get(key);
-    if (existing !== undefined && existing !== userId) {
-      // The Nakama JS runtime surfaces this as a thrown string error.
-      throw new Error('ACCOUNT_LINK_CONFIRM_REQUIRED');
-    }
-    this.links.set(key, userId);
+  /** 3.27 `linkCustom(userId, customId)`: "already in use" when another account owns it. */
+  linkCustom(userId: string, customId: string): void {
+    this.linkIdentity(userId, 'customId', customId);
   }
 
-  unlinkCustom(provider: string, userId: string): void {
-    for (const [k, v] of Array.from(this.links.entries())) {
-      if (v === userId && k.startsWith(`${provider}:`)) {
-        this.links.delete(k);
-        return;
+  /** Native link (test helper). Throws like 3.27 when another account owns the identity. */
+  linkIdentity(userId: string, field: keyof FakeIdentities, value: string): void {
+    for (const [owner, ids] of this.identities) {
+      if (owner === userId) continue;
+      const v = ids[field];
+      if (v === value || (Array.isArray(v) && v.includes(value))) {
+        throw new Error('error linking: identity is already in use.');
       }
     }
-    throw new Error('UNLINK_NOT_LINKED');
+    const ids = this.identities.get(userId) ?? {};
+    if (field === 'devices') ids.devices = [...(ids.devices ?? []), value];
+    else ids[field] = value;
+    this.identities.set(userId, ids);
   }
 
+  /** Owner of an identity (test helper, like an `authenticate*` with `create: false`). */
+  findIdentityOwner(field: keyof FakeIdentities, value: string): string | null {
+    for (const [owner, ids] of this.identities) {
+      const v = ids[field];
+      if (v === value || (Array.isArray(v) && v.includes(value))) return owner;
+    }
+    return null;
+  }
+
+  /**
+   * Like 3.27 `DeleteAccount`: the user row (identities), wallet, ledger,
+   * owned storage (FK cascade), leaderboard records and group edges.
+   */
   accountDeleteId(userId: string, _recorded: boolean): void {
-    // Drop the user's wallet, ledger, and every link they own so a
-    // re-link with the same customId works.
     this.wallets.delete(userId);
     this.ledger.delete(userId);
     this.users.delete(userId);
-    for (const [k, v] of Array.from(this.links.entries())) {
-      if (v === userId) this.links.delete(k);
-    }
-    // Also delete every storage object owned by the user — the
-    // production runtime cascades.
+    this.identities.delete(userId);
+    this.deletedAccounts.add(userId);
     for (const k of Array.from(this.store.keys())) {
       if (k.endsWith(`/${userId}`)) this.store.delete(k);
     }
+    for (const records of this.leaderboardRecords.values()) records.delete(userId);
+    for (const members of this.groupMembers.values()) members.delete(userId);
   }
 }
 
@@ -968,8 +1006,10 @@ export class FakeNakama {
   readonly wallets: Map<string, Record<string, number>>;
   /** userId → ledger entries (insertion order). Appended by wallet updates with `updateLedger`. */
   readonly ledger: Map<string, Record<string, unknown>[]>;
-  /** provider:customId → userId. Maintained by `accountLinkCustom`. */
-  readonly links: Map<string, string>;
+  /** userId → natively linked identities. See `linkIdentity`. */
+  readonly identities: Map<string, FakeIdentities>;
+  /** Accounts removed by `accountDeleteId`. */
+  readonly deletedAccounts: Set<string>;
   /** Leaderboard id → ILeaderboard. Populated by `leaderboardCreate`. */
   readonly leaderboards: Map<string, ILeaderboard>;
   /** Leaderboard id → map(ownerId → ILeaderboardRecord). */
@@ -1012,7 +1052,8 @@ export class FakeNakama {
     this.users = core.users;
     this.wallets = core.wallets;
     this.ledger = core.ledger;
-    this.links = core.links;
+    this.identities = core.identities;
+    this.deletedAccounts = core.deletedAccounts;
     this.createdMatches = core.createdMatches;
     this.leaderboards = core.leaderboards;
     this.leaderboardRecords = core.leaderboardRecords;
@@ -1024,7 +1065,14 @@ export class FakeNakama {
     this.httpResponse = core.httpResponse;
     this.httpRequestThrow = core.httpRequestThrow;
     this.nakama = wrapWithNotStubbedThrow(core) as INakama;
+    this.linkIdentity = core.linkIdentity.bind(core);
+    this.findIdentityOwner = core.findIdentityOwner.bind(core);
   }
+
+  /** Native link, as the client's `Link*Async` (plan T-15). */
+  readonly linkIdentity: (userId: string, field: keyof FakeIdentities, value: string) => void;
+  /** Owner of an identity, as an `authenticate*` with `create: false`. */
+  readonly findIdentityOwner: (field: keyof FakeIdentities, value: string) => string | null;
 }
 
 // ─── FakeInitializer ────────────────────────────────────────────────────────

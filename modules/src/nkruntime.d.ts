@@ -284,11 +284,11 @@ export interface INakama {
     enableRanks: boolean,
   ): { leaderboard: ILeaderboard; created: boolean };
   leaderboardDelete(id: string): void;
+  /** 3.27: `limit` 1-100 (default 10); `cursor` is null on the last page. */
   leaderboardList(
-    category: string,
     limit?: number,
     cursor?: string,
-  ): { leaderboards: ILeaderboard[]; cursor: string };
+  ): { leaderboards: ILeaderboard[]; cursor: string | null };
   leaderboardRecordWrite(
     id: string,
     ownerId: string,
@@ -408,23 +408,13 @@ export interface INakama {
   ): void;
   accountDeleteId(userId: string, recorded: boolean): void;
   /**
-   * Link an external provider customId to an existing account. Throws
-   * with the literal string `'ACCOUNT_LINK_CONFIRM_REQUIRED'` when the
-   * customId is already owned by a different user — caller must present
-   * the user with a confirmation prompt before deleting the conflicting
-   * account and re-linking.
-   *
-   * (The Nakama 3.27 JS runtime exposes the underlying Go call as
-   * `accountLinkCustom`; the throw-string projection is what surfaces
-   * inside goja — verified empirically.)
+   * 3.27 server-side links (`linkCustom(userId, customId)`, …). Unused:
+   * players link natively from the client (plan T-15, P-02). Each one
+   * throws "error linking: … is already in use." when the identity
+   * belongs to another account.
    */
-  accountLinkCustom(
-    provider: string,
-    userId: string,
-    customId: string,
-  ): void;
-  /** Unlink a provider customId from an account. Throws if not linked. */
-  unlinkCustom(provider: string, userId: string): void;
+  linkCustom(userId: string, customId: string): void;
+  unlinkCustom(userId: string, customId?: string): void;
   usersGetId(userIds: string[]): IUser[];
   usersGetUsername(username: string[]): unknown;
   usersGetRandom(count: number): unknown;

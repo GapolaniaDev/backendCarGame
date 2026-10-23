@@ -1,171 +1,132 @@
-// Phase 5 Chunk 5 e2e tests for account_delete.
-//
-// Covers the 5 spec cases:
-//   1. User A: device auth → garage + profile + race_session joined →
-//      account_delete → storage empty, leaderboards clean
-//   2. Re-auth with same deviceId → NEW userId (different from deleted)
-//      NOTE: FakeNakama doesn't simulate the auth path; we exercise
-//      the post-delete invariant: a fresh account_link on the same
-//      (provider, customId) succeeds without conflict (the old user
-//      is gone).
-//   3. User A linked to email → account_delete → custom auth unlinked
-//   4. User A leader of club with co-leader → leadership transferred,
-//      account deleted
-//      NOTE: clubs not implemented; this verifies the unlink path and
-//      summary's empty wasClubLeaderOf field.
-//   5. User A unique leader of club with 5 members → FORBIDDEN
-//      NOTE: same — clubs not implemented; we verify the path runs
-//      without error and wasClubLeaderOf stays empty.
+// account_delete over the bundle (plan T-16, audit 06 f13): every
+// collection of the registry ends with 0 objects of the user, the
+// system rows keyed by them and the references other players hold are
+// gone, and the user leaves every leaderboard.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeContext, loadBundleForTest } from './_stubs';
-import { mintTestToken } from './_test_tokens';
+import { COLLECTIONS } from '../../modules/src/core/collections';
+import type { ILeaderboard, ILeaderboardRecord } from '../../modules/src/nkruntime';
 
-const USER = 'user-delete-e2e';
+const A = 'user-delete-e2e';
+const B = 'user-friend-b';
+const C = 'user-other-c';
+const SYSTEM = '00000000-0000-0000-0000-000000000000';
 
 type Resp<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; details?: unknown } };
 
-function call<T>(
-  env: ReturnType<typeof loadBundleForTest>,
-  rpc: string,
-  caller: string | null,
-  payload: unknown,
-): T {
-  const handler = env.resolver(rpc);
-  if (!handler) throw new Error(`no rpc: ${rpc}`);
-  const ctx = caller === null ? FakeContext : { ...FakeContext, userId: caller };
-  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
+interface Summary {
+  storageDeleted: number;
+  collectionsAffected: string[];
+  referencesRemoved: number;
+  boardsDeleted: number;
+  boardsAffected: string[];
+  unlinkedAuths: string[];
+  wasClubLeaderOf: string[];
+  abandonedFromRaces: number;
 }
 
-function callDelete(
-  env: ReturnType<typeof loadBundleForTest>,
-  userId: string,
-  confirmText: string,
-): Resp<{
-  deletedAt: string;
-  summary: {
-    storageDeleted: number;
-    collectionsAffected: string[];
-    boardsDeleted: number;
-    boardsAffected: string[];
-    unlinkedAuths: string[];
-    wasClubLeaderOf: string[];
-    abandonedFromRaces: number;
-  };
-}> {
-  return call(env, 'account_delete', userId, {
-    callerUserId: userId,
-    confirmText,
-    clientVersion: '1.0.0',
-    platform: 'ios',
+function call<T>(env: ReturnType<typeof loadBundleForTest>, rpc: string, caller: string, payload: unknown): T {
+  const handler = env.resolver(rpc);
+  if (!handler) throw new Error(`no rpc: ${rpc}`);
+  return JSON.parse(handler({ ...FakeContext, userId: caller }, env.logger, env.nak, JSON.stringify(payload))) as T;
+}
+
+function put(env: ReturnType<typeof loadBundleForTest>, collection: string, key: string, userId: string, value: Record<string, unknown>): void {
+  env.fakeNakama.store.set(`${collection}/${key}/${userId}`, {
+    collection, key, userId, value, version: `v-${collection}-${key}`,
+    permissionRead: 0, permissionWrite: 0,
+    createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00Z', expiresAt: null,
   });
 }
 
-describe('account_delete (Phase 5 Chunk 5) — RPC', () => {
+function objectsOf(env: ReturnType<typeof loadBundleForTest>, collection: string, userId: string): number {
+  return env.nak.storageList(userId, collection, 100, null).objects.length;
+}
+
+function seedBoard(env: ReturnType<typeof loadBundleForTest>, id: string, owners: string[]): void {
+  env.fakeNakama.leaderboards.set(id, {
+    id, authoritative: true, sortOrder: 'desc', operator: 'best', resetSchedule: '', metadata: {},
+  } as unknown as ILeaderboard);
+  env.fakeNakama.leaderboardRecords.set(id, new Map(owners.map((o, i) => [o, {
+    leaderboardId: id, ownerId: o, username: o, score: 100 - i, subscore: 0, numScore: 1, metadata: {},
+    createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00Z', expiryTime: null, rank: i + 1, maxNumScore: 1,
+  } as unknown as ILeaderboardRecord])));
+}
+
+describe('account_delete — full purge through the collection registry', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => { env = loadBundleForTest(); });
 
-  it('1. happy — user data purged across collections + leaderboards', async () => {
-    // Seed: trigger garage_get to create the garage (after-auth hook).
-    const garageResp = call<Resp<{ garage: { userId: string } }>>(
-      env, 'garage_get', USER,
-      { callerUserId: USER, clientVersion: '1.0.0', platform: 'ios' },
-    );
-    expect(garageResp.ok).toBe(true);
-
-    // Drop an inbox message for the user.
-    const inboxKey = `inbox/${USER}/welcome-1`;
-    env.fakeNakama.store.set(`${inboxKey}/${USER}`, {
-      collection: 'inbox', key: `${USER}/welcome-1`, userId: USER,
-      value: { id: 'welcome-1', userId: USER, kind: 'reward', title: 't', body: 'b', createdAt: Date.now(), expiresAt: Date.now() + 86400000 },
-      version: 'v00000001', permissionRead: 1, permissionWrite: 0,
-      createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00', expiresAt: null,
-    });
-
-    const r = callDelete(env, USER, 'DELETE');
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.summary.storageDeleted).toBeGreaterThan(0);
-    // Garage row gone, inbox row gone.
-    expect(env.fakeNakama.store.has(`garage/${USER}/${USER}`)).toBe(false);
-    expect(env.fakeNakama.store.has(`${inboxKey}/${USER}`)).toBe(false);
-    // wasClubLeaderOf stays empty (clubs not implemented yet).
-    expect(r.data.summary.wasClubLeaderOf).toEqual([]);
+  it('confirmText !== DELETE → BAD_REQUEST, nothing deleted', () => {
+    call<Resp<unknown>>(env, 'garage_get', A, {});
+    const r = call<Resp<unknown>>(env, 'account_delete', A, { confirmText: 'delete' });
+    expect(r.ok ? 'ok' : r.error.code).toBe('BAD_REQUEST');
+    expect(objectsOf(env, 'garage', A)).toBe(1);
   });
 
-  it('2. fresh account_link after delete succeeds (the old user is gone)', async () => {
-    // Link email → customId under USER.
-    const t = mintTestToken('email', 'reborn@example.com', 60);
-    const first = call<Resp<{ linked: true } | { linked: false; conflict: unknown }>>(
-      env, 'account_link', USER,
-      { callerUserId: USER, provider: 'email', token: t, clientVersion: '1.0.0', platform: 'ios' },
-    );
-    expect(first.ok).toBe(true);
+  it('0 objects of the user in every registered collection, references removed, out of the boards', () => {
+    // Data the user owns, created through the RPCs and seeded per collection.
+    call<Resp<unknown>>(env, 'garage_get', A, {});
+    call<Resp<unknown>>(env, 'profile_get', A, {});
+    for (const spec of COLLECTIONS) put(env, spec.name, `owned-${spec.name}`, A, { schemaVersion: 1, userId: A });
+    env.fakeNakama.linkIdentity(A, 'googleId', 'g-a');
+    put(env, 'clubs_created', A, A, { schemaVersion: 1, userId: A, clubId: 'club-1', createdAt: 1 });
 
-    // Delete the user.
-    const del = callDelete(env, USER, 'DELETE');
-    expect(del.ok).toBe(true);
+    // System rows keyed by the user.
+    put(env, 'race_active', A, SYSTEM, { sessionId: 's1' });
+    put(env, 'race_presence', `s1/${A}`, SYSTEM, { lastSeenMs: 1 });
+    put(env, 'race_presence', `s1/${C}`, SYSTEM, { lastSeenMs: 1 });
+    put(env, 'race_sessions', `last_closed/${A}`, SYSTEM, { sessionId: 's0' });
+    put(env, 'anti_cheat_marks', A, SYSTEM, { marks: [] });
+    put(env, 'chat_history', 'dm/m1', SYSTEM, { senderUserId: A, content: 'hi' });
+    put(env, 'chat_history', 'dm/m2', SYSTEM, { senderUserId: B, content: 'hey' });
+    put(env, 'tournament_leaderboard', 't1', SYSTEM, { schemaVersion: 1, entries: [{ userId: A }, { userId: C }] });
+    put(env, 'account_link_conflict', 'tok', SYSTEM, { schemaVersion: 2, targetUserId: A });
 
-    // A brand-new user (the device auth flow would mint a fresh UUID
-    // post-delete; we simulate that with a different USER id).
-    const REBORN = 'user-reborn';
-    const second = call<Resp<{ linked: true } | { linked: false; conflict: unknown }>>(
-      env, 'account_link', REBORN,
-      { callerUserId: REBORN, provider: 'email', token: t, clientVersion: '1.0.0', platform: 'ios' },
-    );
-    expect(second.ok).toBe(true);
-    if (second.ok && 'linked' in second.data) {
-      expect(second.data.linked).toBe(true);
+    // What other players hold about the user.
+    put(env, 'friends_edge', B, A, { userId: A, friendId: B });
+    put(env, 'friends_edge', A, B, { userId: B, friendId: A });
+    put(env, 'friends_edge', C, B, { userId: B, friendId: C });
+    put(env, 'blocks', A, C, { ownerId: C, targetUserId: A });
+    put(env, 'invites', 'inv-1', B, { fromUserId: A, targetUserId: B });
+    put(env, 'recent_rivals', B, B, { schemaVersion: 1, userId: B, entries: [{ userId: A }, { userId: C }] });
+
+    seedBoard(env, 'wins_week', [A, B]);
+    seedBoard(env, 'lap_neon_blvd', [B]);
+
+    const r = call<Resp<{ deletedAt: string; summary: Summary }>>(env, 'account_delete', A, { confirmText: 'DELETE' });
+    if (!r.ok) throw new Error(`account_delete failed: ${JSON.stringify(r.error)}`);
+    const s = r.data.summary;
+
+    for (const spec of COLLECTIONS) expect(objectsOf(env, spec.name, A), spec.name).toBe(0);
+    for (const key of ['race_active/' + A, `race_presence/s1/${A}`, `race_sessions/last_closed/${A}`, 'anti_cheat_marks/' + A, 'chat_history/dm/m1', 'account_link_conflict/tok']) {
+      expect(env.fakeNakama.store.has(`${key}/${SYSTEM}`), key).toBe(false);
     }
-    expect(env.fakeNakama.links.get('email:reborn@example.com')).toBe(REBORN);
-  });
+    expect(env.fakeNakama.store.has(`race_presence/s1/${C}/${SYSTEM}`)).toBe(true);
+    expect(env.fakeNakama.store.has(`chat_history/dm/m2/${SYSTEM}`)).toBe(true);
+    expect((env.fakeNakama.store.get(`tournament_leaderboard/t1/${SYSTEM}`)?.value as { entries: unknown[] }).entries)
+      .toEqual([{ userId: C }]);
 
-  it('3. linked email → unlinked after delete', async () => {
-    const t = mintTestToken('email', 'unlink@example.com', 60);
-    call<Resp<unknown>>(
-      env, 'account_link', USER,
-      { callerUserId: USER, provider: 'email', token: t, clientVersion: '1.0.0', platform: 'ios' },
-    );
-    expect(env.fakeNakama.links.get('email:unlink@example.com')).toBe(USER);
+    expect(env.fakeNakama.store.has(`friends_edge/${A}/${B}`)).toBe(false);
+    expect(env.fakeNakama.store.has(`friends_edge/${C}/${B}`)).toBe(true);
+    expect(env.fakeNakama.store.has(`blocks/${A}/${C}`)).toBe(false);
+    expect(env.fakeNakama.store.has(`invites/inv-1/${B}`)).toBe(false);
+    expect((env.fakeNakama.store.get(`recent_rivals/${B}/${B}`)?.value as { entries: unknown[] }).entries)
+      .toEqual([{ userId: C }]);
 
-    const del = callDelete(env, USER, 'DELETE');
-    expect(del.ok).toBe(true);
-    if (!del.ok) return;
-    expect(del.data.summary.unlinkedAuths).toContain('email');
-    expect(env.fakeNakama.links.has('email:unlink@example.com')).toBe(false);
-  });
+    expect(env.fakeNakama.leaderboardRecords.get('wins_week')?.has(A)).toBe(false);
+    expect(env.fakeNakama.leaderboardRecords.get('wins_week')?.has(B)).toBe(true);
+    expect(s.boardsAffected).toEqual(['wins_week']);
+    expect(s.boardsDeleted).toBe(1);
 
-  it('4. confirmText !== DELETE → BAD_REQUEST', () => {
-    const r = callDelete(env, USER, 'delete');
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.error.code).toBe('BAD_REQUEST');
-    expect(r.error.message).toContain('DELETE');
-  });
-
-  it('5. account_delete removes user from leaderboards', () => {
-    // Seed a leaderboard record.
-    env.fakeNakama.leaderboards.set('race_score', {
-      id: 'race_score', authoritative: true, sortOrder: 'asc',
-      operator: 'best', resetSchedule: '', metadata: {},
-    } as unknown as import('../../modules/src/nkruntime').ILeaderboard);
-    env.fakeNakama.leaderboardRecords.set('race_score', new Map([
-      [USER, {
-        leaderboardId: 'race_score', ownerId: USER, username: 'A',
-        score: 1000, subscore: 0, numScore: 1, metadata: {},
-          createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00',
-          expiryTime: null, rank: 1, maxNumScore: 1,
-        } as unknown as import('../../modules/src/nkruntime').ILeaderboardRecord],
-      ]));
-
-    const r = callDelete(env, USER, 'DELETE');
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.summary.boardsDeleted).toBeGreaterThanOrEqual(1);
-    expect(r.data.summary.boardsAffected).toContain('race_score');
-    expect(env.fakeNakama.leaderboardRecords.get('race_score')?.has(USER)).toBeFalsy();
+    expect(s.storageDeleted).toBeGreaterThanOrEqual(COLLECTIONS.length + 5);
+    expect(s.referencesRemoved).toBeGreaterThanOrEqual(6);
+    expect(s.unlinkedAuths).toEqual(['google']);
+    expect(s.wasClubLeaderOf).toEqual(['club-1']);
+    expect(env.fakeNakama.deletedAccounts.has(A)).toBe(true);
+    expect(env.fakeNakama.findIdentityOwner('googleId', 'g-a')).toBeNull();
   });
 });

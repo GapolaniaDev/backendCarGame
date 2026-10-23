@@ -16,7 +16,7 @@
 // harness to assert cleanup behavior. The disconnect hook that
 // drives it at runtime lands in a later chunk (Phase 4 disconnects).
 
-import type { ILogger, INakama } from '../nkruntime';
+import type { ILogger, INakama, IStorageObject } from '../nkruntime';
 import { writeJson, listStorage } from '../core/storage';
 import type { RaceSession, RosterEntry } from './types';
 import { RACE_SESSIONS_COLLECTION } from './constants';
@@ -37,9 +37,11 @@ export function removePlayerFromAll(
 ): RemovePlayerResult {
   const result: RemovePlayerResult = { abandonedFrom: [], closedSessions: [] };
 
-  const list = listStorage(nk, { collection: RACE_SESSIONS_COLLECTION });
-  for (const obj of list.objects) {
+  for (const obj of listSessionObjects(nk)) {
     const session = obj.value as unknown as RaceSession;
+    // The collection also holds `last_closed/{userId}` pointers and
+    // `{sessionId}/reports/{userId}` rows, which have no roster.
+    if (!Array.isArray(session?.roster)) continue;
     if (session.state === 'closed') {
       if (session.roster.some((e) => e.userId === userId)) {
         result.closedSessions.push(session.id);
@@ -86,4 +88,17 @@ export function removePlayerFromAll(
     }
   }
   return result;
+}
+
+/** Every system-owned object of `race_sessions`, paged (100 × 100 at most). */
+function listSessionObjects(nk: INakama): IStorageObject[] {
+  const out: IStorageObject[] = [];
+  let cursor = '';
+  for (let page = 0; page < 100; page++) {
+    const res = listStorage(nk, { collection: RACE_SESSIONS_COLLECTION, userId: SYSTEM_USER_ID, limit: 100, cursor });
+    out.push(...res.objects);
+    cursor = res.cursor;
+    if (cursor === '') break;
+  }
+  return out;
 }

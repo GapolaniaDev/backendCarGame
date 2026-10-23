@@ -1,35 +1,27 @@
-// Phase 5 Chunk 4 — account_link + account_link_resolve_conflict.
+// account_link, account_link_resolve_conflict and account_delete
+// (plan T-15, T-16).
 //
-// Both RPCs are maintenance-gated (Phase 5 Chunk 2 `liveopsGate`) and
-// require a signed caller. The first attempts the link; on conflict
-// it returns a `conflictToken` handle that the client passes back to
-// `account_link_resolve_conflict` with `choice: 'link' | 'cancel'`.
+// Linking is native (P-02, see `linking.ts`): `account_link` takes no
+// token and only credits the one-time bonus for an identity Nakama
+// already linked; `account_link_resolve_conflict` resolves an identity
+// that belongs to another account, proven by a session of that account.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
-import { err, ok, toJson as toJsonEnv, type Resp } from '../core/response';
+import { err, ok, type Resp } from '../core/response';
 import { parseInput } from '../core/parse_input';
 import { liveopsGate } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import type { ClientPlatform } from '../liveops/types';
-import {
-  linkAccount,
-  resolveConflict,
-  unlinkAllCustomAuths,
-  type LinkAccountResult,
-  type ResolveConflictResult,
-} from './linking';
-import { purgeFromLeaderboards, purgeUserStorage } from './purge';
-import { removePlayerFromAll } from '../race/remove_player';
+import { claimLinkBonus, openConflict, resolveConflict } from './linking';
+import { linkedProviders } from './identities';
+import { deleteAccount } from './delete';
 import {
   ACCOUNT_DELETE_CONFIRM_TEXT,
-  isAccountLinkProvider,
+  isLinkedProvider,
   type AccountDeleteInput,
   type AccountDeleteOutput,
-  type AccountDeleteSummary,
-  type AccountLinkConflictOutput,
   type AccountLinkInput,
   type AccountLinkOutput,
-  type AccountLinkProvider,
   type AccountLinkResolveConflictInput,
   type AccountLinkResolveConflictOutput,
 } from './types';
@@ -43,6 +35,7 @@ export type RpcHandler = (
   body: string,
 ) => string;
 
+const toJson = <T>(r: Resp<T>): string => JSON.stringify(r);
 
 // ─── account_link ───────────────────────────────────────────────────────────
 
@@ -64,51 +57,49 @@ export const account_link_impl: RpcHandler = (ctx, logger, nk, body) => {
   );
   if (gate !== null) return JSON.stringify(gate);
 
+  // The old contract sent a server-signed test token (audit 06 f11). It
+  // is rejected whatever its signature: Nakama verifies identities.
+  if (raw['token'] !== undefined) {
+    return toJson(err(
+      'BAD_REQUEST',
+      'link tokens are not accepted: link natively with the Nakama client (LinkGoogleAsync, LinkAppleAsync, …), then call account_link',
+      { reason: 'NATIVE_LINK_REQUIRED' },
+    ));
+  }
   const provider = raw['provider'];
-  if (!isAccountLinkProvider(provider)) {
-    return JSON.stringify(err('BAD_REQUEST', `unknown provider: ${String(provider)}`));
-  }
-  const token = raw['token'];
-  if (typeof token !== 'string' || token.length === 0) {
-    return JSON.stringify(err('BAD_REQUEST', 'token is required'));
+  if (provider !== undefined && !isLinkedProvider(provider)) {
+    return toJson(err('BAD_REQUEST', `unknown provider: ${String(provider)}`));
   }
 
-  const nowMs = Date.now();
-  const result = linkAccount(nk, logger, userId, provider, token, nowMs);
-  return renderLinkResult(nk, logger, userId, provider, result);
+  const providers = linkedProviders(nk, userId);
+  if (providers === null) return toJson(err('NOT_FOUND', 'account not found'));
+  if (providers.length === 0 || (provider !== undefined && !providers.includes(provider))) {
+    return toJson(err(
+      'CONFLICT',
+      provider !== undefined ? `${provider} is not linked to this account` : 'no identity is linked to this account',
+      { reason: 'NOT_LINKED', providers },
+    ));
+  }
+
+  let bonus;
+  try {
+    bonus = claimLinkBonus(nk, logger, userId, Date.now());
+  } catch (e) {
+    logger.error('account_link bonus failed user=%s: %s', userId, e instanceof Error ? e.message : String(e));
+    return toJson(err('INTERNAL', 'link bonus failed; nothing was credited, please retry'));
+  }
+  if (!bonus.ok) return toJson(bonus);
+
+  logger.info('account_link user=%s providers=%j bonus=%s', userId, providers, String(bonus.data.bonusClaimed));
+  emit(nk, logger, 'account_linked', { userId, providers, bonusClaimed: bonus.data.bonusClaimed });
+  const out: AccountLinkOutput = {
+    linked: true,
+    providers,
+    bonusClaimed: bonus.data.bonusClaimed,
+    ...(bonus.data.newBalance !== undefined ? { newBalance: bonus.data.newBalance } : {}),
+  };
+  return toJson(ok(out));
 };
-
-function renderLinkResult(
-  nk: INakama,
-  logger: ILogger,
-  userId: string,
-  provider: AccountLinkProvider,
-  result: LinkAccountResult,
-): string {
-  if (result.kind === 'linked') {
-    logger.info(
-      'account_link user=%s provider=%s bonus=%s',
-      userId, provider, String(result.bonusClaimed),
-    );
-    // Analytics (Chunk 9).
-    emit(nk, logger, 'account_linked', {
-      userId, provider, bonusClaimed: result.bonusClaimed,
-    });
-    const out: AccountLinkOutput = {
-      linked: true,
-      bonusClaimed: result.bonusClaimed,
-      ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
-    };
-    return JSON.stringify(ok(out));
-  }
-  if (result.kind === 'conflict') {
-    // Analytics (Chunk 9).
-    emit(nk, logger, 'account_link_conflict', { userId, provider });
-    return JSON.stringify(ok({ linked: false, conflict: result.conflict } satisfies { linked: false; conflict: AccountLinkConflictOutput }));
-  }
-  // error
-  return JSON.stringify(err(result.code, result.message));
-}
 
 // ─── account_link_resolve_conflict ─────────────────────────────────────────
 
@@ -130,55 +121,50 @@ export const account_link_resolve_conflict_impl: RpcHandler = (ctx, logger, nk, 
   );
   if (gate !== null) return JSON.stringify(gate);
 
-  const conflictToken = raw['conflictToken'];
-  if (typeof conflictToken !== 'string' || conflictToken.length === 0) {
-    return JSON.stringify(err('BAD_REQUEST', 'conflictToken is required'));
+  const step = raw['step'] ?? 'resolve';
+  if (step !== 'open' && step !== 'resolve') {
+    return toJson(err('BAD_REQUEST', `step must be 'open' or 'resolve'`));
   }
-  const choice = raw['choice'];
-  if (choice !== 'link' && choice !== 'cancel') {
-    return JSON.stringify(err('BAD_REQUEST', `choice must be 'link' or 'cancel'`));
-  }
-  const confirmText = typeof raw['confirmText'] === 'string' ? raw['confirmText'] as string : undefined;
-
   const nowMs = Date.now();
-  const result = resolveConflict(nk, logger, userId, { conflictToken, choice, ...(confirmText !== undefined ? { confirmText } : {}) }, nowMs);
-  return renderResolveResult(nk, logger, userId, result);
-};
 
-function renderResolveResult(
-  nk: INakama,
-  logger: ILogger,
-  userId: string,
-  result: ResolveConflictResult,
-): string {
-  if (result.kind === 'cancelled') {
-    // Analytics (Chunk 9).
-    emit(nk, logger, 'account_link_conflict_resolved', {
-      userId, choice: 'cancel', affectedAccountDeleted: false,
-    });
-    return JSON.stringify(ok({ resolved: 'cancelled' as const } satisfies Pick<AccountLinkResolveConflictOutput, 'resolved'>));
+  try {
+    if (step === 'open') {
+      const opened = openConflict(nk, logger, userId, nowMs);
+      if (opened.ok) emit(nk, logger, 'account_link_conflict', { userId, targetUserId: userId });
+      return toJson(opened);
+    }
+
+    const conflictToken = raw['conflictToken'];
+    if (typeof conflictToken !== 'string' || conflictToken.length === 0) {
+      return toJson(err('BAD_REQUEST', 'conflictToken is required'));
+    }
+    const choice = raw['choice'];
+    if (choice !== 'link' && choice !== 'cancel') {
+      return toJson(err('BAD_REQUEST', `choice must be 'link' or 'cancel'`));
+    }
+    const confirmText = typeof raw['confirmText'] === 'string' ? raw['confirmText'] as string : undefined;
+    const resolved = resolveConflict(
+      nk, logger, userId,
+      { conflictToken, choice, ...(confirmText !== undefined ? { confirmText } : {}) },
+      nowMs,
+    );
+    if (resolved.ok) {
+      emit(nk, logger, 'account_link_conflict_resolved', {
+        userId, choice, affectedAccountDeleted: resolved.data.affectedAccountDeleted === true,
+      });
+    }
+    return toJson<AccountLinkResolveConflictOutput>(resolved);
+  } catch (e) {
+    logger.error('account_link_resolve_conflict failed user=%s: %s', userId, e instanceof Error ? e.message : String(e));
+    return toJson(err('INTERNAL', 'conflict resolution failed'));
   }
-  if (result.kind === 'linked') {
-    // Analytics (Chunk 9).
-    emit(nk, logger, 'account_link_conflict_resolved', {
-      userId, choice: 'link', affectedAccountDeleted: result.affectedAccountDeleted,
-    });
-    const out: AccountLinkResolveConflictOutput = {
-      resolved: 'linked',
-      affectedAccountDeleted: result.affectedAccountDeleted,
-      bonusClaimed: result.bonusClaimed,
-      ...(result.newBalance !== undefined ? { newBalance: result.newBalance } : {}),
-    };
-    return JSON.stringify(ok(out));
-  }
-  return JSON.stringify(err(result.code, result.message));
-}
+};
 
 // Top-level bindings for the goja AST scanner.
 export const account_link: RpcHandler = withRuntime(account_link_impl);
 export const account_link_resolve_conflict: RpcHandler = withRuntime(account_link_resolve_conflict_impl);
 
-// ─── account_delete (Phase 5 Chunk 5) ──────────────────────────────────────
+// ─── account_delete ─────────────────────────────────────────────────────────
 
 export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
@@ -195,77 +181,30 @@ export const account_delete_impl: RpcHandler = (ctx, logger, nk, body) => {
 
   const confirmText = raw['confirmText'];
   if (typeof confirmText !== 'string' || confirmText !== ACCOUNT_DELETE_CONFIRM_TEXT) {
-    return JSON.stringify(err(
+    return toJson(err(
       'BAD_REQUEST',
       `confirmation required: pass confirmText="${ACCOUNT_DELETE_CONFIRM_TEXT}"`,
     ));
   }
 
   const nowMs = Date.now();
-
-  // Step 1: mark abandoned in any active race session so the
-  // close-time ordering still records them as DNF — and prevents the
-  // RaceCompleted subscriber from trying to grant rewards to a
-  // userId that's about to be purged.
-  const removeResult = removePlayerFromAll(nk, logger, userId);
-
-  // Step 2: purge storage.
-  const purge = purgeUserStorage(nk, userId);
-
-  // Step 3: purge leaderboard records.
-  const lbPurge = purgeFromLeaderboards(nk, logger, userId);
-
-  // Step 4: unlink every custom auth.
-  const unlinked = unlinkAllCustomAuths(nk, logger, userId);
-
-  // Step 5: soft-delete the account row. `recorded=false` skips
-  // the recorded-channel billable audit trail (we already log a
-  // single high-priority line above for ops).
+  let deleted;
   try {
-    nk.accountDeleteId(userId, false);
+    deleted = deleteAccount(nk, logger, userId);
   } catch (e) {
-    logger.error(
-      'account_delete: accountDeleteId(%s) failed: %s',
-      userId, e instanceof Error ? e.message : String(e),
-    );
-    return JSON.stringify(err('INTERNAL', 'failed to delete account'));
+    logger.error('account_delete failed user=%s: %s', userId, e instanceof Error ? e.message : String(e));
+    return toJson(err('INTERNAL', 'failed to delete account'));
   }
+  if (!deleted.ok) return toJson(deleted);
 
-  logger.warn(
-    'account_delete user=%s storage=%d boards=%d abandoned=%d unlinked=%j',
-    userId, purge.storageDeleted, lbPurge.boardsDeleted,
-    removeResult.abandonedFrom.length, unlinked.unlinked,
-  );
+  // Emitted only after `nk.accountDeleteId` succeeded; system-owned row.
+  emit(nk, logger, 'account_deleted', { userId, summary: deleted.data });
 
-  // Analytics (Chunk 9). Emitted only after `nk.accountDeleteId`
-  // succeeds — a failed delete must NOT generate a 'deleted' event.
-  emit(nk, logger, 'account_deleted', {
-    userId,
-    summary: {
-      storageDeleted: purge.storageDeleted,
-      collectionsAffected: purge.collectionsAffected,
-      boardsDeleted: lbPurge.boardsDeleted,
-      boardsAffected: lbPurge.boardsAffected,
-      unlinkedAuths: unlinked.unlinked,
-      abandonedFromRaces: removeResult.abandonedFrom.length,
-    },
-  });
-
-  const summary: AccountDeleteSummary = {
-    storageDeleted: purge.storageDeleted,
-    collectionsAffected: purge.collectionsAffected,
-    boardsDeleted: lbPurge.boardsDeleted,
-    boardsAffected: lbPurge.boardsAffected,
-    unlinkedAuths: unlinked.unlinked,
-    // Clubs: not implemented yet (Phase 7). Always empty for v1.
-    wasClubLeaderOf: [],
-    abandonedFromRaces: removeResult.abandonedFrom.length,
-  };
   const output: AccountDeleteOutput = {
     deletedAt: new Date(nowMs).toISOString(),
-    summary,
+    summary: deleted.data,
   };
-  return JSON.stringify(ok(output));
+  return toJson(ok(output));
 };
 
 export const account_delete: RpcHandler = withRuntime(account_delete_impl);
@@ -278,7 +217,3 @@ export type {
   AccountDeleteInput,
   AccountDeleteOutput,
 };
-
-// Side-effect import marker so the bundler keeps the named export of
-// toJsonEnv available for callers that prefer the helper.
-void toJsonEnv;

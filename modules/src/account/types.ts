@@ -1,39 +1,66 @@
-// Phase 5 Chunk 4 — Account linking types.
+// Account linking and deletion types (plan T-15, T-16).
 //
-// Stores claim records (created when `nk.accountLinkCustom` throws the
-// `ACCOUNT_LINK_CONFIRM_REQUIRED` error code) and the inputs needed to
-// resolve them.
+// Linking is native (plan P-02): the client links an identity with the
+// Nakama client API (`LinkGoogleAsync`, `LinkAppleAsync`,
+// `LinkEmailAsync`, `LinkCustomAsync`, …), which verifies the provider
+// token on the server. The RPCs here only read what Nakama verified:
+//   - `account_link` credits the one-time link bonus once the account
+//     has a linked identity;
+//   - `account_link_resolve_conflict` resolves an identity that already
+//     belongs to another account, proven by a session of that account.
 
 import type { ClientPlatform } from '../liveops/types';
 
-export type AccountLinkProvider = 'apple' | 'google' | 'email' | 'custom';
+/**
+ * Identities Nakama can link to an account, as `accountGetId` reports
+ * them. Device ids are the guest credential, not a link.
+ */
+export type LinkedProvider =
+  | 'apple'
+  | 'google'
+  | 'facebook'
+  | 'facebook_instant_game'
+  | 'gamecenter'
+  | 'steam'
+  | 'email'
+  | 'custom';
+
+export const LINKED_PROVIDERS: readonly LinkedProvider[] = [
+  'apple',
+  'google',
+  'facebook',
+  'facebook_instant_game',
+  'gamecenter',
+  'steam',
+  'email',
+  'custom',
+];
+
+export function isLinkedProvider(value: unknown): value is LinkedProvider {
+  return typeof value === 'string' && (LINKED_PROVIDERS as readonly string[]).includes(value);
+}
 
 /**
- * Per-conflict record. Persisted in the `account_link_conflict/{userId}`
- * collection (server-only write) until the conflict is resolved or the
- * 24h TTL passes. The `token` is the opaque handle the client passes
- * back via `account_link_resolve_conflict`.
+ * Pending conflict, written by `account_link_resolve_conflict`
+ * `step: 'open'` with the session of the account that already owns the
+ * identity (the target). System-owned, keyed by the conflict token.
  */
 export interface AccountLinkConflict {
-  schemaVersion: 1;
-  /** UUID v4 — opaque handle returned to the client. */
+  schemaVersion: 2;
+  /** UUID v4 — opaque handle returned to the target's session only. */
   token: string;
-  /** Account that initiated the link attempt (the device-auth user). */
-  sourceAccount: AccountLinkConflictAccount;
-  /** Account already owning the customId (will be deleted on resolve-link). */
-  targetAccount: AccountLinkConflictAccount;
-  provider: AccountLinkProvider;
-  /** Stable provider-side identifier (Apple `sub`, Google `email`, …). */
-  customId: string;
-  /** Epoch-ms when the conflict record expires (24h after `createdAt`). */
+  /** Account that owns the identity and is deleted on `choice: 'link'`. */
+  targetUserId: string;
+  /** Identities linked to the target when the conflict was opened. */
+  targetProviders: LinkedProvider[];
+  /** Epoch-ms; the token is rejected afterwards. */
   expiresAt: number;
   createdAt: number;
 }
 
 /**
- * Minimal summary of each account involved in a link conflict. Enough
- * for the client to render a confirmation dialog ("B will be deleted;
- * A keeps X coins / Y gems / Lv Z") without leaking the full profile.
+ * Minimal summary of an account involved in a conflict, enough for the
+ * confirmation dialog ("B will be deleted; it has X coins / Lv Z").
  */
 export interface AccountLinkConflictAccount {
   userId: string;
@@ -48,39 +75,37 @@ export interface AccountLinkConflictAccount {
 }
 
 export interface AccountLinkInput {
-  provider: AccountLinkProvider;
-  /** Provider ID token (Apple/Google) or magic-link token (email). */
-  token: string;
-  callerUserId: string;
+  /** Optional: the provider the client just linked natively (must be linked). */
+  provider?: LinkedProvider;
   clientVersion?: string;
   platform?: ClientPlatform;
 }
 
 export interface AccountLinkOutput {
-  /** True when the link succeeded without a conflict. */
   linked: true;
+  /** Identities Nakama reports as linked to the caller. */
+  providers: LinkedProvider[];
   /** True when the 500-coin bonus was credited on this call. */
   bonusClaimed: boolean;
   newBalance?: { coins: number; gems: number };
 }
 
-export interface AccountLinkConflictOutput {
-  /** Conflict token — caller passes back to `account_link_resolve_conflict`. */
+export interface AccountLinkConflictOpenOutput {
+  /** Pass back with `step: 'resolve'` from the session of the account that stays. */
   conflictToken: string;
-  /** ISO-8601 expiry (24h after creation). */
+  /** ISO-8601 expiry. */
   expiresAt: string;
-  /** Echo of the source account summary for the confirmation UI. */
-  source: AccountLinkConflictAccount;
-  /** Echo of the (about-to-be-deleted) target account summary. */
+  /** The account that will be deleted if the conflict resolves with `link`. */
   target: AccountLinkConflictAccount;
 }
 
 export interface AccountLinkResolveConflictInput {
-  conflictToken: string;
-  choice: 'link' | 'cancel';
+  /** `'open'` (target's session) or `'resolve'` (default; the session that stays). */
+  step?: 'open' | 'resolve';
+  conflictToken?: string;
+  choice?: 'link' | 'cancel';
   /** Required text confirmation when `choice === 'link'`. */
   confirmText?: string;
-  callerUserId: string;
   clientVersion?: string;
   platform?: ClientPlatform;
 }
@@ -88,39 +113,39 @@ export interface AccountLinkResolveConflictInput {
 export interface AccountLinkResolveConflictOutput {
   resolved: 'linked' | 'cancelled';
   affectedAccountDeleted?: boolean;
-  bonusClaimed?: boolean;
-  newBalance?: { coins: number; gems: number };
+  /** The identities that were on the deleted account: link them again natively. */
+  relinkProviders?: LinkedProvider[];
 }
 
 export const ACCOUNT_LINK_BONUS_COINS = 500;
 export const ACCOUNT_LINK_BONUS_IDEMP_PREFIX = 'accountLinkBonus:';
-export const ACCOUNT_LINK_CONFLICT_TTL_MS = 24 * 60 * 60 * 1000;
+export const ACCOUNT_LINK_CONFLICT_TTL_MS = 10 * 60 * 1000;
 export const ACCOUNT_LINK_CONFLICT_COLLECTION = 'account_link_conflict';
 /** Required confirmation text for a destructive `choice === 'link'`. */
 export const ACCOUNT_LINK_CONFIRM_TEXT = 'TRANSFER';
 
-export function isAccountLinkProvider(value: unknown): value is AccountLinkProvider {
-  return value === 'apple' || value === 'google' || value === 'email' || value === 'custom';
-}
-
-// ─── Phase 5 Chunk 5 — Account delete ───────────────────────────────────────
+// ─── Account delete ─────────────────────────────────────────────────────────
 
 export const ACCOUNT_DELETE_CONFIRM_TEXT = 'DELETE';
 
 export interface AccountDeleteInput {
   /** Literal confirmation text. Must equal `'DELETE'`. */
   confirmText: string;
-  callerUserId: string;
   clientVersion?: string;
   platform?: ClientPlatform;
 }
 
 export interface AccountDeleteSummary {
+  /** Storage objects owned by the user or keyed by them that were deleted. */
   storageDeleted: number;
   collectionsAffected: string[];
+  /** Objects of other owners rewritten or deleted because they named the user. */
+  referencesRemoved: number;
   boardsDeleted: number;
   boardsAffected: string[];
-  unlinkedAuths: string[];
+  /** Identities that were linked; deleting the account frees them. */
+  unlinkedAuths: LinkedProvider[];
+  /** Clubs the user created (Nakama deletes a group left without a superadmin). */
   wasClubLeaderOf: string[];
   /** Number of race sessions where the user was marked abandoned. */
   abandonedFromRaces: number;

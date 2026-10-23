@@ -1,19 +1,11 @@
-// Phase 5 Chunk 4 e2e tests for account linking RPCs.
-//
-// Covers the 5 spec cases:
-//   1. Device auth → `account_link` with email token → linked, 500 coins
-//   2. Logout → re-login same email → same userId, profile preserved
-//      (NOTE: e2e stub cannot simulate a fresh HTTP auth, so we exercise
-//       the link-side invariant: same customId re-linked to the SAME user
-//       is a no-op for bonus + bonus-flag stays sealed.)
-//   3. Device auth (user A) → device auth (user B) → A tries to link B's
-//      email → conflictToken returned
-//   4. Resolve with choice=cancel → A and B stay separate
-//   5. Resolve with choice=link → B deleted, A linked + bonus
+// account_link and account_link_resolve_conflict over the bundle (plan
+// T-15, P-02). Identities are linked natively (the fake's
+// `linkIdentity` stands in for the client's `Link*Async`); the RPCs only
+// read what Nakama reports, and a link token is rejected whatever it is.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { FakeContext, loadBundleForTest } from './_stubs';
-import { mintTestToken } from './_test_tokens';
 
 const USER_A = 'user-A';
 const USER_B = 'user-B';
@@ -35,166 +27,112 @@ function call<T>(
   return JSON.parse(handler(ctx, env.logger, env.nak, body)) as T;
 }
 
-interface LinkOk { linked: true; bonusClaimed: boolean; newBalance?: { coins: number; gems: number } }
-interface LinkConflict {
-  linked: false;
-  conflict: {
-    conflictToken: string;
-    expiresAt: string;
-    source: { userId: string };
-    target: { userId: string };
-  };
-}
-interface ResolveResult {
-  resolved: 'linked' | 'cancelled';
-  affectedAccountDeleted?: boolean;
-  bonusClaimed?: boolean;
-  newBalance?: { coins: number; gems: number };
-}
-interface WalletView { coins: number; gems: number }
+interface LinkOk { linked: true; providers: string[]; bonusClaimed: boolean; newBalance?: { coins: number; gems: number } }
+interface Opened { conflictToken: string; expiresAt: string; target: { userId: string; profile: { coins: number } } }
+interface Resolved { resolved: 'linked' | 'cancelled'; affectedAccountDeleted?: boolean; relinkProviders?: string[] }
 
-function callAccountLink(
-  env: ReturnType<typeof loadBundleForTest>,
-  userId: string,
-  provider: string,
-  token: string,
-): Resp<LinkOk | LinkConflict> {
-  return call<Resp<LinkOk | LinkConflict>>(
-    env,
-    'account_link',
-    userId,
-    { callerUserId: userId, provider, token, clientVersion: '1.0.0', platform: 'ios' },
-  );
+/** The token format the removed `account/token.ts` accepted, signed with its old secret. */
+function legacyToken(provider: string, customId: string): string {
+  const payload = Buffer.from(JSON.stringify({ provider, customId, exp: Math.floor(Date.now() / 1000) + 600 })).toString('base64url');
+  const sig = createHmac('sha256', ['p5v4', 'account', 'link', 'test', 'secret', 'do', 'not', 'ship'].join('-'))
+    .update(payload).digest('base64url');
+  return `v1.${provider}.${payload}.${sig}`;
 }
 
-function callResolve(
-  env: ReturnType<typeof loadBundleForTest>,
-  userId: string,
-  conflictToken: string,
-  choice: 'link' | 'cancel',
-  confirmText?: string,
-): Resp<ResolveResult> {
-  return call<Resp<ResolveResult>>(
-    env,
-    'account_link_resolve_conflict',
-    userId,
-    {
-      callerUserId: userId,
-      conflictToken,
-      choice,
-      clientVersion: '1.0.0',
-      platform: 'ios',
-      ...(confirmText !== undefined ? { confirmText } : {}),
-    },
-  );
-}
-
-function callWalletGet(env: ReturnType<typeof loadBundleForTest>, userId: string): Resp<WalletView> {
-  return call<Resp<WalletView>>(
-    env,
-    'wallet_get',
-    userId,
-    { callerUserId: userId, clientVersion: '1.0.0', platform: 'ios' },
-  );
-}
-
-describe('account linking (Phase 5 Chunk 4) — account_link RPC', () => {
+describe('account_link (native linking)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
   beforeEach(() => { env = loadBundleForTest(); });
 
-  it('1. device auth + email link → 500 coins credited', () => {
-    const token = mintTestToken('email', 'a@example.com', 60);
-    const r = callAccountLink(env, USER_A, 'email', token);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    if (!('linked' in r.data)) {
-      throw new Error(`expected linked, got conflict: ${JSON.stringify(r.data)}`);
-    }
-    expect(r.data.linked).toBe(true);
-    expect(r.data.bonusClaimed).toBe(true);
-    expect(r.data.newBalance?.coins).toBe(500);
-
-    const wallet = callWalletGet(env, USER_A);
-    expect(wallet.ok).toBe(true);
-    if (!wallet.ok) return;
-    expect(wallet.data.coins).toBe(500);
+  it('a token signed with the old bundled secret is rejected and links nothing', () => {
+    const r = call<Resp<unknown>>(env, 'account_link', USER_A, { provider: 'email', token: legacyToken('email', 'x@example.com') });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('BAD_REQUEST');
+    expect(r.error.details).toEqual({ reason: 'NATIVE_LINK_REQUIRED' });
+    expect(env.fakeNakama.identities.has(USER_A)).toBe(false);
+    expect(env.fakeNakama.wallets.get(USER_A)?.['coins'] ?? 0).toBe(0);
   });
 
-  it('2. same customId re-linked → no double bonus', () => {
-    const token = mintTestToken('email', 'repeat@example.com', 60);
-    const r1 = callAccountLink(env, USER_A, 'email', token);
-    expect(r1.ok).toBe(true);
-    if (r1.ok && 'linked' in r1.data) {
-      expect(r1.data.bonusClaimed).toBe(true);
-    }
-    const r2 = callAccountLink(env, USER_A, 'email', token);
-    expect(r2.ok).toBe(true);
-    if (r2.ok && 'linked' in r2.data) {
-      expect(r2.data.bonusClaimed).toBe(false);
-    }
-    const wallet = callWalletGet(env, USER_A);
-    if (wallet.ok) expect(wallet.data.coins).toBe(500);
+  it('the bundle no longer contains the secret', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const bundle = readFileSync(resolve(__dirname, '..', '..', 'modules', 'index.js'), 'utf8');
+    expect(bundle.includes('account-link-test-secret')).toBe(false);
   });
 
-  it('3. user A tries to link B\'s email → conflictToken', () => {
-    const token = mintTestToken('email', 'shared@example.com', 60);
-    // First link as user B.
-    const first = callAccountLink(env, USER_B, 'email', token);
-    expect(first.ok).toBe(true);
-    // User A attempts the same email.
-    const second = callAccountLink(env, USER_A, 'email', token);
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    if (!('conflict' in second.data)) {
-      throw new Error(`expected conflict, got linked: ${JSON.stringify(second.data)}`);
-    }
-    expect(second.data.conflict.conflictToken.length).toBeGreaterThan(0);
-    expect(second.data.conflict.source.userId).toBe(USER_A);
-    expect(second.data.conflict.target.userId).toBe(USER_B);
+  it('without a linked identity → CONFLICT NOT_LINKED, no bonus', () => {
+    env.fakeNakama.linkIdentity(USER_A, 'devices', 'dev-a');
+    const r = call<Resp<unknown>>(env, 'account_link', USER_A, {});
+    expect(r.ok ? 'ok' : r.error.code).toBe('CONFLICT');
+    if (!r.ok) expect((r.error.details as { reason: string }).reason).toBe('NOT_LINKED');
+  });
+
+  it('after a native link: providers, 500 coins once', () => {
+    env.fakeNakama.linkIdentity(USER_A, 'googleId', 'g-a');
+    const first = call<Resp<LinkOk>>(env, 'account_link', USER_A, { provider: 'google' });
+    expect(first).toEqual({ ok: true, data: { linked: true, providers: ['google'], bonusClaimed: true, newBalance: { coins: 500, gems: 0 } } });
+    env.fakeNakama.linkIdentity(USER_A, 'email', 'a@example.com');
+    const second = call<Resp<LinkOk>>(env, 'account_link', USER_A, {});
+    expect(second.ok && second.data.bonusClaimed).toBe(false);
+    expect(second.ok && second.data.providers).toEqual(['google', 'email']);
+    expect(env.fakeNakama.wallets.get(USER_A)?.['coins']).toBe(500);
+  });
+
+  it('a provider the account does not have → CONFLICT', () => {
+    env.fakeNakama.linkIdentity(USER_A, 'googleId', 'g-a');
+    const r = call<Resp<unknown>>(env, 'account_link', USER_A, { provider: 'apple' });
+    expect(r.ok ? 'ok' : r.error.code).toBe('CONFLICT');
   });
 });
 
-describe('account linking (Phase 5 Chunk 4) — account_link_resolve_conflict RPC', () => {
+describe('account_link_resolve_conflict (identity verified by Nakama)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
-  beforeEach(() => { env = loadBundleForTest(); });
-
-  it('4. cancel — both accounts stay separate', () => {
-    const token = mintTestToken('email', 'cancel@example.com', 60);
-    callAccountLink(env, USER_B, 'email', token);
-    const conflict = callAccountLink(env, USER_A, 'email', token);
-    expect(conflict.ok).toBe(true);
-    if (!conflict.ok) return;
-    if (!('conflict' in conflict.data)) throw new Error('expected conflict');
-    const conflictToken = conflict.data.conflict.conflictToken;
-
-    const r = callResolve(env, USER_A, conflictToken, 'cancel');
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.resolved).toBe('cancelled');
-
-    // B still owns the link; A doesn't.
-    expect(env.fakeNakama.links.get('email:cancel@example.com')).toBe(USER_B);
+  beforeEach(() => {
+    env = loadBundleForTest();
+    // B already owns the email; A's native link fails with "already in use".
+    env.fakeNakama.linkIdentity(USER_B, 'email', 'shared@example.com');
+    expect(() => env.fakeNakama.linkIdentity(USER_A, 'email', 'shared@example.com')).toThrow(/already in use/);
   });
 
-  it('5. link with TRANSFER confirm → B deleted, A linked + bonus', () => {
-    const token = mintTestToken('email', 'transfer@example.com', 60);
-    callAccountLink(env, USER_B, 'email', token);
-    const conflict = callAccountLink(env, USER_A, 'email', token);
-    expect(conflict.ok).toBe(true);
-    if (!conflict.ok) return;
-    if (!('conflict' in conflict.data)) throw new Error('expected conflict');
-    const conflictToken = conflict.data.conflict.conflictToken;
+  function open(): Opened {
+    // The client authenticated as B with the identity (create: false).
+    const r = call<Resp<Opened>>(env, 'account_link_resolve_conflict', USER_B, { step: 'open' });
+    if (!r.ok) throw new Error(`open failed: ${r.error.code}`);
+    return r.data;
+  }
 
-    const r = callResolve(env, USER_A, conflictToken, 'link', 'TRANSFER');
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.resolved).toBe('linked');
-    expect(r.data.affectedAccountDeleted).toBe(true);
-    expect(r.data.bonusClaimed).toBe(true);
-    expect(r.data.newBalance?.coins).toBe(500);
+  it('cancel → A and B stay separate', () => {
+    const o = open();
+    expect(o.target.userId).toBe(USER_B);
+    const r = call<Resp<Resolved>>(env, 'account_link_resolve_conflict', USER_A, { conflictToken: o.conflictToken, choice: 'cancel' });
+    expect(r).toEqual({ ok: true, data: { resolved: 'cancelled' } });
+    expect(env.fakeNakama.findIdentityOwner('email', 'shared@example.com')).toBe(USER_B);
+  });
 
-    // A now owns the link; B's link entries gone.
-    expect(env.fakeNakama.links.get('email:transfer@example.com')).toBe(USER_A);
-    expect(env.fakeNakama.wallets.get(USER_B)).toBeUndefined();
+  it('link → B deleted with its data; A links the email natively and gets the bonus', () => {
+    call<Resp<unknown>>(env, 'garage_get', USER_B, {});
+    expect(env.fakeNakama.store.has(`garage/${USER_B}/${USER_B}`)).toBe(true);
+    const o = open();
+    const r = call<Resp<Resolved>>(env, 'account_link_resolve_conflict', USER_A, {
+      step: 'resolve', conflictToken: o.conflictToken, choice: 'link', confirmText: 'TRANSFER',
+    });
+    expect(r).toEqual({ ok: true, data: { resolved: 'linked', affectedAccountDeleted: true, relinkProviders: ['email'] } });
+    expect(env.fakeNakama.store.has(`garage/${USER_B}/${USER_B}`)).toBe(false);
+    expect(env.fakeNakama.deletedAccounts.has(USER_B)).toBe(true);
+
+    env.fakeNakama.linkIdentity(USER_A, 'email', 'shared@example.com');
+    const linked = call<Resp<LinkOk>>(env, 'account_link', USER_A, { provider: 'email' });
+    expect(linked.ok && linked.data.bonusClaimed).toBe(true);
+  });
+
+  it('a token cannot be minted by the account that stays (it needs B’s session)', () => {
+    // A has nothing linked, so A cannot open a conflict naming B.
+    const r = call<Resp<unknown>>(env, 'account_link_resolve_conflict', USER_A, { step: 'open' });
+    expect(r.ok).toBe(false);
+    const bogus = call<Resp<unknown>>(env, 'account_link_resolve_conflict', USER_A, {
+      conflictToken: 'not-a-token', choice: 'link', confirmText: 'TRANSFER',
+    });
+    expect(bogus.ok ? 'ok' : bogus.error.code).toBe('NOT_FOUND');
+    expect(env.fakeNakama.deletedAccounts.has(USER_B)).toBe(false);
   });
 });

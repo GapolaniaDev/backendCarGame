@@ -1,253 +1,144 @@
-// Phase 5 Chunk 4 unit tests for account linking.
-//
-// Covers the 9 spec cases:
-//   1. linkAccount happy — first link, bonus 500 coins granted
-//   2. linkAccount replay — bonus NOT granted twice (sealed)
-//   3. linkAccount conflict path — returns conflictToken, storage created
-//   4. resolveConflict with choice=cancel — both accounts intact
-//   5. resolveConflict with choice=link — target account deleted, source linked
-//   6. resolveConflict expired token → NOT_FOUND
-//   7. resolveConflict invalid token → NOT_FOUND
-//   8. resolveConflict token from another user → FORBIDDEN
-//   9. Bonus idempotency — 2 distinct links → 1 grant
-//
-// Plus token verification negative cases.
+// Native account linking (plan T-15, P-02): the link bonus and the
+// conflict flow over identities Nakama verified. No link token exists
+// any more, so nothing here signs one.
 
 import { describe, it, expect } from 'vitest';
 import { FakeNakama, FakeLogger } from '../e2e/_stubs';
-import { linkAccount, resolveConflict, readConflict } from '../../modules/src/account/linking';
-import { mintTestToken } from '../e2e/_test_tokens';
+import { claimLinkBonus, openConflict, resolveConflict } from '../../modules/src/account/linking';
+import { linkedProviders } from '../../modules/src/account/identities';
+import { ACCOUNT_LINK_CONFLICT_TTL_MS } from '../../modules/src/account/types';
 
-const USER = 'user-source';
-const OTHER = 'user-other';
+const SOURCE = 'user-source';
+const TARGET = 'user-target';
 const NOW = 1_700_000_000_000;
 
-function makeNakama(): { nakama: FakeNakama['nakama']; logger: FakeLogger; store: FakeNakama['store']; links: FakeNakama['links']; wallets: FakeNakama['wallets'] } {
-  const nak = new FakeNakama();
-  return { nakama: nak.nakama, logger: new FakeLogger(), store: nak.store, links: nak.links, wallets: nak.wallets };
+function setup(): { nak: FakeNakama; logger: FakeLogger } {
+  return { nak: new FakeNakama(), logger: new FakeLogger() };
 }
 
-describe('account linking (Phase 5 Chunk 4) — linkAccount', () => {
-  it('1. happy — first link, bonus 500 coins granted', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'player@example.com', 60);
-    const result = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(result.kind).toBe('linked');
-    if (result.kind !== 'linked') return;
-    expect(result.bonusClaimed).toBe(true);
-    expect(result.newBalance?.coins).toBe(500);
-    expect(nak.links.get('email:player@example.com')).toBe(USER);
+describe('linkedProviders — accountGetId as 3.27 reports it', () => {
+  it('lists provider ids, email and custom id; devices are not links', () => {
+    const { nak } = setup();
+    nak.linkIdentity(SOURCE, 'devices', 'device-1');
+    expect(linkedProviders(nak.nakama, SOURCE)).toEqual([]);
+    nak.linkIdentity(SOURCE, 'googleId', 'g-1');
+    nak.linkIdentity(SOURCE, 'email', 'a@example.com');
+    nak.linkIdentity(SOURCE, 'customId', 'c-1');
+    expect(linkedProviders(nak.nakama, SOURCE)).toEqual(['google', 'email', 'custom']);
   });
 
-  it('2. replay — bonus NOT granted twice (sealed)', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'replay@example.com', 60);
-    const first = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(first.kind).toBe('linked');
-    if (first.kind !== 'linked') return;
-    expect(first.bonusClaimed).toBe(true);
-    const firstCoins = first.newBalance?.coins ?? 0;
-
-    // Second link attempt with the same provider+customId — same user.
-    // The runtime's `accountLinkCustom` returns successfully (same owner);
-    // bonus MUST NOT re-credit.
-    const second = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(second.kind).toBe('linked');
-    if (second.kind !== 'linked') return;
-    expect(second.bonusClaimed).toBe(false);
-    // Balance should not have grown on the second call (wallet idempotency key
-    // would catch it anyway, but the bonus-flag gate is the durable invariant).
-    const wallets = Array.from(nak.wallets.get(USER) ? Object.entries(nak.wallets.get(USER) ?? {}) : []);
-    const coins = wallets.find(([k]) => k === 'coins')?.[1] ?? 0;
-    expect(coins).toBe(firstCoins);
-  });
-
-  it('3. conflict path — conflictToken returned, storage created', () => {
-    const nak = makeNakama();
-    // Pre-link the email to a different user, so the second attempt conflicts.
-    const token = mintTestToken('email', 'taken@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    // Source user attempts the same email.
-    const result = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(result.kind).toBe('conflict');
-    if (result.kind !== 'conflict') return;
-    expect(result.conflict.conflictToken.length).toBeGreaterThan(0);
-    expect(result.conflict.source.userId).toBe(USER);
-    expect(result.conflict.target.userId).toBe(OTHER);
-    // Conflict persisted under account_link_conflict/{sourceUserId}.
-    const stored = readConflict(nak.nakama, USER);
-    expect(stored).not.toBeNull();
-    expect(stored?.provider).toBe('email');
-    expect(stored?.customId).toBe('taken@example.com');
-    expect(stored?.token).toBe(result.conflict.conflictToken);
-  });
-
-  it('unknown provider → BAD_REQUEST error', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'x@example.com', 60);
-    const result = linkAccount(nak.nakama, nak.logger, USER, 'facebook', token, NOW);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('BAD_REQUEST');
-  });
-
-  it('malformed token → BAD_REQUEST', () => {
-    const nak = makeNakama();
-    const result = linkAccount(nak.nakama, nak.logger, USER, 'email', 'not.a.token', NOW);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('BAD_REQUEST');
-    expect(result.message).toMatch(/malformed|expired|badSignature|unknownProvider/);
-  });
-
-  it('expired token → BAD_REQUEST', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'stale@example.com', -10);
-    const result = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.message).toMatch(/expired/);
+  it('is null for a deleted account', () => {
+    const { nak } = setup();
+    nak.nakama.accountDeleteId(SOURCE, false);
+    expect(linkedProviders(nak.nakama, SOURCE)).toBeNull();
   });
 });
 
-describe('account linking (Phase 5 Chunk 4) — resolveConflict', () => {
-  it('4. cancel — both accounts intact', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'cancel@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
+describe('claimLinkBonus', () => {
+  it('credits 500 coins once and seals the profile flag in the same movement', () => {
+    const { nak, logger } = setup();
+    const first = claimLinkBonus(nak.nakama, logger, SOURCE, NOW);
+    expect(first).toEqual({ ok: true, data: { bonusClaimed: true, newBalance: { coins: 500, gems: 0 } } });
+    const profile = nak.store.get(`profiles/${SOURCE}/${SOURCE}`)?.value as { accountLinkBonusClaimed?: boolean };
+    expect(profile.accountLinkBonusClaimed).toBe(true);
 
-    const result = resolveConflict(
-      nak.nakama, nak.logger, USER,
-      { conflictToken: conflict.conflict.conflictToken, choice: 'cancel' },
-      NOW,
-    );
-    expect(result.kind).toBe('cancelled');
-    // Both link mappings preserved.
-    expect(nak.links.get('email:cancel@example.com')).toBe(OTHER);
-    // Conflict record deleted.
-    expect(readConflict(nak.nakama, USER)).toBeNull();
+    const second = claimLinkBonus(nak.nakama, logger, SOURCE, NOW);
+    expect(second).toEqual({ ok: true, data: { bonusClaimed: false } });
+    expect(nak.wallets.get(SOURCE)?.['coins']).toBe(500);
   });
 
-  it('5. link — target account deleted, source linked + bonus', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'trans@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
-
-    const result = resolveConflict(
-      nak.nakama, nak.logger, USER,
-      { conflictToken: conflict.conflict.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
-      NOW,
-    );
-    expect(result.kind).toBe('linked');
-    if (result.kind !== 'linked') return;
-    expect(result.affectedAccountDeleted).toBe(true);
-    expect(result.bonusClaimed).toBe(true);
-    expect(result.newBalance?.coins).toBe(500);
-    // Source now owns the link; target's wallet is gone.
-    expect(nak.links.get('email:trans@example.com')).toBe(USER);
-    expect(nak.wallets.get(OTHER)).toBeUndefined();
-  });
-
-  it('5b. link without confirmText → BAD_REQUEST', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'need-confirm@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
-    const result = resolveConflict(
-      nak.nakama, nak.logger, USER,
-      { conflictToken: conflict.conflict.conflictToken, choice: 'link' },
-      NOW,
-    );
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('BAD_REQUEST');
-  });
-
-  it('6. expired token → NOT_FOUND', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'exp@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
-
-    // 25 hours later — TTL is 24h.
-    const result = resolveConflict(
-      nak.nakama, nak.logger, USER,
-      { conflictToken: conflict.conflict.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
-      NOW + 25 * 60 * 60 * 1000,
-    );
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('NOT_FOUND');
-  });
-
-  it('7. invalid token → NOT_FOUND', () => {
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'bad@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
-
-    const result = resolveConflict(
-      nak.nakama, nak.logger, USER,
-      { conflictToken: 'wrong-token', choice: 'cancel' },
-      NOW,
-    );
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('NOT_FOUND');
-  });
-
-  it('8. token from another user → NOT_FOUND (the conflict is keyed to the source)', () => {
-    // The conflict record is keyed by `userId` so the OTHER user has no
-    // conflict; their resolve call returns NOT_FOUND.
-    const nak = makeNakama();
-    const token = mintTestToken('email', 'other-user@example.com', 60);
-    linkAccount(nak.nakama, nak.logger, OTHER, 'email', token, NOW - 1000);
-    const conflict = linkAccount(nak.nakama, nak.logger, USER, 'email', token, NOW);
-    expect(conflict.kind).toBe('conflict');
-    if (conflict.kind !== 'conflict') return;
-
-    // OTHER has no conflict under their own userId → NOT_FOUND.
-    const result = resolveConflict(
-      nak.nakama, nak.logger, OTHER,
-      { conflictToken: conflict.conflict.conflictToken, choice: 'cancel' },
-      NOW,
-    );
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.code).toBe('NOT_FOUND');
+  it('a replayed key (flag lost) still pays nothing', () => {
+    const { nak, logger } = setup();
+    expect(claimLinkBonus(nak.nakama, logger, SOURCE, NOW).ok).toBe(true);
+    const key = `profiles/${SOURCE}/${SOURCE}`;
+    const obj = nak.store.get(key)!;
+    nak.store.set(key, { ...obj, value: { ...(obj.value as object), accountLinkBonusClaimed: false } });
+    expect(claimLinkBonus(nak.nakama, logger, SOURCE, NOW)).toEqual({ ok: true, data: { bonusClaimed: false } });
+    expect(nak.wallets.get(SOURCE)?.['coins']).toBe(500);
   });
 });
 
-describe('account linking (Phase 5 Chunk 4) — bonus idempotency', () => {
-  it('9. two distinct links for the same user → bonus credited once', () => {
-    const nak = makeNakama();
-    // Link #1 — email
-    const t1 = mintTestToken('email', 'one@x.com', 60);
-    const r1 = linkAccount(nak.nakama, nak.logger, USER, 'email', t1, NOW);
-    expect(r1.kind).toBe('linked');
-    if (r1.kind !== 'linked') return;
-    expect(r1.bonusClaimed).toBe(true);
+describe('conflict flow', () => {
+  it('open needs a linked identity on the caller (the target)', () => {
+    const { nak, logger } = setup();
+    const r = openConflict(nak.nakama, logger, TARGET, NOW);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('CONFLICT');
+    expect(r.error.details).toEqual({ reason: 'NOT_LINKED' });
+  });
 
-    // Link #2 — different provider, same user.
-    const t2 = mintTestToken('apple', 'apple-sub-1', 60);
-    const r2 = linkAccount(nak.nakama, nak.logger, USER, 'apple', t2, NOW);
-    expect(r2.kind).toBe('linked');
-    if (r2.kind !== 'linked') return;
-    expect(r2.bonusClaimed).toBe(false); // already claimed on first
-    // Balance should be 500 — the second grant was short-circuited.
-    const coins = nak.wallets.get(USER)?.coins ?? 0;
-    expect(coins).toBe(500);
+  it('open → resolve link deletes the real target; the identity can be linked again', () => {
+    const { nak, logger } = setup();
+    nak.linkIdentity(TARGET, 'googleId', 'g-shared');
+    nak.wallets.set(TARGET, { coins: 70, gems: 3 });
+    expect(() => nak.linkIdentity(SOURCE, 'googleId', 'g-shared')).toThrow(/already in use/);
+
+    const opened = openConflict(nak.nakama, logger, TARGET, NOW);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(opened.data.target.userId).toBe(TARGET);
+    expect(opened.data.target.profile.coins).toBe(70);
+
+    const noConfirm = resolveConflict(nak.nakama, logger, SOURCE, { conflictToken: opened.data.conflictToken, choice: 'link' }, NOW);
+    expect(noConfirm.ok).toBe(false);
+
+    const r = resolveConflict(
+      nak.nakama, logger, SOURCE,
+      { conflictToken: opened.data.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
+      NOW + 1000,
+    );
+    expect(r).toEqual({ ok: true, data: { resolved: 'linked', affectedAccountDeleted: true, relinkProviders: ['google'] } });
+    expect(nak.deletedAccounts.has(TARGET)).toBe(true);
+    expect(nak.deletedAccounts.has(SOURCE)).toBe(false);
+    nak.linkIdentity(SOURCE, 'googleId', 'g-shared');
+    expect(nak.findIdentityOwner('googleId', 'g-shared')).toBe(SOURCE);
+    // The token is single use.
+    const again = resolveConflict(
+      nak.nakama, logger, SOURCE,
+      { conflictToken: opened.data.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
+      NOW + 2000,
+    );
+    expect(again.ok).toBe(false);
+  });
+
+  it('cancel keeps both accounts', () => {
+    const { nak, logger } = setup();
+    nak.linkIdentity(TARGET, 'customId', 'c-shared');
+    const opened = openConflict(nak.nakama, logger, TARGET, NOW);
+    if (!opened.ok) throw new Error('open failed');
+    const r = resolveConflict(nak.nakama, logger, SOURCE, { conflictToken: opened.data.conflictToken, choice: 'cancel' }, NOW);
+    expect(r).toEqual({ ok: true, data: { resolved: 'cancelled' } });
+    expect(nak.findIdentityOwner('customId', 'c-shared')).toBe(TARGET);
+  });
+
+  it('the target cannot resolve its own deletion', () => {
+    const { nak, logger } = setup();
+    nak.linkIdentity(TARGET, 'customId', 'c-shared');
+    const opened = openConflict(nak.nakama, logger, TARGET, NOW);
+    if (!opened.ok) throw new Error('open failed');
+    const r = resolveConflict(
+      nak.nakama, logger, TARGET,
+      { conflictToken: opened.data.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    expect(nak.deletedAccounts.has(TARGET)).toBe(false);
+  });
+
+  it('unknown and expired tokens → NOT_FOUND', () => {
+    const { nak, logger } = setup();
+    nak.linkIdentity(TARGET, 'customId', 'c-shared');
+    const unknown = resolveConflict(nak.nakama, logger, SOURCE, { conflictToken: 'nope', choice: 'cancel' }, NOW);
+    expect(unknown.ok ? 'ok' : unknown.error.code).toBe('NOT_FOUND');
+    const opened = openConflict(nak.nakama, logger, TARGET, NOW);
+    if (!opened.ok) throw new Error('open failed');
+    const late = resolveConflict(
+      nak.nakama, logger, SOURCE,
+      { conflictToken: opened.data.conflictToken, choice: 'link', confirmText: 'TRANSFER' },
+      NOW + ACCOUNT_LINK_CONFLICT_TTL_MS + 1,
+    );
+    expect(late.ok ? 'ok' : late.error.code).toBe('NOT_FOUND');
+    expect(nak.deletedAccounts.has(TARGET)).toBe(false);
   });
 });
