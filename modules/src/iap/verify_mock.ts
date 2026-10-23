@@ -16,9 +16,16 @@
 //
 // Receipts that fail to parse return INVALID_RECEIPT. Receipts that
 // declare expire=true return EXPIRED (used to exercise the EXPIRED
-// branch in tests). Anything else is treated as valid.
+// branch in tests); `refunded: true` or a `refundTime` / `RefundTime`
+// returns REFUNDED (T-24).
+//
+// T-24 (PC-04): only used with `IAP_MOCK=true` in `runtime.env` (it was
+// the LiveOps default, so any JSON bought coins). The mock receipt may
+// come wrapped in Unity's unified receipt (`Payload`), and its
+// transactionId must be the one the client declares.
 
 import type { IapVerificationResult, IapPlatform, IapVerificationError } from './types';
+import { unwrapUnityReceipt } from './receipt';
 
 export interface MockReceipt {
   productId: string;
@@ -27,6 +34,9 @@ export interface MockReceipt {
   purchaseDateUtc: number;
   expiresAtUtc?: number;
   expire?: boolean;
+  refunded?: boolean;
+  refundTime?: number;
+  RefundTime?: number;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -49,15 +59,31 @@ export function verifyMock(
   receiptData: string,
   expectedProductId: string,
   nowUtc: number,
+  expectedTransactionId?: string,
 ): IapVerificationResult {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(receiptData);
+    parsed = JSON.parse(unwrapUnityReceipt(receiptData).payload);
   } catch {
     return failResult(platform, expectedProductId, 'INVALID_RECEIPT');
   }
   if (!isMockReceipt(parsed)) {
     return failResult(platform, expectedProductId, 'INVALID_RECEIPT');
+  }
+  if (expectedTransactionId !== undefined && parsed.transactionId !== expectedTransactionId) {
+    return failResult(platform, expectedProductId, 'INVALID_RECEIPT');
+  }
+  if (parsed.refunded === true || typeof parsed.refundTime === 'number' || typeof parsed.RefundTime === 'number') {
+    return {
+      valid: false,
+      platform,
+      productId: parsed.productId,
+      transactionId: parsed.transactionId,
+      originalTransactionId: parsed.originalTransactionId,
+      purchaseDateUtc: parsed.purchaseDateUtc,
+      isSubscriptionRenewal: false,
+      error: 'REFUNDED',
+    };
   }
   if (parsed.productId !== expectedProductId) {
     return {

@@ -514,12 +514,15 @@ class FakeNakamaCore {
   httpRequest(
     url: string,
     method: string,
-    headers: Record<string, string>,
-    body: string,
-  ): { code: number; content: string; headers: Record<string, string> } {
+    headers: Record<string, string> = {},
+    body = '',
+  ): { code: number; body: string; headers: Record<string, string[]> } {
     this.httpRequests.push({ url, method, headers, body });
     if (this.httpRequestThrow !== null) throw this.httpRequestThrow;
-    return { ...this.httpResponse, headers: { ...this.httpResponse.headers } };
+    // 3.27 shape (T-24): the response text is `body`; header values are arrays.
+    const h: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(this.httpResponse.headers)) h[k] = [v];
+    return { code: this.httpResponse.code, body: this.httpResponse.content, headers: h };
   }
 
   // ── Leaderboards ──

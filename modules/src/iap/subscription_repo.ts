@@ -87,6 +87,19 @@ export function readSubscriptionWithVersion(
   return { version: obj.version, value: v };
 }
 
+/** CAS write of `sub` (`*` = create), for a caller that commits it inside a wallet movement (T-24). */
+export function subscriptionWrite(sub: IapSubscription, expectedVersion: string): IStorageObject {
+  return {
+    collection: SUBSCRIPTIONS_COLLECTION,
+    key: sub.userId,
+    userId: sub.userId,
+    value: sub as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version: expectedVersion,
+  };
+}
+
 export function writeSubscriptionCreate(nk: INakama, sub: IapSubscription): void {
   const obj: IStorageObject = {
     collection: SUBSCRIPTIONS_COLLECTION,

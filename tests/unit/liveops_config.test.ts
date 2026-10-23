@@ -375,23 +375,20 @@ describe('liveops config (Phase 9 Chunk 2) — iapVerification', () => {
   });
 });
 
-describe('liveops config (Phase 9 Chunk 2) — bundled default iapVerification', () => {
-  it('bootEnsure writes the bundled default including the mock iapVerification block', () => {
+describe('liveops config (T-24) — no bundled iapVerification', () => {
+  // The bundled mock default let any JSON receipt buy coins (PC-04);
+  // receipt verification is configured in runtime.env now.
+  it('bootEnsure writes the bundled default without an iapVerification block', () => {
     const nak = makeNakama();
     bootEnsure(nak.nakama, makeLogger().logger);
     const v = nak.store.get(LIVEOPS_STORAGE_KEY)?.value as Record<string, unknown> | undefined;
     expect(v).toBeDefined();
-    const iv = v!['iapVerification'] as { provider: string; environment: string; timeoutMs: number } | undefined;
-    expect(iv).toBeDefined();
-    expect(iv!.provider).toBe('mock');
-    expect(iv!.environment).toBe('sandbox');
-    expect(iv!.timeoutMs).toBe(10000);
+    expect(v!['iapVerification']).toBeUndefined();
   });
 
-  it('loadLiveopsConfig returns the bundled iapVerification on fresh state', () => {
+  it('loadLiveopsConfig has no iapVerification on fresh state', () => {
     const nak = makeNakama();
     const cfg = loadLiveopsConfig(nak.nakama);
-    expect(cfg.iapVerification).toBeDefined();
-    expect(cfg.iapVerification!.provider).toBe('mock');
+    expect(cfg.iapVerification).toBeUndefined();
   });
 });

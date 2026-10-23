@@ -68,16 +68,10 @@ const bundled: Readonly<LiveopsConfig> = Object.freeze({
   // secret. Admins bootstrap via `liveops_config_override` after the
   // first boot. The field is undefined here, which `validate()` and
   // `freeze()` both handle.
-  // iapVerification defaults to the mock provider in dev. Ops swaps
-  // to apple|google in `liveops_config_override` after provisioning
-  // the per-provider secrets. Phase 9 Chunk 2 (D61).
-  ...(((liveopsDefault as { iapVerification?: unknown }).iapVerification !== undefined)
-    ? {
-      iapVerification: Object.freeze({
-        ...(liveopsDefault as { iapVerification: { provider: 'mock' | 'apple' | 'google'; environment: 'sandbox' | 'production'; timeoutMs: number; appleSharedSecret?: string; googleServiceAccount?: string; packageName?: string } }).iapVerification,
-      }),
-    }
-    : {}),
+  // iapVerification is not bundled any more: since T-24 receipt
+  // verification is configured in `runtime.env` (`iap/config.ts`; the
+  // bundled mock default let any JSON receipt buy coins, PC-04). An
+  // override that still carries the block validates and is ignored.
 });
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -203,8 +197,9 @@ export function validate(raw: unknown): asserts raw is LiveopsConfig {
     }
   }
 
-  // iapVerification: optional. When absent the receipt dispatcher
-  // rejects everything. When present, per-provider required fields.
+  // iapVerification: optional and ignored since T-24 (receipt
+  // verification reads `runtime.env`); still validated so an old
+  // override keeps loading.
   const ivRaw = r['iapVerification'];
   if (ivRaw !== undefined) {
     if (!isPlainObject(ivRaw)) fail('iapVerification must be an object when present');

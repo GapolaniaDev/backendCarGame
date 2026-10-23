@@ -182,16 +182,17 @@ export function validateIapPacksFile(raw: unknown): ValidateResult<IapPack[]> {
  * network errors, drop already-consumed). D61.
  */
 export type IapVerificationError =
-  | 'VERIFICATION_FAILED'   // store returned non-zero status
+  | 'VERIFICATION_FAILED'   // store returned non-zero status / refused our credentials
   | 'PRODUCT_MISMATCH'      // productId does not match the catalog pack
   | 'EXPIRED'               // subscription past expiresAtUtc
   | 'NETWORK_ERROR'         // timeout, DNS, connection refused
-  | 'INVALID_RECEIPT'       // malformed receipt / token
+  | 'INVALID_RECEIPT'       // malformed receipt / token, or not this transaction
   | 'ALREADY_CONSUMED'      // consumable already consumed (Google)
   | 'PROVIDER_MISMATCH'     // cross-platform receipt (e.g. apple token to google)
+  | 'REFUNDED'              // refunded or revoked purchase (T-24, HT-78)
+  | 'PENDING'               // payment not completed yet (Google purchaseState 2)
+  | 'NOT_CONFIGURED'        // no store credentials and IAP_MOCK off (T-24)
   | 'INTERNAL_ERROR';       // catch-all
-
-export type IapVerificationProvider = 'mock' | 'apple' | 'google';
 
 export interface IapVerificationResult {
   valid: boolean;
@@ -212,16 +213,22 @@ export interface IapVerificationResult {
   error?: IapVerificationError;
 }
 
-export interface IapVerificationConfig {
-  provider: IapVerificationProvider;
-  /** Required when provider='apple'. */
-  appleSharedSecret?: string;
-  /** Required when provider='google'. base64 of the service account JSON. */
-  googleServiceAccount?: string;
-  /** Android package name (e.g. com.cvg.game). Required when provider='google'. */
-  packageName?: string;
-  environment: 'sandbox' | 'production';
-  /** Per-request timeout. Default 10000ms (D61). */
+/**
+ * Receipt verification settings, read from `runtime.env` on every call
+ * (`iap/config.ts`; plan T-24). Empty credentials mean "not configured":
+ * that store's receipts are rejected without any network call.
+ */
+export interface IapRuntimeConfig {
+  /** `IAP_MOCK=true`: every receipt goes to the mock verifier (dev/CI only). */
+  mock: boolean;
+  /** `IAP_APPLE_SHARED_SECRET`: App Store shared secret (app-specific). */
+  appleSharedSecret: string;
+  /** `IAP_GOOGLE_CLIENT_EMAIL`: Google Play service-account email. */
+  googleClientEmail: string;
+  /** `IAP_GOOGLE_PRIVATE_KEY`: the service account's PKCS#8 PEM key. */
+  googlePrivateKey: string;
+  /** `IAP_GOOGLE_PACKAGE_NAME`: Android application id. */
+  googlePackageName: string;
+  /** Per-request timeout (ms). */
   timeoutMs: number;
 }
-

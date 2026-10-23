@@ -7,35 +7,38 @@
 //
 //   1. Validate input (platform/productId/receiptData/transactionId).
 //   2. Look up the pack by the platform-specific productId.
-//   3. Anti-fraud: cross-user scan for the same transactionId
-//      → CONFLICT if a different userId already owns it.
-//   4. Idempotency: read this user's purchase row for the txId
-//      → return cached content with `idempotent: true`.
-//   5. Verify the receipt via `verifyReceipt` (Chunk 2).
+//   3. Anti-fraud: the store transaction already belongs to another
+//      account → CONFLICT (+ fraud flag).
+//   4. Idempotency: this user's purchase row for the transaction
+//      → return its content with `idempotent: true`.
+//   5. Verify the receipt (`verifyReceipt`, settings from `runtime.env`).
 //   6. Decide first-time bonus (read iap_first_purchase).
-//   7. `planGrant` (pure) → grant (wallet / garage / subscription stub).
-//   8. Write iap_purchases + iap_first_purchase.
-//   9. Send inbox notification `iap_purchase`.
-//  10. Return success.
+//   7. Deliver in ONE wallet movement (T-24, plan T-11): coins, the
+//      garage cosmetic, the subscription record, the purchase row, the
+//      first-purchase marker and the transaction index commit together,
+//      under the durable key `iap_purchase:{platform}:{transactionId}` of
+//      this user. A retry — also after a restart — replays the stored
+//      response instead of delivering again; a lost CAS re-reads and
+//      retries; two accounts with one receipt cannot both commit.
+//   8. Inbox notice `iap_purchase` (the delivery is already done).
+//   9. Return success.
+//
+// Before T-24 every step wrote on its own (a failure in the middle kept
+// the coins without the purchase row, or the reverse) and the
+// idempotency key was the transaction id alone.
 
-import type { IContext, ILogger, INakama } from '../nkruntime';
-import { ok, err, type Resp } from '../core/response';
+import type { IContext, ILogger, INakama, IStorageObject } from '../nkruntime';
+import { ok, err } from '../core/response';
 import type { ErrorCode } from '../core/errors';
 import { parseInput } from '../core/parse_input';
 import { serverNowMs } from '../core/time';
-import { grant, walletGet, type WalletView } from '../economy/wallet';
-import {
-  readGarageObject,
-  writeGarageCreate,
-  writeGarageUpdate,
-  defaultGarage,
-  addCosmeticToBag,
-} from '../garage/storage';
+import { moveWallet, walletGet, type WalletMove, type WalletView } from '../economy/wallet';
+import { addCosmeticToBag, defaultGarage, garageWrite, readGarageObject } from '../garage/storage';
 import { sendNotice } from '../liveops/inbox';
 import { emit } from '../core/admin/analytics';
-import { loadLiveopsConfig } from '../liveops/config';
 import { findIapPackByProductId } from './catalog';
 import { verifyReceipt } from './verify';
+import { iapConfigFromEnv } from './config';
 import {
   planGrant,
   totalCoins,
@@ -44,19 +47,17 @@ import {
 import {
   readPurchaseByTxId,
   findPurchaseAcrossUsers,
-  writePurchase,
+  purchaseWrite,
   readFirstPurchase,
-  writeFirstPurchase,
+  firstPurchaseWrite,
+  readTransactionOwner,
+  transactionOwnerWrite,
   type PurchaseRecord,
 } from './purchase_repo';
-import {
-  readSubscriptionWithVersion,
-  writeSubscriptionCreate,
-  writeSubscriptionUpdate,
-} from './subscription_repo';
+import { readSubscriptionWithVersion, subscriptionWrite } from './subscription_repo';
 import { writeFraudFlagCreate, readFraudFlag } from './admin_repo';
 import type { IapSubscription } from './subscription';
-import type { IapPlatform, IapVerificationError } from './types';
+import type { IapPack, IapPlatform, IapVerificationError } from './types';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
 
@@ -67,21 +68,11 @@ export type RpcHandler = (
   body: string,
 ) => string;
 
-const VALID_PLATFORMS: ReadonlySet<IapPlatform> = new Set<IapPlatform>(['apple', 'google']);
+/** Attempts of the delivery transaction when a CAS (garage, subscription) is lost. */
+const DELIVERY_ATTEMPTS = 3;
 
-const ERR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  'BAD_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
-  'RATE_LIMITED', 'INVALID_RESULT', 'INTERNAL', 'CATALOG_INVALID',
-  'INSUFFICIENT_FUNDS', 'SERVICE_UNAVAILABLE', 'UPGRADE_REQUIRED',
-  'NOT_IMPLEMENTED',
-]);
-function asCode(code: string | undefined): ErrorCode {
-  if (code !== undefined && (ERR_CODES as Set<string>).has(code)) return code as ErrorCode;
-  return 'INTERNAL';
-}
-
-function fail(code: ErrorCode, message: string): string {
-  return JSON.stringify(err(code, message));
+function fail(code: ErrorCode, message: string, details?: unknown): string {
+  return JSON.stringify(err(code, message, details));
 }
 
 export interface IapPurchaseInput {
@@ -140,6 +131,162 @@ function asInput(raw: Record<string, unknown>): IapPurchaseInput | { error: stri
   return out;
 }
 
+/** Durable idempotency key of a purchase: per user (the `idem` row) and store transaction. */
+export function purchaseIdempotencyKey(platform: IapPlatform, transactionId: string): string {
+  return `iap_purchase:${platform}:${transactionId}`;
+}
+
+/** Ledger source ids must fit 200 bytes with the reason: long tokens are hashed. */
+function shortTxId(nk: INakama, transactionId: string): string {
+  return transactionId.length <= 64 ? transactionId : nk.sha256Hash(transactionId).slice(0, 32);
+}
+
+/** The other account that already consumed this transaction, if any. */
+function otherOwner(nk: INakama, userId: string, input: IapPurchaseInput): { userId: string; packId: string } | null {
+  const owner = readTransactionOwner(nk, input.platform, input.transactionId);
+  if (owner !== null) {
+    if (owner.userId === userId) return null;
+    const theirs = readPurchaseByTxId(nk, owner.userId, input.transactionId);
+    return { userId: owner.userId, packId: theirs?.packId ?? '' };
+  }
+  // Purchases delivered before the T-24 index only have their row.
+  const legacy = findPurchaseAcrossUsers(nk, input.transactionId);
+  if (legacy && legacy.userId !== userId) return { userId: legacy.userId, packId: legacy.record.packId };
+  return null;
+}
+
+function replayOutput(nk: INakama, userId: string, transactionId: string, existing: PurchaseRecord): IapPurchaseOutput {
+  return {
+    purchaseId: transactionId,
+    packId: existing.packId,
+    content: packContent(existing.content),
+    newBalance: walletGet(nk, userId),
+    ...(existing.content.expiresAtUtc !== undefined
+      ? { newSubscriptionExpiresAtUtc: existing.content.expiresAtUtc }
+      : {}),
+    idempotent: true,
+  };
+}
+
+interface DeliveryPlan {
+  plan: IapGrantPlan;
+  isFirstTime: boolean;
+  moves: WalletMove[];
+  writes: IStorageObject[];
+  subscription?: { sub: IapSubscription; isRenewal: boolean };
+}
+
+/** Everything one purchase delivers, from fresh reads (re-planned after a lost CAS). */
+function planDelivery(
+  nk: INakama,
+  userId: string,
+  pack: IapPack,
+  input: IapPurchaseInput,
+  nowUtc: number,
+): DeliveryPlan {
+  const isFirstTime = readFirstPurchase(nk, userId, pack.id) === null;
+  const plan = planGrant(pack, isFirstTime, nowUtc);
+  const tx = shortTxId(nk, input.transactionId);
+  const moves: WalletMove[] = [];
+  const writes: IStorageObject[] = [];
+  if (totalCoins(plan) > 0) {
+    moves.push({ changeset: { coins: totalCoins(plan) }, metadata: { reason: 'iap', sourceId: `iap:${pack.id}:${tx}` } });
+  }
+
+  const cosmetics: string[] = [];
+  if (plan.cosmeticId !== undefined) cosmetics.push(plan.cosmeticId);
+
+  let subscription: DeliveryPlan['subscription'];
+  if (pack.kind === 'subscription' && plan.expiresAtUtc !== undefined) {
+    const originalTxId = input.originalTransactionId ?? input.transactionId;
+    const existing = readSubscriptionWithVersion(nk, userId);
+    let sub: IapSubscription;
+    let isRenewal = false;
+    if (existing === null || existing.value.originalTransactionId !== originalTxId) {
+      // First activation OR a new sub replacing the old one. The old sub
+      // (if any) expires on its own expiresAtUtc — no explicit cancel.
+      sub = {
+        userId,
+        packId: pack.id,
+        platform: input.platform,
+        originalTransactionId: originalTxId,
+        latestTransactionId: input.transactionId,
+        activatedAtUtc: nowUtc,
+        expiresAtUtc: plan.expiresAtUtc,
+        autoRenewing: true,
+        renewalHistory: [],
+        monthlyCosmeticGranted: false,
+      };
+    } else {
+      // Renewal: same originalTransactionId, bump expiresAtUtc.
+      isRenewal = true;
+      const nextExpiry = existing.value.expiresAtUtc + pack.durationDays * 86_400_000;
+      sub = {
+        ...existing.value,
+        latestTransactionId: input.transactionId,
+        expiresAtUtc: nextExpiry,
+        autoRenewing: true,
+        monthlyCosmeticGranted: false,
+        renewalHistory: [
+          ...existing.value.renewalHistory,
+          {
+            transactionId: input.transactionId,
+            renewedAtUtc: nowUtc,
+            expiresAtUtc: nextExpiry,
+            monthlyCoinsGranted: plan.monthlyCoins ?? 0,
+          },
+        ],
+      };
+    }
+    // The cycle's monthly grant (cosmetic + coins) goes with the purchase,
+    // so the subscription scanner sees it granted.
+    if (plan.monthlyCosmeticId !== undefined) cosmetics.push(plan.monthlyCosmeticId);
+    if ((plan.monthlyCoins ?? 0) > 0) {
+      moves.push({
+        changeset: { coins: plan.monthlyCoins ?? 0 },
+        metadata: { reason: 'iap', sourceId: `sub_monthly:${pack.id}:${sub.expiresAtUtc}` },
+      });
+    }
+    sub.monthlyCosmeticGranted = true;
+    writes.push(subscriptionWrite(sub, existing?.version ?? '*'));
+    subscription = { sub, isRenewal };
+  }
+
+  // The cosmetic ids of iap_packs.json go to the bag as they are, like
+  // before T-24: none of them is in cosmetics.json today (a content
+  // decision), and a paid purchase must not drop what it sold.
+  if (cosmetics.length > 0) {
+    const read = readGarageObject(nk, userId);
+    let garage = read?.value ?? defaultGarage(userId, nowUtc);
+    const before = garage;
+    for (const id of cosmetics) {
+      if (!garage.cosmeticsBag.includes(id)) garage = addCosmeticToBag(garage, id);
+    }
+    if (garage !== before) writes.push(garageWrite(garage, read?.version ?? '*'));
+  }
+
+  const record: PurchaseRecord = {
+    userId,
+    packId: pack.id,
+    platform: input.platform,
+    productId: input.productId,
+    transactionId: input.transactionId,
+    content: plan,
+    grantedAtUtc: nowUtc,
+    idempotencyKey: purchaseIdempotencyKey(input.platform, input.transactionId),
+    isFirstTime,
+  };
+  writes.push(purchaseWrite(nk, input.transactionId, record));
+  writes.push(transactionOwnerWrite(nk, {
+    userId, platform: input.platform, transactionId: input.transactionId, consumedAtUtc: nowUtc,
+  }));
+  if (isFirstTime) writes.push(firstPurchaseWrite(userId, pack.id, nowUtc));
+
+  const out: DeliveryPlan = { plan, isFirstTime, moves, writes };
+  if (subscription !== undefined) out.subscription = subscription;
+  return out;
+}
+
 export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
@@ -174,62 +321,46 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
 
   // 3. Cross-user fraud.
-  const collision = findPurchaseAcrossUsers(nk, input.transactionId);
-  if (collision && collision.userId !== userId) {
+  const crossUser = (): string | null => {
+    const other = otherOwner(nk, userId, input);
+    if (other === null) return null;
     logger.warn(
       'iap_fraud_cross_user txId=%s claimed_by=%s original=%s',
-      input.transactionId, userId, collision.userId,
+      input.transactionId, userId, other.userId,
     );
-    // Phase 9 Chunk 6: write a fraud flag for the operator dashboard.
-    // The conflict path ALWAYS creates a flag — even if one already
-    // exists from a prior collision attempt — by reading first and
-    // overwriting with a fresh `conflictByUserId`.
+    // Phase 9 Chunk 6: a fraud flag for the operator dashboard (first
+    // collision of the transaction only).
     try {
-      const existing = readFraudFlag(nk, input.transactionId);
-      if (!existing) {
+      if (!readFraudFlag(nk, input.transactionId)) {
         writeFraudFlagCreate(nk, input.transactionId, {
           transactionId: input.transactionId,
-          claimedByUserId: collision.userId,
+          claimedByUserId: other.userId,
           conflictByUserId: userId,
-          packId: collision.record.packId,
-          platform: collision.record.platform,
+          packId: other.packId || pack.id,
+          platform: input.platform,
           detectedAtUtc: serverNowMs(),
           status: 'pending',
         });
       }
     } catch (e) {
-      // Best-effort: log the failure but still return CONFLICT to
-      // the caller. The collision is real even if the flag write
-      // failed; the operator will see the log line in their audit
-      // trail.
+      // Best-effort: the collision is real even if the flag write failed.
       logger.warn('iap_fraud_flag write failed: %s', e instanceof Error ? e.message : String(e));
     }
     emit(nk, logger, 'iap_purchase_failed', {
       userId, transactionId: input.transactionId, failureReason: 'CONFLICT: cross-user receipt',
     });
-    return fail('CONFLICT', 'Receipt already used by another account');
-  }
+    return fail('CONFLICT', 'Receipt already used by another account', { reason: 'RECEIPT_USED' });
+  };
+  const fraud = crossUser();
+  if (fraud !== null) return fraud;
 
   // 4. Idempotency (this user).
   const existing = readPurchaseByTxId(nk, userId, input.transactionId);
-  if (existing) {
-    const balance = walletGet(nk, userId);
-    const out: IapPurchaseOutput = {
-      purchaseId: input.transactionId,
-      packId: existing.packId,
-      content: packContent(existing.content),
-      newBalance: balance,
-      ...(existing.content.expiresAtUtc !== undefined
-        ? { newSubscriptionExpiresAtUtc: existing.content.expiresAtUtc }
-        : {}),
-      idempotent: true,
-    };
-    return JSON.stringify(ok(out));
-  }
+  if (existing) return JSON.stringify(ok(replayOutput(nk, userId, input.transactionId, existing)));
 
   // 5. Verify receipt.
-  const liveops = loadLiveopsConfig(nk, logger);
   const verifyResult = verifyReceipt(
+    nk,
     {
       platform: input.platform,
       expectedProductId: input.productId,
@@ -237,205 +368,101 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
       receiptData: input.receiptData,
     },
     {
-      config: liveops.iapVerification,
+      config: iapConfigFromEnv(ctx),
       logger,
       nowUtc: serverNowMs(),
     },
   );
   if (!verifyResult.valid) {
     const code = verifyErrorToCode(verifyResult.error);
-    const reason = `verification_failed: ${verifyResult.error ?? 'unknown'}`;
+    const reason = verifyResult.error ?? 'INTERNAL_ERROR';
     emit(nk, logger, 'iap_purchase_failed', {
       userId, transactionId: input.transactionId, packId: pack.id,
-      platform: input.platform, failureReason: reason,
+      platform: input.platform, failureReason: `verification_failed: ${reason}`,
     });
-    if (code === 'INTERNAL') {
-      return fail('INTERNAL', `verification failed: ${verifyResult.error}`);
-    }
-    return fail(code, `receipt rejected: ${verifyResult.error}`);
+    return fail(code, `receipt rejected: ${reason}`, { reason });
   }
   // Phase 9 Chunk 7: iap_purchase_validated.
   emit(nk, logger, 'iap_purchase_validated', {
     userId, transactionId: input.transactionId, packId: pack.id, platform: input.platform,
   });
 
-  // 6. First-time check.
-  const nowUtc = serverNowMs();
-  const first = readFirstPurchase(nk, userId, pack.id);
-  const isFirstTime = first === null;
-  const plan = planGrant(pack, isFirstTime, nowUtc);
-
-  // 7. Grant.
-  let newBalance: WalletView | undefined;
-  if (totalCoins(plan) > 0) {
-    const r: Resp<WalletView> = grant(
-      nk,
-      userId,
-      { coins: totalCoins(plan) },
-      { reason: 'iap', sourceId: `iap:${pack.id}:${input.transactionId}` },
-      `iap_purchase:${input.transactionId}`,
-    );
-    if (!r.ok) {
+  // 6–7. Deliver in one movement.
+  const key = purchaseIdempotencyKey(input.platform, input.transactionId);
+  let delivered: { d: DeliveryPlan; nowUtc: number; balance: WalletView } | null = null;
+  for (let attempt = 0; attempt < DELIVERY_ATTEMPTS && delivered === null; attempt += 1) {
+    const nowUtc = serverNowMs();
+    const d = planDelivery(nk, userId, pack, input, nowUtc);
+    const out: IapPurchaseOutput = {
+      purchaseId: input.transactionId,
+      packId: pack.id,
+      content: packContent(d.plan),
+      ...(d.plan.expiresAtUtc !== undefined ? { newSubscriptionExpiresAtUtc: d.subscription?.sub.expiresAtUtc ?? d.plan.expiresAtUtc } : {}),
+      idempotent: false,
+    };
+    const moved = moveWallet(nk, userId, key, d.moves, { extraWrites: d.writes, result: out });
+    if (moved.ok) {
+      if (moved.data.replayed) {
+        const stored = moved.data.record.result as IapPurchaseOutput | undefined;
+        const replay: IapPurchaseOutput = stored !== undefined
+          ? { ...stored, newBalance: moved.data.balance, idempotent: true }
+          : { ...out, newBalance: moved.data.balance, idempotent: true };
+        return JSON.stringify(ok(replay));
+      }
+      delivered = { d, nowUtc, balance: moved.data.balance };
+      break;
+    }
+    const reason = (moved.error.details as { reason?: string } | undefined)?.reason;
+    if (moved.error.code !== 'CONFLICT' || reason !== 'VERSION_CONFLICT') {
       emit(nk, logger, 'iap_purchase_failed', {
         userId, transactionId: input.transactionId, packId: pack.id,
-        platform: input.platform, amountCoins: totalCoins(plan),
-        failureReason: `grant_failed: ${r.error?.message ?? 'unknown'}`,
+        platform: input.platform, failureReason: `grant_failed: ${moved.error.message}`,
       });
-      return fail(asCode(r.error?.code), r.error?.message ?? 'grant failed');
+      return JSON.stringify(moved);
     }
-    newBalance = r.data;
+    // A create-only row already exists or a CAS was lost: another
+    // account took the transaction, a concurrent call of this user
+    // delivered it, or the garage / subscription changed meanwhile.
+    const raced = crossUser();
+    if (raced !== null) return raced;
+    const now = readPurchaseByTxId(nk, userId, input.transactionId);
+    if (now) return JSON.stringify(ok(replayOutput(nk, userId, input.transactionId, now)));
   }
-  if (plan.cosmeticId !== undefined) {
-    const obj = readGarageObject(nk, userId);
-    if (obj === null) {
-      const g = defaultGarage(userId, nowUtc);
-      writeGarageCreate(nk, addCosmeticToBag(g, plan.cosmeticId));
-    } else {
-      const next = obj.value.cosmeticsBag.includes(plan.cosmeticId)
-        ? obj.value
-        : addCosmeticToBag(obj.value, plan.cosmeticId);
-      writeGarageUpdate(nk, next, obj.version);
-    }
+  if (delivered === null) {
+    return fail('CONFLICT', 'concurrent update; nothing was delivered, please retry', { reason: 'VERSION_CONFLICT' });
   }
-  // Subscription: full lifecycle (Chunk 4).
-  if (plan.subscriptionId !== undefined && plan.expiresAtUtc !== undefined) {
-    if (pack.kind !== 'subscription') {
-      // Defensive — planGrant only sets subscriptionId on subs.
-      emit(nk, logger, 'iap_purchase_failed', {
-        userId, transactionId: input.transactionId, packId: pack.id,
-        platform: input.platform, failureReason: 'subscription_without_subscription_pack',
-      });
-      return fail('INTERNAL', 'subscriptionId without subscription pack');
-    }
-    const originalTxId = input.originalTransactionId ?? input.transactionId;
-    const existing = readSubscriptionWithVersion(nk, userId);
-    let isRenewal = false;
-    let newSub: IapSubscription;
-    if (existing === null || existing.value.originalTransactionId !== originalTxId) {
-      // First activation OR a new sub replacing the old one. The old
-      // sub (if any) expires on its own expiresAtUtc — no explicit
-      // cancel needed.
-      newSub = {
-        userId,
-        packId: pack.id,
-        platform: input.platform,
-        originalTransactionId: originalTxId,
-        latestTransactionId: input.transactionId,
-        activatedAtUtc: nowUtc,
-        expiresAtUtc: plan.expiresAtUtc,
-        autoRenewing: true,
-        renewalHistory: [],
-        monthlyCosmeticGranted: false,
-      };
-    } else {
-      // Renewal: same originalTransactionId, bump expiresAtUtc.
-      isRenewal = true;
-      const nextExpiry = existing.value.expiresAtUtc + pack.durationDays * 86_400_000;
-      newSub = {
-        ...existing.value,
-        latestTransactionId: input.transactionId,
-        expiresAtUtc: nextExpiry,
-        autoRenewing: true,
-        monthlyCosmeticGranted: false,
-        renewalHistory: [
-          ...existing.value.renewalHistory,
-          {
-            transactionId: input.transactionId,
-            renewedAtUtc: nowUtc,
-            expiresAtUtc: nextExpiry,
-            monthlyCoinsGranted: 0, // filled below
-          },
-        ],
-      };
-    }
-
-    // First-activation OR per-cycle monthly grant (cosmetic + coins).
-    let monthlyCoinsApplied = 0;
-    if (plan.monthlyCosmeticId !== undefined && !newSub.monthlyCosmeticGranted) {
-      const obj = readGarageObject(nk, userId);
-      if (obj === null) {
-        const g = defaultGarage(userId, nowUtc);
-        writeGarageCreate(nk, addCosmeticToBag(g, plan.monthlyCosmeticId));
-      } else if (!obj.value.cosmeticsBag.includes(plan.monthlyCosmeticId)) {
-        writeGarageUpdate(nk, addCosmeticToBag(obj.value, plan.monthlyCosmeticId), obj.version);
-      }
-      newSub.monthlyCosmeticGranted = true;
-    }
-    if ((plan.monthlyCoins ?? 0) > 0) {
-      const monthlyKey = `iap_subscription_monthly:${originalTxId}:${newSub.expiresAtUtc}`;
-      const r2: Resp<WalletView> = grant(
-        nk,
-        userId,
-        { coins: plan.monthlyCoins ?? 0 },
-        { reason: 'iap', sourceId: `sub_monthly:${pack.id}:${newSub.expiresAtUtc}` },
-        monthlyKey,
-      );
-      if (r2.ok) {
-        monthlyCoinsApplied = plan.monthlyCoins ?? 0;
-        if (newBalance === undefined) newBalance = r2.data;
-      }
-    }
-
-    // Backfill monthlyCoinsGranted on the last renewal entry.
-    if (isRenewal && newSub.renewalHistory.length > 0 && monthlyCoinsApplied > 0) {
-      const last = newSub.renewalHistory[newSub.renewalHistory.length - 1]!;
-      newSub.renewalHistory[newSub.renewalHistory.length - 1] = { ...last, monthlyCoinsGranted: monthlyCoinsApplied };
-    }
-
-    if (existing === null) {
-      writeSubscriptionCreate(nk, newSub);
-    } else {
-      writeSubscriptionUpdate(nk, newSub, existing.version);
-    }
-
-    emit(nk, logger, isRenewal ? 'iap_subscription_renewed' : 'iap_subscription_activated', {
+  const { d, nowUtc, balance } = delivered;
+  if (d.subscription !== undefined) {
+    emit(nk, logger, d.subscription.isRenewal ? 'iap_subscription_renewed' : 'iap_subscription_activated', {
       userId,
       packId: pack.id,
-      expiresAtUtc: newSub.expiresAtUtc,
-      isRenewal,
+      expiresAtUtc: d.subscription.sub.expiresAtUtc,
+      isRenewal: d.subscription.isRenewal,
     });
   }
 
-  // 8. Write audit + first-purchase marker.
-  const idempotencyKey = `iap_purchase:${input.transactionId}`;
-  const record: PurchaseRecord = {
-    userId: userId,
-    packId: pack.id,
-    platform: input.platform,
-    productId: input.productId,
-    content: plan,
-    grantedAtUtc: nowUtc,
-    idempotencyKey,
-    ...(newBalance !== undefined ? { newBalance: newBalance.coins } : {}),
-    isFirstTime,
-  };
-  writePurchase(nk, input.transactionId, record);
-  if (isFirstTime) {
-    writeFirstPurchase(nk, userId, pack.id, nowUtc);
-  }
-
-  // 9. Inbox notification.
+  // 8. Inbox notice (already delivered: it only informs).
   sendNotice(
     nk,
     userId,
     'iap_purchase',
     {
-      coins: totalCoins(plan),
-      ...(plan.cosmeticId !== undefined ? { cosmetics: [plan.cosmeticId] } : {}),
+      coins: totalCoins(d.plan),
+      ...(d.plan.cosmeticId !== undefined ? { cosmetics: [d.plan.cosmeticId] } : {}),
       note: `iap purchase: ${pack.displayName}`,
     },
-    `iap_purchase:${input.transactionId}`,
+    `iap_purchase:${shortTxId(nk, input.transactionId)}`,
     nowUtc,
   );
 
   // Analytics: emit for the IAP flow (legacy + Chunk 7 delivered).
   emit(nk, logger, 'iap_purchase', {
-    userId: userId,
+    userId,
     packId: pack.id,
     platform: input.platform,
     productId: input.productId,
-    coinsGranted: totalCoins(plan),
-    isFirstTime,
+    coinsGranted: totalCoins(d.plan),
+    isFirstTime: d.isFirstTime,
   });
   // Phase 9 Chunk 7: iap_purchase_delivered.
   emit(nk, logger, 'iap_purchase_delivered', {
@@ -443,17 +470,17 @@ export const iap_purchase_impl: RpcHandler = (ctx, logger, nk, body) => {
     transactionId: input.transactionId,
     packId: pack.id,
     platform: input.platform,
-    amountCoins: totalCoins(plan),
-    isFirstTime,
+    amountCoins: totalCoins(d.plan),
+    isFirstTime: d.isFirstTime,
     cohortDate: new Date(nowUtc).toISOString().slice(0, 10),
   });
 
   const out: IapPurchaseOutput = {
     purchaseId: input.transactionId,
     packId: pack.id,
-    content: packContent(plan),
-    ...(newBalance !== undefined ? { newBalance } : {}),
-    ...(plan.expiresAtUtc !== undefined ? { newSubscriptionExpiresAtUtc: plan.expiresAtUtc } : {}),
+    content: packContent(d.plan),
+    newBalance: balance,
+    ...(d.plan.expiresAtUtc !== undefined ? { newSubscriptionExpiresAtUtc: d.subscription?.sub.expiresAtUtc ?? d.plan.expiresAtUtc } : {}),
     idempotent: false,
   };
   return JSON.stringify(ok(out));
@@ -469,15 +496,25 @@ function packContent(plan: IapGrantPlan): IapPurchaseContent {
   return c;
 }
 
+/**
+ * Envelope code of a rejected receipt; `details.reason` carries the
+ * verifier's code. A receipt the store refused (or that is not one) is
+ * BAD_REQUEST, so the client's validator treats it as invalid; a
+ * verification that could not run (no credentials, store down, our
+ * credentials refused) is SERVICE_UNAVAILABLE, so it can be retried.
+ */
 function verifyErrorToCode(e: IapVerificationError | undefined): ErrorCode {
   switch (e) {
     case 'PRODUCT_MISMATCH':    return 'BAD_REQUEST';
     case 'EXPIRED':             return 'BAD_REQUEST';
     case 'INVALID_RECEIPT':     return 'BAD_REQUEST';
     case 'PROVIDER_MISMATCH':   return 'BAD_REQUEST';
+    case 'REFUNDED':            return 'BAD_REQUEST';
+    case 'PENDING':             return 'BAD_REQUEST';
     case 'ALREADY_CONSUMED':    return 'CONFLICT';
-    case 'NETWORK_ERROR':       return 'INTERNAL';
-    case 'VERIFICATION_FAILED': return 'INTERNAL';
+    case 'NOT_CONFIGURED':      return 'SERVICE_UNAVAILABLE';
+    case 'NETWORK_ERROR':       return 'SERVICE_UNAVAILABLE';
+    case 'VERIFICATION_FAILED': return 'SERVICE_UNAVAILABLE';
     case 'INTERNAL_ERROR':      return 'INTERNAL';
     default:                    return 'INTERNAL';
   }

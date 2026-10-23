@@ -106,6 +106,10 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   userOwned('iap_first_purchase', 'iap'),
   userOwned('iap_purchases', 'iap'),
   userOwned('iap_subscriptions', 'iap'),
+  {
+    name: 'iap_transactions', module: 'iap', owner: 'system', purge: [],
+    retained: 'a store transaction is consumed once: its owner stays bound after the account is deleted (T-24)',
+  },
   // liveops
   userOwned('abandons', 'liveops'),
   userOwned('inbox', 'liveops'),

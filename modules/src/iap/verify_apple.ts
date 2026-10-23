@@ -4,12 +4,10 @@
 //   - production: https://buy.itunes.apple.com/verifyReceipt
 //   - sandbox:    https://sandbox.itunes.apple.com/verifyReceipt
 //
-// The 7-bit status codes that mean "this is actually a sandbox
-// receipt but you sent it to production" is 21007. The spec is to
-// transparently retry on the sandbox endpoint when 21007 is returned
-// and `environment === 'production'`. Apple also returns 21008 for
-// the inverse (sandbox receipt sent to sandbox from a production
-// account) but our spec doesn't auto-route that.
+// The production endpoint answers 21007 for a sandbox receipt; Apple's
+// guidance is to retry it on the sandbox endpoint (TestFlight and
+// review builds). 21008 (a production receipt sent to sandbox) is not
+// auto-routed.
 //
 // Apple response shape (success, status 0):
 //   { status: 0, receipt: { in_app: [...] }, latest_receipt_info: [...] }
@@ -18,14 +16,20 @@
 // client-reported transactionId. For subscription auto-renew we look
 // at `latest_receipt_info` and pick the matching entry; its
 // `original_transaction_id` is the FIRST purchase's id and
-// `expires_date_ms` is the latest renewal.
+// `expires_date_ms` is the latest renewal. An entry with
+// `cancellation_date_ms` was refunded (T-24): rejected.
 //
-// 1 retry on network error only. Timeout enforced by the caller
-// (verify.ts) — `nk.httpRequest` is synchronous in goja, so we
-// implement a soft timeout via a deadline.
+// T-24 (PC-04): the dispatcher passes `nk` (the old default caller read
+// an undefined `deps.nk`), the caller reads `httpRequest`'s `body` (3.27;
+// it read `content`), sends the request body once (it wrapped it twice)
+// and passes the timeout to `nk.httpRequest`. Without
+// `IAP_APPLE_SHARED_SECRET` nothing is sent to Apple.
+//
+// 1 retry on network error only.
 
-import type { IapVerificationConfig, IapVerificationError, IapVerificationResult } from './types';
+import type { IapRuntimeConfig, IapVerificationError, IapVerificationResult } from './types';
 import type { INakama, ILogger } from '../nkruntime';
+import { appleReceiptPayload } from './receipt';
 
 const APPLE_PRODUCTION = 'https://buy.itunes.apple.com/verifyReceipt';
 const APPLE_SANDBOX = 'https://sandbox.itunes.apple.com/verifyReceipt';
@@ -50,33 +54,24 @@ interface AppleResponse {
   status: number;
   receipt?: { in_app?: AppleLatestReceiptEntry[] };
   latest_receipt_info?: AppleLatestReceiptEntry[];
-  // Sandbox-retry signal from Apple — we use `environment` not this.
   environment?: string;
 }
 
 export interface AppleHttpCaller {
   /**
-   * Synchronous HTTP POST. Must honour `deadlineMs` — return
-   * `null` on timeout / network error so the caller can retry.
-   * Returns `{ code, content }` on a network round-trip.
+   * Synchronous HTTP POST of `body` (already JSON). Returns `null` on a
+   * timeout / network error so the caller can retry, else `{ code, content }`.
    */
   post(url: string, body: string, deadlineMs: number): { code: number; content: string } | null;
 }
 
-/** Default caller — uses `nk.httpRequest` with a deadline. */
+/** Default caller — `nk.httpRequest` with the deadline as its timeout. */
 export function makeNakamaHttpCaller(nk: INakama): AppleHttpCaller {
   return {
     post(url, body, deadlineMs) {
-      const start = Date.now();
       try {
-        const resp = nk.httpRequest(
-          url,
-          'POST',
-          { 'Content-Type': 'application/json' },
-          JSON.stringify({ 'receipt-data': body, 'password': '' }),
-        );
-        if (Date.now() - start > deadlineMs) return null;
-        return { code: resp.code, content: resp.content };
+        const resp = nk.httpRequest(url, 'post', { 'Content-Type': 'application/json' }, body, deadlineMs);
+        return { code: resp.code, content: resp.body };
       } catch {
         return null;
       }
@@ -89,7 +84,7 @@ interface VerifyArgs {
   expectedProductId: string;
   transactionId: string;
   nowUtc: number;
-  config: IapVerificationConfig;
+  config: IapRuntimeConfig;
 }
 
 export interface VerifyOutcome {
@@ -127,9 +122,19 @@ export function verifyApple(
   logger: ILogger,
 ): VerifyOutcome {
   const cfg = args.config;
-  const sharedSecret = cfg.appleSharedSecret ?? '';
-  const primary = cfg.environment === 'sandbox' ? APPLE_SANDBOX : APPLE_PRODUCTION;
-  const body = JSON.stringify({ 'receipt-data': args.receiptData, password: sharedSecret });
+  if (cfg.appleSharedSecret.length === 0) {
+    return { attempts: 0, result: err('apple', args.expectedProductId, 'NOT_CONFIGURED') };
+  }
+  const payload = appleReceiptPayload(args.receiptData);
+  if (payload === null) {
+    return { attempts: 0, result: err('apple', args.expectedProductId, 'INVALID_RECEIPT') };
+  }
+  const primary = APPLE_PRODUCTION;
+  const body = JSON.stringify({
+    'receipt-data': payload,
+    password: cfg.appleSharedSecret,
+    'exclude-old-transactions': false,
+  });
   const deadlineMs = cfg.timeoutMs;
 
   const attempt = (url: string): { code: number; content: string } | null => {
@@ -181,7 +186,7 @@ export function verifyApple(
   }
 
   // Sandbox auto-reroute for production-only flag.
-  if (parsed.status === STATUS_SANDBOX_RECEIPT_SENT_TO_PRODUCTION && cfg.environment === 'production') {
+  if (parsed.status === STATUS_SANDBOX_RECEIPT_SENT_TO_PRODUCTION) {
     const r2 = attempt(APPLE_SANDBOX);
     if (r2 === null || r2.code !== 200) {
       return { attempts, result: { ...err('apple', args.expectedProductId, 'NETWORK_ERROR') } };
@@ -229,6 +234,21 @@ export function verifyApple(
         purchaseDateUtc: entry.purchase_date_ms ? Number(entry.purchase_date_ms) : 0,
         isSubscriptionRenewal: entry.transaction_id !== entry.original_transaction_id,
         error: 'PRODUCT_MISMATCH',
+      },
+    };
+  }
+  if (entry.cancellation_date_ms !== undefined && entry.cancellation_date_ms !== '') {
+    return {
+      attempts,
+      result: {
+        valid: false,
+        platform: 'apple',
+        productId: entry.product_id,
+        transactionId: entry.transaction_id,
+        originalTransactionId: entry.original_transaction_id,
+        purchaseDateUtc: entry.purchase_date_ms ? Number(entry.purchase_date_ms) : 0,
+        isSubscriptionRenewal: entry.transaction_id !== entry.original_transaction_id,
+        error: 'REFUNDED',
       },
     };
   }

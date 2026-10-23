@@ -26,6 +26,18 @@ export interface IContext {
   matchId?: string;
   /** Nakama session token string (null when called without auth). */
   sessionId?: string;
+  /**
+   * `runtime.env` entries of the server config (`KEY=value` lines), as a
+   * map. Verified against v3.27.0 `runtime_javascript_context.go` (`env`).
+   */
+  env?: Record<string, string>;
+  /**
+   * Query string of an HTTP RPC call, minus `http_key` (repeated keys keep
+   * every value). Verified against v3.27.0 `api_rpc.go` (`queryParams`).
+   */
+  queryParams?: Record<string, string[]>;
+  /** Address the HTTP call came from (v3.27.0 `clientIp`). */
+  clientIp?: string;
 }
 
 /** Server-side structured logger (mirrors zerolog's API). */
@@ -510,7 +522,12 @@ export interface INakama {
   metricsGaugeSet(name: string, labels: Record<string, string>, value: number): void;
   metricsTimerRecord(name: string, labels: Record<string, string>, valueMs: number): void;
   sha256Hash(input: string): string;
-  hmacSha256Hash(input: string, key: string): string;
+  /** Lower-case hex MD5 of `input` (v3.27.0 `md5Hash`). */
+  md5Hash(input: string): string;
+  /** Returns the raw MAC as an ArrayBuffer (v3.27.0), not a hex string. */
+  hmacSha256Hash(input: string, key: string): ArrayBuffer;
+  /** Lower-case hex of a string or ArrayBuffer (v3.27.0 `base16Encode`). */
+  base16Encode(input: string | ArrayBuffer): string;
   base64UrlEncode(input: string): string;
   base64UrlDecode(input: string): string;
   base64Encode(input: string | Uint8Array): string;
@@ -519,18 +536,27 @@ export interface INakama {
   aes128Decrypt(input: string, key: string): string;
   aes256Encrypt(input: string, key: string): string;
   aes256Decrypt(input: string, key: string): string;
+  /**
+   * Signed JWT. v3.27.0 order: `(algorithm, signingKey, claims)`; RS256
+   * takes a PKCS#8 PEM key (a Google service-account `private_key`).
+   */
   jwtGenerate(
-    claims: Record<string, unknown>,
+    algo: 'HS256' | 'RS256',
     signingKey: string,
-    algo: 'HS256' | 'HS512' | 'RS256',
-    secondsUntilExpiry: number,
+    claims: Record<string, unknown>,
   ): string;
+  /**
+   * Synchronous HTTP call (v3.27.0): throws on a transport error or a
+   * timeout (`timeoutMs`, default 5000); the response text is `body`.
+   */
   httpRequest(
     url: string,
     method: string,
-    headers: Record<string, string>,
-    body: string,
-  ): { code: number; content: string; headers: Record<string, string> };
+    headers?: Record<string, string>,
+    body?: string,
+    timeoutMs?: number,
+    insecure?: boolean,
+  ): { code: number; body: string; headers: Record<string, string[]> };
 
   // ── Direct SQL — used only by migrations/admin, NOT for runtime game state ──
   sqlExec(query: string, args?: unknown[]): unknown;

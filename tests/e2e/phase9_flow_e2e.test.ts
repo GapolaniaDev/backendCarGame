@@ -18,7 +18,6 @@ import {
   loadIapPacksCatalog,
   findIapPackByProductId,
 } from '../../modules/src/iap/catalog';
-import { _resetVerifyCacheForTests } from '../../modules/src/iap/_reset_for_tests';
 import { _resetAdRewardsCatalogForTests } from '../../modules/src/ads/_reset_for_tests';
 import { loadAdRewardsCatalog } from '../../modules/src/ads/catalog';
 import { writeAdLastWatched } from '../../modules/src/ads/repo';
@@ -47,7 +46,8 @@ function call<T>(
   rpc: string,
   payload: Record<string, unknown>,
 ): Resp<T> {
-  const ctx: IContext = { ...FakeContext, userId };
+  // T-24: the mock verifier only runs with IAP_MOCK=true in runtime.env.
+  const ctx: IContext = { ...FakeContext, userId, env: { IAP_MOCK: 'true' } };
   const handler = bundle.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return JSON.parse(handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload)) as string) as Resp<T>;
@@ -126,7 +126,6 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
     bundle = loadBundleForTest();
     _resetIapPacksCatalogForTests();
     loadIapPacksCatalog(mkLogger(), iapPacksJson);
-    _resetVerifyCacheForTests();
     _resetAdRewardsCatalogForTests();
     loadAdRewardsCatalog(mkLogger(), adRewardsJson);
     nak = bundle.fakeNakama;

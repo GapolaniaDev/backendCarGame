@@ -17,7 +17,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { loadBundleForTest, FakeNakama, FakeContext } from './_stubs';
 import type { LoadedBundle } from './_stubs';
-import { _resetVerifyCacheForTests } from '../../modules/src/iap/_reset_for_tests';
 import { loadIapPacksCatalog, _resetIapPacksCatalogForTests, findIapPackByProductId } from '../../modules/src/iap/catalog';
 import iapPacksJson from '../../modules/src/catalogs/iap_packs.json';
 import { writeFirstPurchase } from '../../modules/src/iap/purchase_repo';
@@ -54,7 +53,8 @@ function callRpc(
   userId: string,
   payload: Record<string, unknown>,
 ): ReturnType<typeof parseResponse> {
-  const ctx: IContext = { ...FakeContext, userId };
+  // T-24: the mock verifier only runs with IAP_MOCK=true in runtime.env.
+  const ctx: IContext = { ...FakeContext, userId, env: { IAP_MOCK: 'true' } };
   const handler = bundle.resolver('iap_purchase');
   if (!handler) throw new Error('iap_purchase RPC not registered');
   const raw = handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload));
@@ -75,7 +75,6 @@ describe('iap_purchase RPC e2e (Phase 9 Chunk 3)', () => {
     // the VM sandbox — they use the test-side import).
     _resetIapPacksCatalogForTests();
     loadIapPacksCatalog(mkLogger(), iapPacksJson);
-    _resetVerifyCacheForTests();
     nak = new FakeNakama();
     logger = mkLogger();
     // Confirm the catalog has the consumable we exercise.

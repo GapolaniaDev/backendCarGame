@@ -1,30 +1,46 @@
 // Phase 9 Chunk 3 — Purchase + first-purchase storage.
 //
-// Two server-owned collections:
+// Three server-owned collections:
 //
 //   iap_purchases/{userId}/{transactionId}   (R=1/W=0)  — 90d retention
-//     Audit row written AFTER a successful grant. Stores the granted
-//     plan so a retry of the same (userId, transactionId) returns the
-//     same content + new balance. Cross-user fraud check scans this
-//     collection (1-arg storageList) for a `transactionId` collision.
+//     Audit row of a delivered purchase. Stores the granted plan so a
+//     retry of the same (userId, transactionId) returns the same
+//     content.
 //
 //   iap_first_purchase/{userId}/{packId}    (R=1/W=0)  — 90d retention
 //     Marker so the next purchase of the same pack skips the
 //     first-time bonus. `grantedAtUtc` is informational.
+//
+//   iap_transactions/{system}/{platform}:{transactionId}   (R=0/W=0)
+//     T-24: which account consumed a store transaction. Created with
+//     version `*` in the same transaction as the delivery, so two
+//     accounts racing with one receipt cannot both get it. Kept when the
+//     account is deleted (a store transaction is consumed once).
+//
+// T-24: the rows are written inside the purchase's wallet movement
+// (`moveWallet` extra writes, the `*Write` builders below). Keys longer
+// than Nakama's 128 characters (a Google purchase token can be) are
+// stored as `sha256:<hex>`; the transaction id is kept in the value.
 
 import type { IStorageObject, INakama } from '../nkruntime';
 import type { IapPlatform } from './types';
 import type { IapGrantPlan } from './grant';
 import { listStorage } from '../core/storage';
+import { idempotencyStorageKey } from '../core/idempotency';
 
 export const PURCHASES_COLLECTION = 'iap_purchases';
 export const FIRST_PURCHASE_COLLECTION = 'iap_first_purchase';
+export const IAP_TRANSACTIONS_COLLECTION = 'iap_transactions';
+
+const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 
 export interface PurchaseRecord {
   userId: string;
   packId: string;
   platform: IapPlatform;
   productId: string;
+  /** The store transaction id (T-24; the storage key may be its hash). */
+  transactionId?: string;
   content: IapGrantPlan;
   grantedAtUtc: number;
   idempotencyKey: string;
@@ -47,6 +63,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** Storage key of a transaction id: itself, or `sha256:<hex>` past 128 characters. */
+export function purchaseStorageKey(nk: INakama, transactionId: string): string {
+  return idempotencyStorageKey(nk, transactionId);
+}
+
 export function asPurchase(v: unknown, userId: string, transactionId: string): PurchaseRecord | null {
   if (!isPlainObject(v)) return null;
   const r = v as Record<string, unknown>;
@@ -56,6 +77,7 @@ export function asPurchase(v: unknown, userId: string, transactionId: string): P
     packId: r['packId'] as string,
     platform: (r['platform'] as IapPlatform) ?? 'apple',
     productId: (r['productId'] as string) ?? '',
+    transactionId: typeof r['transactionId'] === 'string' ? (r['transactionId'] as string) : transactionId,
     content: r['content'] as IapGrantPlan,
     grantedAtUtc: r['grantedAtUtc'] as number,
     idempotencyKey: (r['idempotencyKey'] as string) ?? '',
@@ -84,7 +106,7 @@ export function readPurchaseByTxId(
   transactionId: string,
 ): PurchaseRecord | null {
   const reads = nk.storageRead([
-    { collection: PURCHASES_COLLECTION, key: transactionId, userId },
+    { collection: PURCHASES_COLLECTION, key: purchaseStorageKey(nk, transactionId), userId },
   ]);
   const obj = reads[0];
   if (!obj || obj.value === undefined) return null;
@@ -93,34 +115,41 @@ export function readPurchaseByTxId(
 
 /**
  * Scan ALL purchases (any user) and find a row with the same
- * `transactionId`. Used for cross-user fraud detection: a single
- * store transaction can only be consumed by one account. The
- * 10 000-row cap matches the `storageList` limit; if we exceed it
- * the anti-fraud index lives in Chunk 6.
+ * `transactionId`. Since T-24 the `iap_transactions` index answers this
+ * for new purchases; the scan only covers rows written before the index
+ * existed. Capped at 10 000 rows.
  */
 export function findPurchaseAcrossUsers(
   nk: INakama,
   transactionId: string,
 ): { userId: string; record: PurchaseRecord } | null {
+  const key = purchaseStorageKey(nk, transactionId);
   const list = listStorage(nk, { collection: PURCHASES_COLLECTION, limit: 10_000 });
   for (const r of list.objects) {
-    if (r.key !== transactionId) continue;
+    if (r.key !== key) continue;
     const rec = asPurchase(r.value, r.userId, transactionId);
     if (rec) return { userId: r.userId, record: rec };
   }
   return null;
 }
 
-/** Write the purchase audit row. New write — no CAS version. */
-export function writePurchase(nk: INakama, txId: string, record: PurchaseRecord): void {
-  const obj: IStorageObject = {
+/** The create-only write of the purchase audit row (inside the delivery's movement). */
+export function purchaseWrite(nk: INakama, txId: string, record: PurchaseRecord): IStorageObject {
+  return {
     collection: PURCHASES_COLLECTION,
-    key: txId,
+    key: purchaseStorageKey(nk, txId),
     userId: record.userId,
-    value: record as unknown as Record<string, unknown>,
+    value: { ...record, transactionId: txId } as unknown as Record<string, unknown>,
     permissionRead: 1,
     permissionWrite: 0,
+    version: '*',
   };
+}
+
+/** Write the purchase audit row. New write — no CAS version. */
+export function writePurchase(nk: INakama, txId: string, record: PurchaseRecord): void {
+  const obj = purchaseWrite(nk, txId, record);
+  delete obj.version;
   nk.storageWrite([obj]);
 }
 
@@ -134,7 +163,7 @@ export function readPurchaseWithVersion(
   transactionId: string,
 ): { version: string; record: PurchaseRecord } | null {
   const reads = nk.storageRead([
-    { collection: PURCHASES_COLLECTION, key: transactionId, userId },
+    { collection: PURCHASES_COLLECTION, key: purchaseStorageKey(nk, transactionId), userId },
   ]);
   const obj = reads[0];
   if (!obj || obj.value === undefined) return null;
@@ -153,9 +182,9 @@ export function writePurchaseUpdate(
 ): void {
   const obj: IStorageObject = {
     collection: PURCHASES_COLLECTION,
-    key: txId,
+    key: purchaseStorageKey(nk, txId),
     userId: record.userId,
-    value: record as unknown as Record<string, unknown>,
+    value: { ...record, transactionId: txId } as unknown as Record<string, unknown>,
     permissionRead: 1,
     permissionWrite: 0,
     version: expectedVersion,
@@ -173,9 +202,48 @@ export function listAllPurchases(
   for (const o of list.objects) {
     const rec = asPurchase(o.value, o.userId, o.key);
     if (!rec || typeof o.version !== 'string') continue;
-    out.push({ userId: o.userId, transactionId: o.key, version: o.version, record: rec });
+    out.push({ userId: o.userId, transactionId: rec.transactionId ?? o.key, version: o.version, record: rec });
   }
   return out;
+}
+
+// ─── iap_transactions ──────────────────────────────────────────────────────
+
+export interface TransactionOwner {
+  userId: string;
+  platform: IapPlatform;
+  transactionId: string;
+  consumedAtUtc: number;
+}
+
+function transactionKey(nk: INakama, platform: IapPlatform, transactionId: string): string {
+  return idempotencyStorageKey(nk, `${platform}:${transactionId}`);
+}
+
+/** The account that consumed `transactionId`, or `null` when none did yet. */
+export function readTransactionOwner(
+  nk: INakama,
+  platform: IapPlatform,
+  transactionId: string,
+): TransactionOwner | null {
+  const obj = nk.storageRead([
+    { collection: IAP_TRANSACTIONS_COLLECTION, key: transactionKey(nk, platform, transactionId), userId: SYSTEM_USER_ID },
+  ])[0];
+  if (!obj || !isPlainObject(obj.value) || typeof obj.value['userId'] !== 'string') return null;
+  return obj.value as unknown as TransactionOwner;
+}
+
+/** The create-only index write that binds `transactionId` to its account. */
+export function transactionOwnerWrite(nk: INakama, owner: TransactionOwner): IStorageObject {
+  return {
+    collection: IAP_TRANSACTIONS_COLLECTION,
+    key: transactionKey(nk, owner.platform, owner.transactionId),
+    userId: SYSTEM_USER_ID,
+    value: owner as unknown as Record<string, unknown>,
+    permissionRead: 0,
+    permissionWrite: 0,
+    version: '*',
+  };
 }
 
 // ─── iap_first_purchase ────────────────────────────────────────────────────
@@ -204,6 +272,19 @@ export function readFirstPurchase(
   };
 }
 
+/** The create-only write of the first-purchase marker (inside the delivery's movement). */
+export function firstPurchaseWrite(userId: string, packId: string, grantedAtUtc: number): IStorageObject {
+  return {
+    collection: FIRST_PURCHASE_COLLECTION,
+    key: packId,
+    userId,
+    value: { userId, packId, grantedAtUtc } as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version: '*',
+  };
+}
+
 /** Mark the first purchase of a pack. Subsequent reads return the row. */
 export function writeFirstPurchase(
   nk: INakama,
@@ -211,13 +292,7 @@ export function writeFirstPurchase(
   packId: string,
   grantedAtUtc: number,
 ): void {
-  const obj: IStorageObject = {
-    collection: FIRST_PURCHASE_COLLECTION,
-    key: packId,
-    userId,
-    value: { userId, packId, grantedAtUtc } as unknown as Record<string, unknown>,
-    permissionRead: 1,
-    permissionWrite: 0,
-  };
+  const obj = firstPurchaseWrite(userId, packId, grantedAtUtc);
+  delete obj.version;
   nk.storageWrite([obj]);
 }

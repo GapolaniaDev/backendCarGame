@@ -4,9 +4,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { loadBundleForTest, FakeNakama, FakeContext } from './_stubs';
 import type { LoadedBundle } from './_stubs';
 import {
-  _resetVerifyCacheForTests,
-} from '../../modules/src/iap/_reset_for_tests';
-import {
   loadIapPacksCatalog,
   _resetIapPacksCatalogForTests,
   findIapPackByProductId,
@@ -53,7 +50,8 @@ function callRpc(
   rpcName: string,
   payload: Record<string, unknown>,
 ): { ok: boolean; data?: Record<string, unknown>; error?: { code: string; message: string } } {
-  const ctx: IContext = { ...FakeContext, userId };
+  // T-24: the mock verifier only runs with IAP_MOCK=true in runtime.env.
+  const ctx: IContext = { ...FakeContext, userId, env: { IAP_MOCK: 'true' } };
   const handler = bundle.resolver(rpcName);
   if (!handler) throw new Error(`${rpcName} RPC not registered`);
   const raw = handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload));
@@ -68,7 +66,6 @@ describe('iap subscription e2e (Phase 9 Chunk 4)', () => {
     bundle = loadBundleForTest();
     _resetIapPacksCatalogForTests();
     loadIapPacksCatalog(mkLogger(), iapPacksJson);
-    _resetVerifyCacheForTests();
     nak = new FakeNakama();
     // Confirm the catalog has the subscription pack.
     expect(findIapPackByProductId('apple', 'com.cvg.monthlypass')).toBeDefined();

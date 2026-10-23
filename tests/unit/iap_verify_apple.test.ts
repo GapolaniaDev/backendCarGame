@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { verifyApple, type AppleHttpCaller } from '../../modules/src/iap/verify_apple';
-import type { IapVerificationConfig } from '../../modules/src/iap/types';
+import type { IapRuntimeConfig } from '../../modules/src/iap/types';
 import type { ILogger } from '../../modules/src/nkruntime';
 
 function mkLogger(): ILogger {
@@ -21,21 +21,28 @@ function mkLogger(): ILogger {
 
 const NOW = 1_700_000_000_000;
 
-const CFG: IapVerificationConfig = {
-  provider: 'apple',
+const CFG: IapRuntimeConfig = {
+  mock: false,
   appleSharedSecret: 'a'.repeat(32),
-  environment: 'sandbox',
+  googleClientEmail: '',
+  googlePrivateKey: '',
+  googlePackageName: '',
   timeoutMs: 1000,
 };
 
+/** A base64 App Store receipt stand-in (the verifier only checks the alphabet). */
+const RECEIPT = 'TUlJVDhRWUpLb1pJaHZjTkFRY0NvSUlUNGpDQ0UrNENBUUV4Q3pBSkJn';
+
 interface FakeResponse { code: number; content: string }
 
-function mkCaller(responses: Array<FakeResponse | null>): AppleHttpCaller & { calls: number } {
+function mkCaller(responses: Array<FakeResponse | null>): AppleHttpCaller & { calls: number; bodies: string[] } {
   let i = 0;
   return {
     calls: 0,
-    post() {
+    bodies: [],
+    post(_url, body) {
       this.calls += 1;
+      this.bodies.push(body);
       const r = responses[i];
       i = i < responses.length ? i + 1 : responses.length - 1;
       return r ?? null;
@@ -66,7 +73,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([makeSuccessResponse('tx-1', 'com.cvg.coins100', 1000)]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.valid).toBe(true);
@@ -91,7 +98,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.monthlypass', transactionId: 'tx-sub', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.monthlypass', transactionId: 'tx-sub', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.valid).toBe(false);
@@ -102,7 +109,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([{ code: 200, content: JSON.stringify({ status: 21100 }) }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('VERIFICATION_FAILED');
@@ -113,7 +120,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
       const caller = mkCaller([{ code: 200, content: JSON.stringify({ status }) }]);
       const out = verifyApple(
         caller,
-        { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+        { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
         mkLogger(),
       );
       expect(out.result.error).toBe('INVALID_RECEIPT');
@@ -124,7 +131,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([{ code: 200, content: JSON.stringify({ status: 21004 }) }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('VERIFICATION_FAILED');
@@ -134,7 +141,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([{ code: 200, content: 'not-json' }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('INVALID_RECEIPT');
@@ -147,7 +154,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'no-match', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'no-match', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('INVALID_RECEIPT');
@@ -157,14 +164,14 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([makeSuccessResponse('tx-1', 'com.cvg.wrong', 1000)]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('PRODUCT_MISMATCH');
   });
 
   it('auto-reroutes to sandbox on status 21007 in production', () => {
-    const prodCfg: IapVerificationConfig = { ...CFG, environment: 'production' };
+    const prodCfg: IapRuntimeConfig = { ...CFG };
     // 1st call: prod returns 21007. 2nd call: sandbox returns 0.
     const caller = mkCaller([
       { code: 200, content: JSON.stringify({ status: 21007 }) },
@@ -172,7 +179,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     ]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: prodCfg },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: prodCfg },
       mkLogger(),
     );
     expect(out.result.valid).toBe(true);
@@ -183,7 +190,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([{ code: 200, content: JSON.stringify({ status: 21008 }) }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('PROVIDER_MISMATCH');
@@ -193,7 +200,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([null, null]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('NETWORK_ERROR');
@@ -207,7 +214,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     ]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.valid).toBe(true);
@@ -230,7 +237,7 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'com.cvg.monthlypass', transactionId: 'tx-renewal', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.monthlypass', transactionId: 'tx-renewal', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.valid).toBe(true);
@@ -242,9 +249,65 @@ describe('verifyApple (Phase 9 Chunk 2)', () => {
     const caller = mkCaller([{ code: 502, content: '' }, { code: 502, content: '' }]);
     const out = verifyApple(
       caller,
-      { receiptData: 'r', expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
+      { receiptData: RECEIPT, expectedProductId: 'p', transactionId: 'tx', nowUtc: NOW, config: CFG },
       mkLogger(),
     );
     expect(out.result.error).toBe('NETWORK_ERROR');
+  });
+
+  // ── T-24 (PC-04, HT-75) ────────────────────────────────────────────────
+  it('T-24: without IAP_APPLE_SHARED_SECRET nothing is sent to Apple (NOT_CONFIGURED)', () => {
+    const caller = mkCaller([makeSuccessResponse('tx-1', 'com.cvg.coins100', 1000)]);
+    const out = verifyApple(
+      caller,
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: { ...CFG, appleSharedSecret: '' } },
+      mkLogger(),
+    );
+    expect(out.result.error).toBe('NOT_CONFIGURED');
+    expect(caller.calls).toBe(0);
+  });
+
+  it('T-24: a receipt that is not a base64 App Store receipt never reaches Apple', () => {
+    const caller = mkCaller([makeSuccessResponse('tx-1', 'com.cvg.coins100', 1000)]);
+    for (const receiptData of ['{"productId":"com.cvg.coins100"}', 'forged receipt!', 'abc']) {
+      const out = verifyApple(
+        caller,
+        { receiptData, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+        mkLogger(),
+      );
+      expect(out.result.error).toBe('INVALID_RECEIPT');
+    }
+    expect(caller.calls).toBe(0);
+  });
+
+  it('T-24: unwraps the Unity unified receipt and sends the payload once, with the shared secret', () => {
+    const caller = mkCaller([makeSuccessResponse('tx-1', 'com.cvg.coins100', 1000)]);
+    const unified = JSON.stringify({ Store: 'AppleAppStore', TransactionID: 'tx-1', Payload: RECEIPT });
+    const out = verifyApple(
+      caller,
+      { receiptData: unified, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+      mkLogger(),
+    );
+    expect(out.result.valid).toBe(true);
+    const sent = JSON.parse(caller.bodies[0]!) as Record<string, unknown>;
+    expect(sent['receipt-data']).toBe(RECEIPT);
+    expect(sent['password']).toBe(CFG.appleSharedSecret);
+  });
+
+  it('T-24: a refunded purchase (cancellation_date_ms) is REFUNDED', () => {
+    const caller = mkCaller([{
+      code: 200,
+      content: JSON.stringify({ status: 0, receipt: { in_app: [{
+        transaction_id: 'tx-1', original_transaction_id: 'tx-1', product_id: 'com.cvg.coins100',
+        purchase_date_ms: String(NOW - 5000), cancellation_date_ms: String(NOW - 1000),
+      }] } }),
+    }]);
+    const out = verifyApple(
+      caller,
+      { receiptData: RECEIPT, expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', nowUtc: NOW, config: CFG },
+      mkLogger(),
+    );
+    expect(out.result.valid).toBe(false);
+    expect(out.result.error).toBe('REFUNDED');
   });
 });

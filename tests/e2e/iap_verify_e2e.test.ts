@@ -1,24 +1,18 @@
-// Phase 9 Chunk 2 — e2e boot test for the IAP verification module.
+// Phase 9 Chunk 2 / T-24 — e2e boot test for receipt verification.
 //
-// Confirms that:
-//   1. InitModule does not crash when the iapVerification block is
-//      present in the bundled liveops default (it ships with
-//      provider=mock).
-//   2. The dispatcher pulls `iapVerification` from the liveops
-//      config (the bundled default wins because the test boots the
-//      bundle against an empty storage).
-//   3. The dedup cache is wired across the bundle→test boundary
-//      (because the CACHED map lives on the test-side module
-//      instance after `_resetVerifyCacheForTests`).
-//
-// The bundle's InitModule does not call `verifyReceipt` directly —
-// that happens in the iap_purchase RPC (Chunk 3). The dispatch
-// surface is exercised through direct unit calls.
+// Through the built bundle (the code Nakama runs):
+//   1. boot does not crash and the bundled LiveOps default no longer
+//      carries an `iapVerification` block (PC-04: it was the mock);
+//   2. `iap_purchase` with a mock receipt is rejected unless the call's
+//      `runtime.env` has IAP_MOCK=true, and without store credentials an
+//      Apple / Google receipt is rejected without any HTTP call;
+//   3. a refunded mock receipt is rejected.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { loadBundleForTest } from './_stubs';
-import { _resetVerifyCacheForTests, _peekVerifyCacheForTests, verifyReceipt } from '../../modules/src/iap/verify';
-import type { ILogger } from '../../modules/src/nkruntime';
+import { loadBundleForTest, FakeNakama, FakeContext } from './_stubs';
+import type { LoadedBundle } from './_stubs';
+import liveopsDefault from '../../modules/src/catalogs/liveops.default.json';
+import type { IContext, ILogger } from '../../modules/src/nkruntime';
 
 function mkLogger(): ILogger {
   const noop = (): void => undefined;
@@ -30,55 +24,71 @@ function mkLogger(): ILogger {
 }
 
 const NOW = 1_700_000_000_000;
+const USER = '11111111-1111-4111-8111-111111111111';
 
-describe('iap verify boot e2e (Phase 9 Chunk 2)', () => {
+function call(bundle: LoadedBundle, nk: FakeNakama, env: Record<string, string> | undefined, payload: Record<string, unknown>):
+  { ok: boolean; data?: Record<string, unknown>; error?: { code: string; details?: { reason?: string } } } {
+  const ctx: IContext = { ...FakeContext, userId: USER, ...(env !== undefined ? { env } : {}) };
+  const handler = bundle.resolver('iap_purchase');
+  if (!handler) throw new Error('iap_purchase not registered');
+  return JSON.parse(handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload))) as ReturnType<typeof call>;
+}
+
+const mockReceipt = (tx: string, over: Record<string, unknown> = {}): string => JSON.stringify({
+  productId: 'com.cvg.coins100', transactionId: tx, originalTransactionId: tx, purchaseDateUtc: NOW, ...over,
+});
+
+describe('iap verify boot e2e (Phase 9 Chunk 2, T-24)', () => {
+  let bundle: LoadedBundle;
+  let nk: FakeNakama;
+
   beforeEach(() => {
-    loadBundleForTest();
-    _resetVerifyCacheForTests();
+    bundle = loadBundleForTest();
+    nk = new FakeNakama();
+    nk.httpRequestThrow = new Error('no network in tests');
   });
 
-  it('boot does not crash with the bundled mock provider in iapVerification', () => {
+  it('boot does not crash and the bundled LiveOps default has no iapVerification', () => {
     expect(() => loadBundleForTest()).not.toThrow();
+    expect((liveopsDefault as Record<string, unknown>)['iapVerification']).toBeUndefined();
   });
 
-  it('verifyReceipt with no config returns VERIFICATION_FAILED', () => {
-    const r = verifyReceipt(
-      { platform: 'apple', expectedProductId: 'p', transactionId: 't', receiptData: '{}' },
-      { config: undefined, logger: mkLogger(), nowUtc: NOW },
-    );
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('VERIFICATION_FAILED');
+  it('without IAP_MOCK a mock receipt is rejected on both platforms, with no HTTP call and no coins', () => {
+    for (const [platform, productId] of [['apple', 'com.cvg.coins100'], ['google', 'coins_100']] as const) {
+      const r = call(bundle, nk, undefined, {
+        platform, productId, transactionId: `forged-${platform}`, receiptData: mockReceipt(`forged-${platform}`, { productId }),
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('SERVICE_UNAVAILABLE');
+      expect(r.error?.details?.reason).toBe('NOT_CONFIGURED');
+    }
+    expect(nk.httpRequests.filter((r) => !r.url.includes('analytics'))).toHaveLength(0);
+    expect(nk.wallets.get(USER)?.['coins'] ?? 0).toBe(0);
   });
 
-  it('verifyReceipt with the bundled mock config verifies a valid receipt', () => {
-    const r = verifyReceipt(
-      { platform: 'apple', expectedProductId: 'com.cvg.coins100', transactionId: 'tx-1', receiptData: JSON.stringify({
-        productId: 'com.cvg.coins100', transactionId: 'tx-1', originalTransactionId: 'tx-1', purchaseDateUtc: NOW - 1000,
-      }) },
-      { config: { provider: 'mock', environment: 'sandbox', timeoutMs: 10000 }, logger: mkLogger(), nowUtc: NOW },
-    );
-    expect(r.valid).toBe(true);
+  it('IAP_MOCK=false and a stale LiveOps override with provider=mock still reject', () => {
+    nk.nakama.storageWrite([{
+      collection: 'liveops', key: 'config', userId: '00000000-0000-0000-0000-000000000000',
+      value: { ...(liveopsDefault as Record<string, unknown>), iapVerification: { provider: 'mock', environment: 'sandbox', timeoutMs: 10000 } },
+      permissionRead: 0, permissionWrite: 0,
+    }]);
+    const r = call(bundle, nk, { IAP_MOCK: 'false' }, {
+      platform: 'apple', productId: 'com.cvg.coins100', transactionId: 'forged-2', receiptData: mockReceipt('forged-2'),
+    });
+    expect(r.ok).toBe(false);
+    expect(nk.wallets.get(USER)?.['coins'] ?? 0).toBe(0);
   });
 
-  it('dedup cache populates after a successful verify', () => {
-    verifyReceipt(
-      { platform: 'apple', expectedProductId: 'p', transactionId: 'e2e-dedup-1', receiptData: JSON.stringify({
-        productId: 'p', transactionId: 'e2e-dedup-1', originalTransactionId: 'e2e-dedup-1', purchaseDateUtc: NOW,
-      }) },
-      { config: { provider: 'mock', environment: 'sandbox', timeoutMs: 10000 }, logger: mkLogger(), nowUtc: NOW },
-    );
-    const cached = _peekVerifyCacheForTests('apple', 'e2e-dedup-1');
-    expect(cached).toBeDefined();
-    expect(cached!.valid).toBe(true);
-  });
-
-  it('dedup cache populates after a failed verify too', () => {
-    verifyReceipt(
-      { platform: 'apple', expectedProductId: 'p', transactionId: 'e2e-dedup-fail', receiptData: 'not-json' },
-      { config: { provider: 'mock', environment: 'sandbox', timeoutMs: 10000 }, logger: mkLogger(), nowUtc: NOW },
-    );
-    const cached = _peekVerifyCacheForTests('apple', 'e2e-dedup-fail');
-    expect(cached).toBeDefined();
-    expect(cached!.error).toBe('INVALID_RECEIPT');
+  it('with IAP_MOCK=true a mock receipt is delivered, and a refunded one is rejected', () => {
+    const okR = call(bundle, nk, { IAP_MOCK: 'true' }, {
+      platform: 'apple', productId: 'com.cvg.coins100', transactionId: 'mock-1', receiptData: mockReceipt('mock-1'),
+    });
+    expect(okR.ok).toBe(true);
+    const refunded = call(bundle, nk, { IAP_MOCK: 'true' }, {
+      platform: 'apple', productId: 'com.cvg.coins100', transactionId: 'mock-2', receiptData: mockReceipt('mock-2', { refundTime: NOW }),
+    });
+    expect(refunded.ok).toBe(false);
+    expect(refunded.error?.code).toBe('BAD_REQUEST');
+    expect(refunded.error?.details?.reason).toBe('REFUNDED');
   });
 });

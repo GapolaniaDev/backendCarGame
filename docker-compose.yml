@@ -47,6 +47,24 @@ services:
         runtime:
           gwp_secret: "${NAKAMA_GWP_SECRET}"
           http_key: "${NAKAMA_RUNTIME_HTTP_KEY}"
+          # Server-side settings the modules read as ctx.env (plan T-24).
+          # Values come from .env; empty means "not configured".
+          # IAP_MOCK=true accepts mock receipts: dev / CI only, never in production.
+          env:
+            - "IAP_MOCK=${IAP_MOCK:-false}"
+            - "IAP_APPLE_SHARED_SECRET=${IAP_APPLE_SHARED_SECRET:-}"
+            - "IAP_GOOGLE_CLIENT_EMAIL=${IAP_GOOGLE_CLIENT_EMAIL:-}"
+            - "IAP_GOOGLE_PRIVATE_KEY=${IAP_GOOGLE_PRIVATE_KEY:-}"
+            - "IAP_GOOGLE_PACKAGE_NAME=${IAP_GOOGLE_PACKAGE_NAME:-}"
+        # Nakama's native purchase validation (the client's
+        # NakamaReceiptValidator) uses the same store credentials (T-24).
+        iap:
+          apple:
+            shared_password: "${IAP_APPLE_SHARED_SECRET:-}"
+          google:
+            client_email: "${IAP_GOOGLE_CLIENT_EMAIL:-}"
+            private_key: "${IAP_GOOGLE_PRIVATE_KEY:-}"
+            package_name: "${IAP_GOOGLE_PACKAGE_NAME:-}"
         database:
           address:
             - "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
