@@ -8,6 +8,7 @@
 // `iap_analytics_e2e`, `iap_admin_e2e`); this file is the integration
 // layer that proves the end-to-end pipeline works as a whole.
 
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { loadBundleForTest, FakeContext, FakeNakama, SYSTEM_USER_ID } from './_stubs';
 import type { LoadedBundle } from './_stubs';
@@ -51,6 +52,29 @@ function call<T>(
   const handler = bundle.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return JSON.parse(handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload)) as string) as Resp<T>;
+}
+
+// T-25: rewarded ads are paid only by LevelPlay's signed S2S callback.
+const LP_KEY = 'local-test-private-key';
+const AD_USER = 'aaaaaaaa-0000-4000-8000-000000000001';
+function levelPlayCallback(
+  bundle: LoadedBundle,
+  nk: FakeNakamaT,
+  userId: string,
+  eventId: string,
+  rewards: number,
+  key = LP_KEY,
+): { ok: boolean; data?: Record<string, unknown>; error?: { code: string } } {
+  const ts = '202610230000';
+  const signature = createHash('md5').update(`${ts}${eventId}${userId}${rewards}${key}`).digest('hex');
+  const ctx = {
+    ...FakeContext,
+    env: { LEVELPLAY_S2S_PRIVATE_KEY: LP_KEY },
+    queryParams: { userId: [userId], eventId: [eventId], rewards: [String(rewards)], timestamp: [ts], signature: [signature] },
+  } as unknown as IContext;
+  const handler = bundle.resolver('ads_levelplay_callback');
+  if (!handler) throw new Error('no rpc: ads_levelplay_callback');
+  return JSON.parse(handler(ctx, mkLogger(), nk.nakama, '') as string) as ReturnType<typeof levelPlayCallback>;
 }
 
 function makeMockReceipt(productId: string, transactionId: string): string {
@@ -239,63 +263,36 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
 
   // ─── 2. Ad rewards end-to-end ─────────────────────────────────────
 
-  it('Ads happy: 1 small ad → 5 coins + 1 ad_watch_granted event', () => {
-    writeAdLastWatched(nak.nakama as never, 'user-A', 'small', {
-      lastWatchedAtUtc: 0,
-      lastImpressionId: '',
+  it('Ads: ad_watched pays nothing; the signed S2S callback pays 5 coins + 1 ad_watch_granted', () => {
+    const w = call<{ coinsGranted: number; granted: boolean }>(bundle, nak, AD_USER, 'ad_watched', {
+      tier: 'small', provider: 'levelplay', adUnitId: 'unit-1', impressionId: 'imp-1', watchedAtUtc: Date.now() - 1000,
     });
-    const r = call<{ coinsGranted: number; newBalance: { coins: number; gems: number } }>(
-      bundle, nak, 'user-A', 'ad_watched', {
-        tier: 'small', provider: 'mock', adUnitId: 'unit-1',
-        impressionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        watchedAtUtc: Date.now() - 1000,
-      },
-    );
+    expect(w.ok).toBe(true);
+    if (!w.ok) return;
+    expect(w.data.coinsGranted).toBe(0);
+    expect(w.data.granted).toBe(false);
+    expect(nak.wallets.get(AD_USER)?.coins ?? 0).toBe(0);
+    const r = levelPlayCallback(bundle, nak, AD_USER, 'evtflow1', 5);
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.data.coinsGranted).toBe(5);
-    expect(r.data.newBalance.coins).toBe(5);
+    expect(r.data!['coinsGranted']).toBe(5);
+    expect(nak.wallets.get(AD_USER)?.coins).toBe(5);
     expect(countEvents(bundle, 'ad_watch_granted')).toBe(1);
   });
 
-  it('Ads idempotent: same impressionId twice → no double grant', () => {
-    writeAdLastWatched(nak.nakama as never, 'user-A', 'small', {
-      lastWatchedAtUtc: 0,
-      lastImpressionId: '',
-    });
-    const args = {
-      tier: 'small', provider: 'mock', adUnitId: 'unit-1',
-      impressionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      watchedAtUtc: Date.now() - 1000,
-    };
-    const r1 = call<{ coinsGranted: number }>(bundle, nak, 'user-A', 'ad_watched', args);
-    const r2 = call<{ coinsGranted: number; idempotent: boolean }>(bundle, nak, 'user-A', 'ad_watched', args);
+  it('Ads idempotent: the same S2S event twice → no double grant', () => {
+    levelPlayCallback(bundle, nak, AD_USER, 'evtflow2', 5);
+    const r2 = levelPlayCallback(bundle, nak, AD_USER, 'evtflow2', 5);
     expect(r2.ok).toBe(true);
-    if (!r2.ok) return;
-    expect(r2.data.idempotent).toBe(true);
-    expect(nak.wallets.get('user-A')?.coins).toBe(5);
+    expect(r2.data!['idempotent']).toBe(true);
+    expect(nak.wallets.get(AD_USER)?.coins).toBe(5);
   });
 
-  it('Ads cooldown: same tier twice → 2nd CONFLICT + ad_watch_blocked', () => {
-    writeAdLastWatched(nak.nakama as never, 'user-A', 'small', {
-      lastWatchedAtUtc: 0,
-      lastImpressionId: '',
-    });
-    const r1 = call(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'unit-1',
-      impressionId: '11111111-1111-4111-8111-111111111111',
-      watchedAtUtc: Date.now() - 1000,
-    });
-    expect(r1.ok).toBe(true);
-    const r2 = call(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'unit-1',
-      impressionId: '22222222-2222-4222-8222-222222222222',
-      watchedAtUtc: Date.now() - 1000,
-    });
-    expect(r2.ok).toBe(false);
-    if (r2.ok) return;
-    expect(r2.error?.code).toBe('CONFLICT');
-    expect(countEvents(bundle, 'ad_watch_blocked')).toBe(1);
+  it('Ads: a callback signed with another key → FORBIDDEN, no grant', () => {
+    const r = levelPlayCallback(bundle, nak, AD_USER, 'evtflow3', 5, 'not-the-key');
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('FORBIDDEN');
+    expect(nak.wallets.get(AD_USER)?.coins ?? 0).toBe(0);
+    expect(countEvents(bundle, 'ad_watch_granted')).toBe(0);
   });
 
   // ─── 3. Subscription end-to-end ───────────────────────────────────
@@ -542,16 +539,14 @@ describe('Phase 9 flow — end-to-end (Chunk 8 wrap)', () => {
     });
     expect(iapR.ok).toBe(true);
 
-    // Ad
-    writeAdLastWatched(nak.nakama as never, 'user-B', 'small', {
-      lastWatchedAtUtc: 0, lastImpressionId: '',
-    });
-    const adR = call(bundle, nak, 'user-B', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'unit-1',
+    // Ad: the client's report (initiated) and the network's callback (granted).
+    const adR = call(bundle, nak, AD_USER, 'ad_watched', {
+      tier: 'small', provider: 'levelplay', adUnitId: 'unit-1',
       impressionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       watchedAtUtc: Date.now() - 1000,
     });
     expect(adR.ok).toBe(true);
+    expect(levelPlayCallback(bundle, nak, AD_USER, 'evtcov1', 5).ok).toBe(true);
 
     // Sub cancel (seed first)
     const now = Date.now();

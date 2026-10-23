@@ -7,10 +7,10 @@
 // `AdWatchEvent` wire shape used by the ad RPCs (Chunk 5).
 //
 // D64: cap = 10 ad rewards per UTC day (anti-cookie spam).
-// D68: provider is `mock` for now — real AdMob / Unity Ads integration
-//      is deferred until API keys are provisioned.
+// D68 / T-25: rewards are paid by LevelPlay's signed server-to-server
+//      callback (`ads/s2s_rpcs.ts`); `ad_watched` only reports a watch.
 
-export type AdProvider = 'admob' | 'unityads' | 'mock';
+export type AdProvider = 'levelplay' | 'admob' | 'unityads' | 'mock';
 export type AdTier = 'small' | 'medium' | 'large' | 'xlarge';
 
 export interface AdRewardTier {

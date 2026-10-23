@@ -1,23 +1,25 @@
-// Phase 9 Chunk 5 — e2e tests for the ad_watched RPC.
+// Phase 9 Chunk 5 / T-25 (PC-05) — e2e tests for rewarded ads.
+//
+// Through the built bundle:
+//   - `ad_watched` (the client's call) never pays;
+//   - `ads_levelplay_callback` (LevelPlay S2S, http_key, no session) pays
+//     once per signed event: md5(timestamp + eventId + userId + rewards +
+//     LEVELPLAY_S2S_PRIVATE_KEY), answer `<eventId>:OK`;
+//   - a repeated event answers OK again without paying; a bad signature
+//     or an empty secret pays nothing and has no `:OK`;
+//   - the amount must be a catalog tier; the daily cap (10) holds;
+//   - `ad_reward_status` lists the caller's callback rewards.
 
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { loadBundleForTest, FakeNakama, FakeContext } from './_stubs';
 import type { LoadedBundle } from './_stubs';
-import { _resetAdRewardsCatalogForTests } from '../../modules/src/ads/_reset_for_tests';
-import { loadAdRewardsCatalog } from '../../modules/src/ads/catalog';
-import adRewardsJson from '../../modules/src/catalogs/ad_rewards.json';
-import {
-  readAdLastWatched,
-  readAdDailyCount,
-  readAdWatchLog,
-  writeAdLastWatched,
-} from '../../modules/src/ads/repo';
-import { endOfUtcDayUtc } from '../../modules/src/ads/grant';
-import type { FakeNakama as FakeNakamaT } from './_stubs';
 import type { IContext, ILogger } from '../../modules/src/nkruntime';
 
 const REAL_NOW = Date.now();
-const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
+const KEY = 'local-test-private-key';
+const USER = '33333333-3333-4333-8333-333333333333';
+const OTHER = '44444444-4444-4444-8444-444444444444';
 
 function mkLogger(): ILogger {
   const noop = (): void => undefined;
@@ -28,337 +30,178 @@ function mkLogger(): ILogger {
   } as unknown as ILogger;
 }
 
-function callRpc(
+type Env = { ok: boolean; data?: Record<string, unknown>; error?: { code: string; details?: { reason?: string } } };
+
+function invoke(bundle: LoadedBundle, nk: FakeNakama, rpc: string, ctx: IContext, body: string): { raw: string; env: Env } {
+  const handler = bundle.resolver(rpc);
+  if (!handler) throw new Error(`${rpc} RPC not registered`);
+  const raw = handler(ctx, mkLogger(), nk.nakama, body);
+  return { raw, env: JSON.parse(raw) as Env };
+}
+
+const sign = (ts: string, eventId: string, userId: string, rewards: string, key = KEY): string =>
+  createHash('md5').update(`${ts}${eventId}${userId}${rewards}${key}`).digest('hex');
+
+/** A LevelPlay callback as Nakama hands it: query params, no session, runtime.env. */
+function callback(
   bundle: LoadedBundle,
-  nk: FakeNakamaT,
-  userId: string,
-  rpcName: string,
-  payload: Record<string, unknown>,
-): { ok: boolean; data?: Record<string, unknown>; error?: { code: string; message: string } } {
-  const ctx: IContext = { ...FakeContext, userId };
-  const handler = bundle.resolver(rpcName);
-  if (!handler) throw new Error(`${rpcName} RPC not registered`);
-  const raw = handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload));
-  return JSON.parse(raw) as ReturnType<typeof callRpc>;
-}
-
-function uuid(seed: number): string {
-  // RFC 4122 v4 layout: xxxxxxxx-xxxx-4xxx-Yxxx-xxxxxxxxxxxx where Y in {8,9,a,b}.
-  const hex = (n: number, w: number) => n.toString(16).padStart(w, '0');
-  // LCG: deterministic per seed.
-  let s = (seed * 2654435761 + 1) >>> 0;
-  const next = (): number => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s;
+  nk: FakeNakama,
+  q: { userId?: string; eventId: string; rewards: string; timestamp?: string; signature?: string; userField?: string },
+  env: Record<string, string> = { LEVELPLAY_S2S_PRIVATE_KEY: KEY },
+): { raw: string; env: Env } {
+  const userId = q.userId ?? USER;
+  const timestamp = q.timestamp ?? '202610230015';
+  const signature = q.signature ?? sign(timestamp, q.eventId, userId, q.rewards);
+  const queryParams: Record<string, string[]> = {
+    [q.userField ?? 'userId']: [userId], eventId: [q.eventId], rewards: [q.rewards],
+    timestamp: [timestamp], signature: [signature], placementName: ['DefaultRewardedVideo'], unwrap: [''],
   };
-  const a = next();
-  const b = next();
-  const c = next();
-  // 8-4-4-4-12
-  const part1 = hex(a, 8);
-  const part2 = hex((b >>> 16) & 0xffff, 4);
-  const part3 = '4' + hex(a & 0x0fff, 3);
-  // Y = 8,9,a,b (top 2 bits = 10) + 12 random bits.
-  const yNibble = 0x8 | ((b >>> 12) & 0x3);
-  const part4 = hex((yNibble << 12) | (b & 0x0fff), 4);
-  // Last 12 hex chars from c.
-  const part5 = hex(c, 12).slice(0, 12);
-  return `${part1}-${part2}-${part3}-${part4}-${part5}`;
+  const ctx = { ...FakeContext, env, queryParams } as unknown as IContext;
+  return invoke(bundle, nk, 'ads_levelplay_callback', ctx, '');
 }
 
-describe('ad_watched e2e (Phase 9 Chunk 5)', () => {
+const coins = (nk: FakeNakama, uid = USER): number => nk.wallets.get(uid)?.['coins'] ?? 0;
+
+describe('rewarded ads e2e (Phase 9 Chunk 5, T-25)', () => {
   let bundle: LoadedBundle;
-  let nak: FakeNakamaT;
+  let nk: FakeNakama;
 
   beforeEach(() => {
     bundle = loadBundleForTest();
-    _resetAdRewardsCatalogForTests();
-    loadAdRewardsCatalog(mkLogger(), adRewardsJson);
-    nak = new FakeNakama();
+    nk = new FakeNakama();
   });
 
-  // ─── Happy path ──────────────────────────────────────────────────────
-
-  it('happy path: grants coins + writes sidecars + returns balance', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small',
-      provider: 'mock',
-      adUnitId: 'rewarded_coins_v1',
-      impressionId: VALID_UUID,
-      watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r.ok) throw new Error('ad_watched failed: ' + JSON.stringify(r));
-    expect(r.data!.tier).toBe('small');
-    expect(r.data!.coinsGranted).toBe(5);
-    expect(r.data!.newBalance.coins).toBe(5);
-    expect(r.data!.idempotent).toBe(false);
-    expect(r.data!.dailyCount).toBe(1);
-    expect(r.data!.dailyCap).toBe(10);
-    // last_watched row
-    const lw = readAdLastWatched(nak.nakama, 'user-A', 'small');
-    expect(lw).not.toBeNull();
-    expect(lw!.lastImpressionId).toBe(VALID_UUID);
-    // daily count row
-    const today = new Date().toISOString().slice(0, 10);
-    const dc = readAdDailyCount(nak.nakama, 'user-A', today);
-    expect(dc).not.toBeNull();
-    expect(dc!.count).toBe(1);
-    // watch log row
-    const log = readAdWatchLog(nak.nakama, 'user-A', VALID_UUID);
-    expect(log).not.toBeNull();
-    expect(log!.coinsGranted).toBe(5);
-    expect(log!.newBalance).toBe(5);
+  it('ad_watched from the client pays nothing (granted: false, coinsGranted: 0)', () => {
+    const ctx = { ...FakeContext, userId: USER } as IContext;
+    const r = invoke(bundle, nk, 'ad_watched', ctx, JSON.stringify({
+      tier: 'xlarge', provider: 'mock', adUnitId: 'u', impressionId: '550e8400-e29b-41d4-a716-446655440000', watchedAtUtc: REAL_NOW,
+    })).env;
+    expect(r.ok).toBe(true);
+    expect(r.data!['coinsGranted']).toBe(0);
+    expect(r.data!['granted']).toBe(false);
+    expect(r.data!['rewardVia']).toBe('server_callback');
+    expect(coins(nk)).toBe(0);
+    expect(nk.ledger.get(USER) ?? []).toHaveLength(0);
   });
 
-  it('happy path: medium tier grants 15 coins', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'medium', provider: 'mock', adUnitId: 'unit-m',
-      impressionId: uuid(1), watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r.ok) throw new Error('ad_watched failed: ' + JSON.stringify(r));
-    expect(r.data!.coinsGranted).toBe(15);
-    expect(r.data!.newBalance.coins).toBe(15);
-  });
-
-  it('happy path: xlarge tier grants 60 coins', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'xlarge', provider: 'mock', adUnitId: 'unit-x',
-      impressionId: uuid(2), watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r.ok) throw new Error('ad_watched failed: ' + JSON.stringify(r));
-    expect(r.data!.coinsGranted).toBe(60);
-  });
-
-  // ─── Idempotency ─────────────────────────────────────────────────────
-
-  it('idempotent: same impressionId returns cached + idempotent:true', () => {
-    const args = {
-      tier: 'small', provider: 'mock', adUnitId: 'unit-1',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    };
-    const r1 = callRpc(bundle, nak, 'user-A', 'ad_watched', args);
-    if (!r1.ok) throw new Error('first failed: ' + JSON.stringify(r1));
-    const r2 = callRpc(bundle, nak, 'user-A', 'ad_watched', args);
-    if (!r2.ok) throw new Error('replay failed: ' + JSON.stringify(r2));
-    expect(r2.data!.idempotent).toBe(true);
-    expect(r2.data!.coinsGranted).toBe(5);
-    // No double grant — balance still 5.
-    expect(r2.data!.newBalance.coins).toBe(5);
-    // Daily count still 1.
-    expect(r2.data!.dailyCount).toBe(0); // placeholder for replay (idempotent path)
-  });
-
-  // ─── Cooldown ────────────────────────────────────────────────────────
-
-  it('cooldown: same tier twice in a row → CONFLICT', () => {
-    const r1 = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(10), watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r1.ok) throw new Error('first failed: ' + JSON.stringify(r1));
-    const r2 = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(11), watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r2.ok).toBe(false);
-    expect(r2.error!.code).toBe('CONFLICT');
-    expect(r2.error!.message).toMatch(/cooldown/i);
-  });
-
-  it('cooldown: per-tier (different tiers can run back-to-back)', () => {
-    const r1 = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(20), watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r1.ok) throw new Error('small failed: ' + JSON.stringify(r1));
-    const r2 = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'medium', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(21), watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r2.ok) throw new Error('medium should not cooldown: ' + JSON.stringify(r2));
-    expect(r2.data!.coinsGranted).toBe(15);
-  });
-
-  // ─── Daily cap ───────────────────────────────────────────────────────
-
-  it('daily cap: 10 ads succeed, 11th → CONFLICT', () => {
-    // Use 10 distinct users — each watches 1 ad, proving the cap is
-    // per-user and not a global ceiling. Then the 11th user proves
-    // the cap is independent across users.
-    for (let i = 0; i < 10; i += 1) {
-      const r = callRpc(bundle, nak, `user-${i}`, 'ad_watched', {
-        tier: 'small', provider: 'mock', adUnitId: 'u',
-        impressionId: uuid(100 + i), watchedAtUtc: REAL_NOW - 1000,
-      });
-      if (!r.ok) throw new Error(`ad #${i} failed: ` + JSON.stringify(r));
-    }
-    // Now one user exhausts their own 10/10 cap. Re-seed cooldown
-    // between calls so only the cap gates the 11th.
-    const user = 'user-cap';
-    const tiers = ['small', 'medium', 'large', 'xlarge'] as const;
-    for (let i = 0; i < 10; i += 1) {
-      // Re-seed the tier's lastWatched so cooldown passes.
-      writeAdLastWatched(nak.nakama, user, tiers[i % tiers.length]!, {
-        lastWatchedAtUtc: REAL_NOW - 3_600_000,
-        lastImpressionId: 'seed',
-      });
-      const tier = tiers[i % tiers.length]!;
-      const r = callRpc(bundle, nak, user, 'ad_watched', {
-        tier, provider: 'mock', adUnitId: 'u',
-        impressionId: uuid(500 + i), watchedAtUtc: REAL_NOW - 1000,
-      });
-      if (!r.ok) throw new Error(`#${i} (tier=${tier}) failed: ` + JSON.stringify(r));
-    }
-    // 11th — re-seed cooldown again so we isolate the cap.
-    writeAdLastWatched(nak.nakama, user, 'xlarge', {
-      lastWatchedAtUtc: REAL_NOW - 3_600_000,
-      lastImpressionId: 'seed',
-    });
-    const r11 = callRpc(bundle, nak, user, 'ad_watched', {
-      tier: 'xlarge', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(600), watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r11.ok).toBe(false);
-    expect(r11.error!.code).toBe('CONFLICT');
-    expect(r11.error!.message).toMatch(/cap/i);
-  });
-
-  it('daily cap: per-user (mixed tiers still count toward 10)', () => {
-    // Re-seed cooldown between calls so we isolate the cap. Watch 5 small
-    // and 5 medium (rotation across 4 tiers means 3 small + 2 medium
-    // + 3 small + 2 medium, with cooldown re-seeded each call).
-    const user = 'user-mix';
-    const tiers = ['small', 'medium', 'large', 'xlarge'] as const;
-    const sequence: ReadonlyArray<typeof tiers[number]> = [
-      'small', 'medium', 'large', 'xlarge',
-      'small', 'medium', 'large', 'xlarge',
-      'small', 'medium',
-    ];
-    for (let i = 0; i < sequence.length; i += 1) {
-      const tier = sequence[i]!;
-      writeAdLastWatched(nak.nakama, user, tier, {
-        lastWatchedAtUtc: REAL_NOW - 3_600_000,
-        lastImpressionId: 'seed',
-      });
-      const r = callRpc(bundle, nak, user, 'ad_watched', {
-        tier, provider: 'mock', adUnitId: 'u',
-        impressionId: uuid(700 + i), watchedAtUtc: REAL_NOW - 1000,
-      });
-      if (!r.ok) throw new Error(`#${i} (tier=${tier}) failed: ` + JSON.stringify(r));
-    }
-    // 11th — re-seed, then expect cap.
-    writeAdLastWatched(nak.nakama, user, 'xlarge', {
-      lastWatchedAtUtc: REAL_NOW - 3_600_000,
-      lastImpressionId: 'seed',
-    });
-    const r11 = callRpc(bundle, nak, user, 'ad_watched', {
-      tier: 'xlarge', provider: 'mock', adUnitId: 'u',
-      impressionId: uuid(800), watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r11.ok).toBe(false);
-    expect(r11.error!.code).toBe('CONFLICT');
-  });
-
-  // ─── Mock verify rejections ──────────────────────────────────────────
-
-  it('rejects provider=admob → BAD_REQUEST', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'admob', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('rejects malformed impressionId → BAD_REQUEST', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: 'not-a-uuid', watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('rejects watchedAtUtc in the far future → BAD_REQUEST', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW + 600_000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('accepts watchedAtUtc within 60s future (clock skew)', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW + 30_000,
-    });
-    if (!r.ok) throw new Error('should accept 30s future: ' + JSON.stringify(r));
-    expect(r.data!.coinsGranted).toBe(5);
-  });
-
-  // ─── Bad input ───────────────────────────────────────────────────────
-
-  it('BAD_REQUEST when tier is missing', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('BAD_REQUEST when tier is not in catalog', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'mega', provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('BAD_REQUEST when adUnitId is empty', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: '',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('BAD_REQUEST when impressionId is missing', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      watchedAtUtc: REAL_NOW - 1000,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  it('BAD_REQUEST when watchedAtUtc is missing', () => {
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID,
-    });
-    expect(r.ok).toBe(false);
-    expect(r.error!.code).toBe('BAD_REQUEST');
-  });
-
-  // ─── Maintenance bypass ──────────────────────────────────────────────
-
-  it('ad_watched BYPASSES maintenance (D77)', () => {
-    // Flip the maintenance flag in liveops.
-    nak.nakama.storageWrite([{
-      collection: 'liveops', key: 'config',
-      userId: '00000000-0000-0000-0000-000000000000',
-      value: { version: 1, flags: { maintenance: true, maintenanceMessage: 'down' } },
-      permissionRead: 1, permissionWrite: 0,
+  it('ad_watched still validates its input and keeps the maintenance bypass', () => {
+    const ctx = { ...FakeContext, userId: USER } as IContext;
+    expect(invoke(bundle, nk, 'ad_watched', ctx, JSON.stringify({ tier: 'huge' })).env.error?.code).toBe('BAD_REQUEST');
+    nk.nakama.storageWrite([{
+      collection: 'liveops', key: 'config', userId: '00000000-0000-0000-0000-000000000000',
+      value: { version: 1, flags: { maintenance: true, maintenanceMessage: 'down' } }, permissionRead: 1, permissionWrite: 0,
     }]);
-    const r = callRpc(bundle, nak, 'user-A', 'ad_watched', {
-      tier: 'small', provider: 'mock', adUnitId: 'u',
-      impressionId: VALID_UUID, watchedAtUtc: REAL_NOW - 1000,
-    });
-    if (!r.ok) throw new Error('ad_watched should bypass maintenance: ' + JSON.stringify(r));
-    expect(r.data!.coinsGranted).toBe(5);
+    const r = invoke(bundle, nk, 'ad_watched', ctx, JSON.stringify({
+      tier: 'small', provider: 'levelplay', adUnitId: 'u', impressionId: 'imp-1', watchedAtUtc: REAL_NOW,
+    })).env;
+    expect(r.ok).toBe(true);
+  });
+
+  it('a signed callback pays once and answers <eventId>:OK; a repeat answers OK without paying', () => {
+    const first = callback(bundle, nk, { eventId: 'evt0001', rewards: '15' });
+    expect(first.env.ok).toBe(true);
+    expect(first.raw).toContain('evt0001:OK');
+    expect(first.env.data!['status']).toBe('granted');
+    expect(first.env.data!['coinsGranted']).toBe(15);
+    expect(coins(nk)).toBe(15);
+    for (let i = 0; i < 3; i += 1) {
+      const again = callback(bundle, nk, { eventId: 'evt0001', rewards: '15' });
+      expect(again.raw).toContain('evt0001:OK');
+      expect(again.env.data!['idempotent']).toBe(true);
+    }
+    expect(coins(nk)).toBe(15);
+    expect((nk.ledger.get(USER) ?? []).length).toBe(1);
+  });
+
+  it('after a restart (fresh VM) the repeated event still does not pay', () => {
+    callback(bundle, nk, { eventId: 'evtrestart', rewards: '5' });
+    const again = callback(loadBundleForTest(), nk, { eventId: 'evtrestart', rewards: '5' });
+    expect(again.raw).toContain('evtrestart:OK');
+    expect(coins(nk)).toBe(5);
+  });
+
+  it('the documented user-id parameter names are accepted (applicationUserId, appUserId)', () => {
+    expect(callback(bundle, nk, { eventId: 'evtapp1', rewards: '5', userField: 'applicationUserId' }).env.ok).toBe(true);
+    expect(callback(bundle, nk, { eventId: 'evtapp2', rewards: '5', userField: 'appUserId' }).env.ok).toBe(true);
+    expect(coins(nk)).toBe(10);
+  });
+
+  it('a bad signature pays nothing and has no :OK', () => {
+    const r = callback(bundle, nk, { eventId: 'evtbad', rewards: '60', signature: sign('202610230015', 'evtbad', USER, '60', 'wrong-key') });
+    expect(r.env.ok).toBe(false);
+    expect(r.env.error?.code).toBe('FORBIDDEN');
+    expect(r.env.error?.details?.reason).toBe('BAD_SIGNATURE');
+    expect(r.raw).not.toContain(':OK');
+    // Tampering with a signed field (the amount) breaks the signature too.
+    const tampered = callback(bundle, nk, { eventId: 'evtbad2', rewards: '60', signature: sign('202610230015', 'evtbad2', USER, '5') });
+    expect(tampered.env.error?.code).toBe('FORBIDDEN');
+    // Another user with this user's signature.
+    const other = callback(bundle, nk, { eventId: 'evtbad3', rewards: '5', userId: OTHER, signature: sign('202610230015', 'evtbad3', USER, '5') });
+    expect(other.env.error?.code).toBe('FORBIDDEN');
+    expect(coins(nk)).toBe(0);
+    expect(coins(nk, OTHER)).toBe(0);
+  });
+
+  it('with an empty secret every callback is rejected, even one signed with an empty key', () => {
+    for (const env of [{}, { LEVELPLAY_S2S_PRIVATE_KEY: '' }, { LEVELPLAY_S2S_PRIVATE_KEY: '   ' }]) {
+      const r = callback(bundle, nk, { eventId: 'evtnokey', rewards: '5', signature: sign('202610230015', 'evtnokey', USER, '5', '') }, env);
+      expect(r.env.ok).toBe(false);
+      expect(r.env.error?.code).toBe('SERVICE_UNAVAILABLE');
+      expect(r.env.error?.details?.reason).toBe('NOT_CONFIGURED');
+      expect(r.raw).not.toContain(':OK');
+    }
+    expect(coins(nk)).toBe(0);
+  });
+
+  it('a player session cannot call the callback (FORBIDDEN), even with a valid signature', () => {
+    const ts = '202610230015';
+    const queryParams = { userId: [USER], eventId: ['evtsess'], rewards: ['5'], timestamp: [ts], signature: [sign(ts, 'evtsess', USER, '5')] };
+    const ctx = { ...FakeContext, userId: USER, env: { LEVELPLAY_S2S_PRIVATE_KEY: KEY }, queryParams } as unknown as IContext;
+    expect(invoke(bundle, nk, 'ads_levelplay_callback', ctx, '{}').env.error?.code).toBe('FORBIDDEN');
+    expect(coins(nk)).toBe(0);
+  });
+
+  it('missing or malformed parameters are BAD_REQUEST', () => {
+    expect(callback(bundle, nk, { eventId: 'evt bad id', rewards: '5' }).env.error?.code).toBe('BAD_REQUEST');
+    expect(callback(bundle, nk, { eventId: 'evtneg', rewards: '-5' }).env.error?.code).toBe('BAD_REQUEST');
+    expect(coins(nk)).toBe(0);
+  });
+
+  it('an amount that is not a catalog tier is acknowledged and not paid', () => {
+    const r = callback(bundle, nk, { eventId: 'evtamount', rewards: '1000' });
+    expect(r.raw).toContain('evtamount:OK');
+    expect(r.env.data!['status']).toBe('rejected_amount');
+    expect(coins(nk)).toBe(0);
+  });
+
+  it('the daily cap (10) holds: the 11th event is acknowledged as capped and not paid', () => {
+    for (let i = 0; i < 10; i += 1) {
+      expect(callback(bundle, nk, { eventId: `evtcap${i}`, rewards: '5' }).env.data!['status']).toBe('granted');
+    }
+    const eleventh = callback(bundle, nk, { eventId: 'evtcap10', rewards: '5' });
+    expect(eleventh.raw).toContain('evtcap10:OK');
+    expect(eleventh.env.data!['status']).toBe('capped');
+    expect(coins(nk)).toBe(50);
+  });
+
+  it('a signed event for an unknown user is acknowledged without paying anyone', () => {
+    const r = callback(bundle, nk, { eventId: 'evtnouser', rewards: '5', userId: 'not-a-nakama-id' });
+    expect(r.raw).toContain('evtnouser:OK');
+    expect(r.env.data!['status']).toBe('unknown_user');
+  });
+
+  it('ad_reward_status lists the caller rewards, newest first, with the daily count', () => {
+    callback(bundle, nk, { eventId: 'evtst1', rewards: '5' });
+    callback(bundle, nk, { eventId: 'evtst2', rewards: '30' });
+    const ctx = { ...FakeContext, userId: USER } as IContext;
+    const r = invoke(bundle, nk, 'ad_reward_status', ctx, '{}').env;
+    expect(r.ok).toBe(true);
+    const rewards = r.data!['rewards'] as Array<{ eventId: string; coins: number; status: string }>;
+    expect(rewards.map((x) => x.eventId).sort()).toEqual(['evtst1', 'evtst2']);
+    expect(r.data!['dailyCount']).toBe(2);
+    expect(r.data!['dailyCap']).toBe(10);
+    expect((r.data!['newBalance'] as { coins: number }).coins).toBe(35);
+    const otherCtx = { ...FakeContext, userId: OTHER } as IContext;
+    expect((invoke(bundle, nk, 'ad_reward_status', otherCtx, '{}').env.data!['rewards'] as unknown[]).length).toBe(0);
   });
 });

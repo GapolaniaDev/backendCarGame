@@ -28,6 +28,9 @@ export interface AdDailyKey {
 
 export const MS_PER_DAY = 86_400_000;
 
+/** Paid ad rewards per user and UTC day (D75); counted by the S2S callback (T-25). */
+export const AD_DAILY_CAP = 10;
+
 export function utcDateKey(nowUtc: number): string {
   // YYYY-MM-DD slice of the UTC date.
   const d = new Date(nowUtc);

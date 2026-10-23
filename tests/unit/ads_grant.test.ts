@@ -1,7 +1,6 @@
 // Phase 9 Chunk 5 — Unit tests for the pure ad reward helpers.
 
 import { describe, it, expect } from 'vitest';
-import { verifyAdMock } from '../../modules/src/ads/verify_mock';
 import {
   planAdReward,
   utcDateKey,
@@ -16,69 +15,6 @@ const SMALL: AdRewardTier = { tier: 'small', coins: 5, cooldownSeconds: 300 };
 const MEDIUM: AdRewardTier = { tier: 'medium', coins: 15, cooldownSeconds: 900 };
 const LARGE: AdRewardTier = { tier: 'large', coins: 30, cooldownSeconds: 1800 };
 const XLARGE: AdRewardTier = { tier: 'xlarge', coins: 60, cooldownSeconds: 3600 };
-
-const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
-
-describe('ads verifyAdMock (Phase 9 Chunk 5)', () => {
-  it('valid for provider=mock + valid UUID + past watchedAtUtc', () => {
-    const r = verifyAdMock('mock', 'unit-1', VALID_UUID, NOW - 1000, NOW);
-    expect(r.valid).toBe(true);
-  });
-
-  it('INVALID_PROVIDER when provider=admob', () => {
-    const r = verifyAdMock('admob', 'unit-1', VALID_UUID, NOW - 1000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('INVALID_PROVIDER');
-  });
-
-  it('INVALID_PROVIDER when provider=unityads', () => {
-    const r = verifyAdMock('unityads', 'unit-1', VALID_UUID, NOW - 1000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('INVALID_PROVIDER');
-  });
-
-  it('INVALID_IMPRESSION_ID when adUnitId is empty', () => {
-    const r = verifyAdMock('mock', '', VALID_UUID, NOW - 1000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('INVALID_IMPRESSION_ID');
-  });
-
-  it('INVALID_IMPRESSION_ID when impressionId is not a UUID', () => {
-    const r = verifyAdMock('mock', 'unit-1', 'not-a-uuid', NOW - 1000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('INVALID_IMPRESSION_ID');
-  });
-
-  it('INVALID_IMPRESSION_ID when impressionId is UUID v1 (not v4)', () => {
-    // v1: 6c1f5d68-1e2a-11ec-9621-0242ac130002
-    const v1 = '6c1f5d68-1e2a-11ec-9621-0242ac130002';
-    const r = verifyAdMock('mock', 'unit-1', v1, NOW - 1000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('INVALID_IMPRESSION_ID');
-  });
-
-  it('FUTURE_WATCHED_AT when watchedAtUtc > nowUtc + 60s', () => {
-    const r = verifyAdMock('mock', 'unit-1', VALID_UUID, NOW + 120_000, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('FUTURE_WATCHED_AT');
-  });
-
-  it('valid when watchedAtUtc is within 60s future (clock skew tolerance)', () => {
-    const r = verifyAdMock('mock', 'unit-1', VALID_UUID, NOW + 30_000, NOW);
-    expect(r.valid).toBe(true);
-  });
-
-  it('valid when watchedAtUtc is in the distant past', () => {
-    const r = verifyAdMock('mock', 'unit-1', VALID_UUID, NOW - 3_600_000, NOW);
-    expect(r.valid).toBe(true);
-  });
-
-  it('FUTURE_WATCHED_AT when watchedAtUtc is NaN', () => {
-    const r = verifyAdMock('mock', 'unit-1', VALID_UUID, NaN, NOW);
-    expect(r.valid).toBe(false);
-    expect(r.error).toBe('FUTURE_WATCHED_AT');
-  });
-});
 
 describe('ads planAdReward (Phase 9 Chunk 5)', () => {
   it('ok when no prior watch', () => {

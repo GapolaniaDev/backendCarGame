@@ -47,7 +47,7 @@ services:
         runtime:
           gwp_secret: "${NAKAMA_GWP_SECRET}"
           http_key: "${NAKAMA_RUNTIME_HTTP_KEY}"
-          # Server-side settings the modules read as ctx.env (plan T-24).
+          # Server-side settings the modules read as ctx.env (plan T-24, T-25).
           # Values come from .env; empty means "not configured".
           # IAP_MOCK=true accepts mock receipts: dev / CI only, never in production.
           env:
@@ -56,6 +56,8 @@ services:
             - "IAP_GOOGLE_CLIENT_EMAIL=${IAP_GOOGLE_CLIENT_EMAIL:-}"
             - "IAP_GOOGLE_PRIVATE_KEY=${IAP_GOOGLE_PRIVATE_KEY:-}"
             - "IAP_GOOGLE_PACKAGE_NAME=${IAP_GOOGLE_PACKAGE_NAME:-}"
+            # LevelPlay S2S reward callback signing key (T-25); empty = every callback rejected.
+            - "LEVELPLAY_S2S_PRIVATE_KEY=${LEVELPLAY_S2S_PRIVATE_KEY:-}"
         # Nakama's native purchase validation (the client's
         # NakamaReceiptValidator) uses the same store credentials (T-24).
         iap:

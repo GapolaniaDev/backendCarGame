@@ -15,6 +15,7 @@
 //   7. Event firing on iap_purchase → delivered
 //   8. Event firing on ad_watched  → granted
 
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeContext, loadBundleForTest, FakeNakama, SYSTEM_USER_ID } from './_stubs';
 import type { LoadedBundle } from './_stubs';
@@ -25,7 +26,6 @@ import { ANALYTICS_COLLECTION } from '../../modules/src/core/admin/analytics';
 import { _resetIapPacksCatalogForTests, loadIapPacksCatalog, findIapPackByProductId } from '../../modules/src/iap/catalog';
 import { _resetAdRewardsCatalogForTests } from '../../modules/src/ads/_reset_for_tests';
 import { loadAdRewardsCatalog } from '../../modules/src/ads/catalog';
-import { writeAdLastWatched } from '../../modules/src/ads/repo';
 import iapPacksJson from '../../modules/src/catalogs/iap_packs.json';
 import adRewardsJson from '../../modules/src/catalogs/ad_rewards.json';
 
@@ -68,6 +68,29 @@ function callAs<T>(
   const handler = bundle.resolver(rpc);
   if (!handler) throw new Error(`no rpc: ${rpc}`);
   return JSON.parse(handler(ctx, mkLogger(), nk.nakama, JSON.stringify(payload)) as string) as Resp<T>;
+}
+
+// T-25: rewarded ads are paid only by LevelPlay's signed S2S callback.
+const LP_KEY = 'local-test-private-key';
+const AD_USER = 'aaaaaaaa-0000-4000-8000-000000000001';
+function levelPlayCallback(
+  bundle: LoadedBundle,
+  nk: FakeNakamaT,
+  userId: string,
+  eventId: string,
+  rewards: number,
+  key = LP_KEY,
+): { ok: boolean; data?: Record<string, unknown>; error?: { code: string } } {
+  const ts = '202610230000';
+  const signature = createHash('md5').update(`${ts}${eventId}${userId}${rewards}${key}`).digest('hex');
+  const ctx = {
+    ...FakeContext,
+    env: { LEVELPLAY_S2S_PRIVATE_KEY: LP_KEY },
+    queryParams: { userId: [userId], eventId: [eventId], rewards: [String(rewards)], timestamp: [ts], signature: [signature] },
+  } as unknown as IContext;
+  const handler = bundle.resolver('ads_levelplay_callback');
+  if (!handler) throw new Error('no rpc: ads_levelplay_callback');
+  return JSON.parse(handler(ctx, mkLogger(), nk.nakama, '') as string) as ReturnType<typeof levelPlayCallback>;
 }
 
 function setAdminKey(env: LoadedBundle, maintenance = false): void {
@@ -488,42 +511,24 @@ describe('IAP + Ad event firing (Phase 9 Chunk 7)', () => {
     expect(names).toContain('iap_purchase_failed');
   });
 
-  it('ad_watched happy path fires initiated + granted', () => {
-    // Bypass cooldown: pre-seed last_watched with a null lastWatchedAtUtc.
-    writeAdLastWatched(nak.nakama as never, 'user-A', 'small', {
-      lastWatchedAtUtc: 0,
-      lastImpressionId: '',
-    });
-    const r = callAs<{ tier: string; coinsGranted: number }>(bundle, nak, 'ad_watched', 'user-A', {
+  it('ad_watched fires initiated; the signed S2S callback fires granted (T-25)', () => {
+    const r = callAs<{ tier: string; coinsGranted: number }>(bundle, nak, 'ad_watched', AD_USER, {
       tier: 'small',
-      provider: 'mock',
+      provider: 'levelplay',
       adUnitId: 'rewarded_coins_v1',
       impressionId: '11111111-1111-4111-8111-111111111111',
       watchedAtUtc: Date.now() - 1000,
     });
     expect(r.ok).toBe(true);
-    const names = readAllEventNames(bundle);
-    expect(names).toContain('ad_watch_initiated');
-    expect(names).toContain('ad_watch_granted');
+    expect(readAllEventNames(bundle)).toContain('ad_watch_initiated');
+    expect(readAllEventNames(bundle)).not.toContain('ad_watch_granted');
+    expect(levelPlayCallback(bundle, nak, AD_USER, 'evtan1', 5).ok).toBe(true);
+    expect(readAllEventNames(bundle)).toContain('ad_watch_granted');
   });
 
-  it('ad_watched cooldown blocked → ad_watch_blocked emitted', () => {
-    // Bypass cooldown initially, then run once → cooldown active → blocked.
-    writeAdLastWatched(nak.nakama as never, 'user-A', 'small', {
-      lastWatchedAtUtc: 0,
-      lastImpressionId: '',
-    });
-    const r1 = callAs(bundle, nak, 'ad_watched', 'user-A', {
-      tier: 'small', provider: 'mock', adUnitId: 'rewarded_coins_v1',
-      impressionId: '11111111-1111-4111-8111-111111111111', watchedAtUtc: Date.now() - 1000,
-    });
-    expect(r1.ok).toBe(true);
-    const r2 = callAs(bundle, nak, 'ad_watched', 'user-A', {
-      tier: 'small', provider: 'mock', adUnitId: 'rewarded_coins_v1',
-      impressionId: '22222222-2222-4222-8222-222222222222', watchedAtUtc: Date.now() - 1000,
-    });
-    expect(r2.ok).toBe(false);
-    const names = readAllEventNames(bundle);
-    expect(names).toContain('ad_watch_blocked');
+  it('a callback with a bad signature fires ad_watch_failed (T-25)', () => {
+    const r = levelPlayCallback(bundle, nak, AD_USER, 'evtan2', 5, 'not-the-key');
+    expect(r.ok).toBe(false);
+    expect(readAllEventNames(bundle)).toContain('ad_watch_failed');
   });
 });

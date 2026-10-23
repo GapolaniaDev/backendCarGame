@@ -460,6 +460,11 @@ class FakeNakamaCore {
     return planned.map((p) => p.result);
   }
 
+  /** 3.27 `md5Hash`: lower-case hex (T-25, LevelPlay signatures). */
+  md5Hash(input: string): string {
+    return cryptoCreateHash('md5').update(input, 'utf8').digest('hex');
+  }
+
   sha256Hash(input: string): string {
     return cryptoCreateHash('sha256').update(input).digest('hex');
   }

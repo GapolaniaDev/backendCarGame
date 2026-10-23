@@ -45,6 +45,7 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   // ads
   userOwned('ad_daily_count', 'ads'),
   userOwned('ad_last_watched', 'ads'),
+  userOwned('ad_s2s_rewards', 'ads'),
   userOwned('ad_watch_log', 'ads'),
   // analytics
   {

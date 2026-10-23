@@ -14,13 +14,14 @@ socket:
 runtime:
   gwp_secret: "${NAKAMA_GWP_SECRET}"
   http_key: "${NAKAMA_RUNTIME_HTTP_KEY}"
-  # Read by the modules as ctx.env (plan T-24). Empty = not configured.
+  # Read by the modules as ctx.env (plan T-24, T-25). Empty = not configured.
   env:
     - "IAP_MOCK=${IAP_MOCK:-false}"                # true only in dev / CI
     - "IAP_APPLE_SHARED_SECRET=${IAP_APPLE_SHARED_SECRET:-}"
     - "IAP_GOOGLE_CLIENT_EMAIL=${IAP_GOOGLE_CLIENT_EMAIL:-}"
     - "IAP_GOOGLE_PRIVATE_KEY=${IAP_GOOGLE_PRIVATE_KEY:-}"
     - "IAP_GOOGLE_PACKAGE_NAME=${IAP_GOOGLE_PACKAGE_NAME:-}"
+    - "LEVELPLAY_S2S_PRIVATE_KEY=${LEVELPLAY_S2S_PRIVATE_KEY:-}"  # T-25; empty = callbacks rejected
 
 # Nakama's native purchase validation, same store credentials (T-24).
 iap:
