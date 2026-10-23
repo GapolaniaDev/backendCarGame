@@ -13,8 +13,8 @@ export type RaceState = 'created' | 'started' | 'closing' | 'closed';
 
 /**
  * How the final results were computed:
- * - `'quorum'`  — all human reports agree on the ordering (no flags)
- * - `'client'`  — humans disagree on ordering, host's order is taken, flagged
+ * - `'quorum'`  — at least ⌈n/2⌉ of the human players reported (plan T-09)
+ * - `'client'`  — fewer humans reported (e.g. grace close); flagged for review
  * - `'server'`  — no humans reported; order is the host's bot roster by totalMs
  */
 export type Confidence = 'quorum' | 'client' | 'server';
@@ -196,10 +196,8 @@ export interface RaceSessionCreateInput {
   size: 2 | 4 | 6 | 1;
   hostLoadout: Loadout;
   /**
-   * userId of the player creating the session. Required when calling
-   * via the HTTP gateway (where `ctx.userId` is null). When calling
-   * via an authenticated socket, `ctx.userId` takes precedence and
-   * this field is ignored.
+   * userId of the player creating the session. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
    */
   hostUserId: string;
 }
@@ -214,16 +212,13 @@ export interface RaceSessionCreateOutput {
 export interface RaceSessionJoinInput {
   sessionId: string;
   /**
-   * userId of the player joining. Same contract as `hostUserId` in
-   * create — required when calling over the HTTP gateway (where
-   * `ctx.userId` is null); ignored when `ctx.userId` is set.
+   * userId of the player joining. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
    */
   userId: string;
   /**
-   * userId of the caller. Required when calling over HTTP gateway to
-   * prevent a malicious client from joining on behalf of another
-   * player. When `ctx.userId` is set, this field must match it or the
-   * RPC returns `FORBIDDEN`.
+   * userId of the caller. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
    */
   callerUserId: string;
   loadout: Loadout;
@@ -238,9 +233,9 @@ export interface RaceSessionJoinOutput {
 export interface RaceSessionStartInput {
   sessionId: string;
   /**
-   * userId of the caller. Required when calling over HTTP gateway.
-   * The RPC verifies that this userId matches `session.host`; on
-   * mismatch it returns `FORBIDDEN`.
+   * userId of the caller. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
+   * The session user must be `session.host`.
    */
   callerUserId: string;
 }
@@ -257,9 +252,9 @@ export interface RaceSessionGetInput {
    */
   sessionId?: string;
   /**
-   * userId of the caller. Required when calling via the HTTP gateway
-   * (where `ctx.userId` is null). The RPC verifies that this userId
-   * is in the session roster.
+   * userId of the caller. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
+   * The session user must be in the roster.
    */
   callerUserId: string;
 }
@@ -274,10 +269,9 @@ export interface RaceSubmitResultInput {
   sessionId: string;
   report: RaceReport;
   /**
-   * userId of the caller. Required when calling over HTTP gateway
-   * (where `ctx.userId` is null). When `ctx.userId` is set, the
-   * RPC verifies it matches `report.userId` (defense against
-   * impersonation); on mismatch it returns `FORBIDDEN`.
+   * userId of the caller. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
+   * A human report's `report.userId` must be the session user.
    */
   callerUserId: string;
   /**
@@ -370,7 +364,8 @@ export interface RaceSessionQuickBotsInput {
    * tracks per player).
    */
   trackId?: string;
-  /** Required for HTTP gateway (where ctx.userId is null). */
+  /** Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`. */
   callerUserId: string;
   /** Caller's current rating — used for D3 bot difficulty. Defaults to 1000. */
   callerRating?: number;
@@ -424,9 +419,10 @@ export interface RaceSessionQuickBotsOutput {
 export interface RaceHostClaimInput {
   sessionId: string;
   /**
-   * userId of the caller. Required when calling over HTTP gateway.
-   * The RPC verifies the caller is in the roster AND is the next
-   * entry in `hostSuccession` after the current (disconnected) host.
+   * userId of the caller. Optional (plan D-03): the caller is the session user (`ctx.userId`);
+   * when present this field must equal it, otherwise `FORBIDDEN`.
+   * The session user must be in the roster AND the first live entry of
+   * `hostSuccession` after a stale host (plan T-07).
    */
   callerUserId: string;
 }

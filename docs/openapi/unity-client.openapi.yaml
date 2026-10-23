@@ -2,7 +2,7 @@ openapi: "3.1.0"
 info:
   title: "CarVideoGameBackend — Unity Client API"
   version: "1.0.0"
-  description: "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (adminKey) y no están en este documento.\n- Eventos en tiempo real (socket): `RaceCompleted` y relay de partida (op codes en `docs/race-protocol-ops.md`); ver `components/schemas/RaceCompletedEvent`.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
+  description: "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (`http_key` + `adminKey`) y no están en este documento: se documentan en `docs/admin.md` (ver «Contract» en el `README.md`). El único RPC de servidor a servidor de este documento es `ads_levelplay_callback` (esquema `RuntimeHttpKey`).\n- No hay eventos de carrera por socket: el resultado llega en la respuesta de `race_submit_result` (el envío que cierra la sesión trae `officialResults` y `rewards`) o con `race_session_get` (`state: closed` y `results`). `RaceCompleted` es un evento interno del servidor (ver `components/schemas/RaceCompletedEvent`). El socket solo lleva el relay de la partida (op codes en `docs/race-protocol-ops.md`) y el matchmaker.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
 servers:
   - url: "https://api.gapolaniadev.com"
     description: "Producción (Cloudflare tunnel)"
@@ -1070,7 +1070,7 @@ paths:
         - "Race"
       summary: "Sesión activa (o por id) + última cerrada"
       operationId: "race_session_get"
-      description: "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionGetData>>(rpc.Payload)`."
+      description: "Sin `sessionId` devuelve la sesión activa del llamador (índice `race_active`) o, si no tiene, la última cerrada (T-08); tras `matchmaker_matched` el cliente obtiene así la sesión creada por el matchmaker (T-09).\n\nErrores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionGetData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -1121,7 +1121,7 @@ paths:
         - "Race"
       summary: "Reporta tiempos del jugador (cierra la sesión por quórum)"
       operationId: "race_submit_result"
-      description: "`laps.length` == vueltas del modo; `sum(laps) == totalMs`.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción), `INVALID_RESULT` (resultado no plausible).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_submit_result\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSubmitResultData>>(rpc.Payload)`."
+      description: "`laps.length` == vueltas del modo; `sum(laps) == totalMs`.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción; también un informe tras el cierre por gracia, T-06), `INVALID_RESULT` (resultado no plausible).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_submit_result\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSubmitResultData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -1223,7 +1223,7 @@ paths:
         - "Race"
       summary: "Sucesión de host tras desconexión"
       operationId: "race_host_claim"
-      description: "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_host_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceHostClaimData>>(rpc.Payload)`."
+      description: "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido; con el host vivo, `details.reason = NOT_HOST`: el host lleva menos de 10 s sin contacto o el llamador no es el primer vivo de la sucesión), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_host_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceHostClaimData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -4387,6 +4387,10 @@ components:
           format: "int64"
         tournamentId:
           type: "string"
+        lastSeenMs:
+          type: "integer"
+          description: "Epoch en milisegundos (UTC). Último contacto del jugador (`race_session_get`, `race_submit_result`, `race_host_claim`); solo en la respuesta de `race_session_get` (T-07)."
+          format: "int64"
       required:
         - "userId"
         - "loadout"
@@ -4451,6 +4455,10 @@ components:
             - "started"
             - "closing"
             - "closed"
+        createdAt:
+          type: "integer"
+          description: "Epoch en milisegundos (UTC). Creación de la sesión (T-08)."
+          format: "int64"
         startedAt:
           oneOf:
             - type: "integer"
@@ -5840,7 +5848,6 @@ components:
         - "trackId"
         - "size"
         - "hostLoadout"
-        - "hostUserId"
     RaceSessionCreateData:
       type: "object"
       properties:
@@ -5854,7 +5861,7 @@ components:
             type: "string"
     RaceSessionJoinRequest:
       type: "object"
-      description: "`userId` debe == `callerUserId`."
+      description: "`userId` y `callerUserId` son opcionales; si vienen, deben ser el usuario de la sesión."
       properties:
         sessionId:
           type: "string"
@@ -5868,8 +5875,6 @@ components:
           "$ref": "#/components/schemas/Loadout"
       required:
         - "sessionId"
-        - "userId"
-        - "callerUserId"
         - "loadout"
     RaceSessionJoinData:
       type: "object"
@@ -5888,7 +5893,6 @@ components:
           format: "uuid"
       required:
         - "sessionId"
-        - "callerUserId"
     RaceSessionStartData:
       type: "object"
       properties:
@@ -5905,8 +5909,6 @@ components:
         callerUserId:
           type: "string"
           format: "uuid"
-      required:
-        - "callerUserId"
     RaceSessionGetData:
       type: "object"
       properties:
@@ -5944,10 +5946,14 @@ components:
         tournamentId:
           type: "string"
           description: "Opcional: cuenta el intento en un torneo"
+        requestId:
+          type: "string"
+          minLength: 1
+          maxLength: 128
+          description: "Opcional (T-09): id de este envío. Un reintento con el mismo id, en cualquier momento, devuelve la respuesta del envío aceptado en lugar de `CONFLICT`."
       required:
         - "sessionId"
         - "report"
-        - "callerUserId"
     RaceSubmitResultData:
       type: "object"
       properties:
@@ -6041,7 +6047,6 @@ components:
           type: "string"
       required:
         - "size"
-        - "callerUserId"
         - "hostLoadout"
     RaceSessionQuickBotsData:
       type: "object"
@@ -6089,7 +6094,6 @@ components:
           format: "uuid"
       required:
         - "sessionId"
-        - "callerUserId"
     RaceHostClaimData:
       type: "object"
       properties:
@@ -7867,7 +7871,7 @@ components:
         - "token"
     RaceCompletedEvent:
       type: "object"
-      description: "Evento de socket emitido una vez por sesión al cerrar. No es un endpoint HTTP."
+      description: "Evento **interno** del bus del servidor, publicado una vez por sesión al cerrar (leaderboards, ranked, misiones, torneos, anti-trampas). **No se envía al cliente** por socket: el cliente lee el resultado de `race_submit_result` o de `race_session_get`. Se documenta solo como referencia."
       properties:
         schemaVersion:
           type: "integer"

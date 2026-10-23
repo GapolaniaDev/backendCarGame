@@ -1,6 +1,6 @@
 # Admin RPCs — CarVideoGameBackend
 
-Five RPCs reserved for ops / support / live tuning. Each requires an
+RPCs reserved for ops / support / live tuning (inventory in §2). Each requires an
 `adminKey` field in the body whose value matches the liveops config
 `adminRpcKey`. The key is also accepted via the `?http_key=$KEY` query
 parameter on the HTTP gateway (server-side defense in depth — see §1).
@@ -39,33 +39,58 @@ window.
 
 ## 2. RPC inventory
 
-| RPC | Purpose | Maintenance bypass |
+These RPCs are **not** in the client OpenAPI
+(`docs/openapi/unity-client.openapi.*`): they are operator-only
+(server-to-server with `http_key`, plus `adminKey`) and a game client
+never calls them. **This table is their contract index**:
+`tests/unit/openapi_contract.test.ts` fails when a registered `admin_*`
+RPC is missing here or a row names an RPC that is not registered
+(plan T-27). Request/response details are in the linked sections.
+
+| RPC | Purpose | Details |
 |---|---|---|
-| `admin_wallet_adjust` | Grant or remove coins/gems for a single user | yes |
-| `admin_send_inbox` | Push a reward inbox message to N user IDs | yes |
-| `admin_sanitize_session` | Force-close a single race session, mark bots DNF | yes |
-| `admin_remove_player` | Remove a player from a single race session | yes |
-| `admin_cleanup_race_sessions` | Delete closed race sessions older than N hours | yes |
-| `admin_migrate_permissions` (T-18) | One-shot: make every existing server object server-only (write 0; analytics read 0), resumable | yes |
-| `admin_pass_season_close` (T-19) | Settle a closed battle pass season for every player, resumable ([`pass.md`](./pass.md) §5) | yes |
-| `admin_tournament_list` (chunk 7) | List ALL tournament instances (any state) | yes |
-| `admin_tournament_get` (chunk 7) | Get full tournament detail + leaderboard + prizes | yes |
-| `admin_tournament_release_prizes` (chunk 7) | Re-distribute prizes (idempotent) | yes |
-| `admin_tournament_void_refund` (chunk 7) | Refund all entry fees (cancel + pay back) | yes |
-| `admin_tournament_cancel` (chunk 7) | Cancel without refund | yes |
-| `admin_tournament_extend` (chunk 7) | Extend the tournament window | yes |
-| `admin_marks_list` (chunk 4) | Filter anti-cheat marks (user/kind/severity/status) | yes |
-| `admin_partials_view` (chunk 4) | Read partials for a user or race | yes |
-| `admin_marks_confirm` (chunk 4) | Flip `confirmed: true` on a mark | yes |
-| `admin_marks_dismiss` (chunk 4) | Flip `dismissed: true` (requires `reason`) | yes |
-| `admin_marks_sanction` (chunk 4) | Apply / clear a temporary sanction | yes |
-| `admin_anti_cheat_stats_get` (chunk 4) | Date-range stats (`startDate`/`endDate`, max 366d) | yes |
-| `admin_overview_get` (chunk 9) | Dashboard overview (totals + uptime) | yes |
-| `admin_tournaments_stats_get` (chunk 9) | Per-day tournament stats (zero-filled) | yes |
-| `admin_events_stats_get` (chunk 9) | Per-day event activations + coinsGranted | yes |
-| `admin_players_search` (chunk 9) | Case-insensitive player search (1..200 results) | yes |
-| `admin_wallet_grant` (chunk 9) | Grant coins/gems with whitelisted reasons | yes |
-| `admin_anti_cheat_dashboard_get` (chunk 9) | Live anti-cheat snapshot (60s cache) | yes |
+| `admin_wallet_adjust` | Grant or remove coins/gems for a single user | §3 |
+| `admin_wallet_grant` | Grant coins/gems with whitelisted reasons | §12 |
+| `admin_send_inbox` | Push a reward inbox message to N user IDs | §4 |
+| `admin_sanitize_session` | Force-close a single race session, mark bots DNF | §5 |
+| `admin_remove_player` | Remove a player from a single race session | §6 |
+| `admin_cleanup_race_sessions` | Delete closed race sessions older than N hours | §7 |
+| `admin_migrate_permissions` | One-shot (T-18): make every existing server object server-only (write 0; analytics read 0), resumable | §7b |
+| `admin_grant_premium` | Grant the premium battle pass to a user | [`pass.md`](./pass.md) |
+| `admin_pass_season_close` | Settle a closed battle pass season for every player, resumable (T-19) | [`pass.md`](./pass.md) §5 |
+| `admin_tournament_list` | List ALL tournament instances (any state) | §10 |
+| `admin_tournament_get` | Full tournament detail + leaderboard + prizes | §10 |
+| `admin_tournament_release_prizes` | Re-distribute prizes (idempotent) | §10 |
+| `admin_tournament_void_refund` | Refund all entry fees (cancel + pay back) | §10 |
+| `admin_tournament_cancel` | Cancel without refund | §10 |
+| `admin_tournament_extend` | Extend the tournament window | §10 |
+| `admin_marks_list` | Filter anti-cheat marks (user/kind/severity/status) | §11 |
+| `admin_marks_partials_view` | Read partials for a user or race | §11, [`anti-cheat.md`](./anti-cheat.md) |
+| `admin_marks_confirm` | Flip `confirmed: true` on a mark | §11 |
+| `admin_marks_dismiss` | Flip `dismissed: true` (requires `reason`) | §11 |
+| `admin_marks_sanction` | Apply / clear a temporary sanction | §11 |
+| `admin_anti_cheat_stats_get` | Date-range stats (`startDate`/`endDate`, max 366d) | §11 |
+| `admin_anti_cheat_dashboard_get` | Live anti-cheat snapshot (60s cache) | §12 |
+| `admin_overview_get` | Dashboard overview (totals + uptime) | §12 |
+| `admin_tournaments_stats_get` | Per-day tournament stats (zero-filled) | §12 |
+| `admin_events_stats_get` | Per-day event activations + coinsGranted | §12 |
+| `admin_players_search` | Case-insensitive player search (1..200 results) | §12 |
+| `admin_iap_purchases_list` | Filter purchases (platform/userId/limit/cursor) | §13 |
+| `admin_iap_purchases_get` | Full purchase + attached fraud flags | §13 |
+| `admin_iap_refund` | Refund a single purchase (90d cap) | §13 |
+| `admin_iap_fraud_flags_list` | Filter fraud flags (status) | §13 |
+| `admin_iap_fraud_flag_action` | Apply `ban` / `dismiss` / `confirm` | §13 |
+| `admin_iap_revenue_stats_get` | Aggregated revenue + refunds by platform | §13 |
+| `admin_iap_analytics_get` | Aggregated IAP/ad counts + netRevenue for a date range | §15 |
+| `admin_iap_ltv_get` | Cohort LTV per window | §15 |
+| `admin_iap_funnel_get` | Purchase funnel by pack/platform | §15 |
+| `admin_iap_top_buyers_get` | Top buyers for a date range | §15 |
+| `admin_view_reports` | Paginated player reports, newest first | [`social.md`](./social.md) |
+| `admin_silence` | Silence a player in chat for an explicit duration | [`social.md`](./social.md) |
+| `admin_unsilence` | Lift a chat silence | [`social.md`](./social.md) |
+
+All of them bypass maintenance. `admin_ad_stats_get` and
+`admin_ad_config_get` (§14) do not exist.
 
 Each call also writes an `admin_action` row to `analytics_events`
 (via `emitAdminAction` in `core/admin/analytics.ts`).

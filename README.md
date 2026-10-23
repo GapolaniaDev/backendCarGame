@@ -1,8 +1,8 @@
 # CarVideoGameBackend
 
-Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/).
+Nakama 3.27 backend for the racing game. Implements the 9-phase plan in [`specs/`](./specs/), plus the server-fixes plan F0–F8 of the racing game (branch `fix/audit-preconditions`: identity from the session only, per-VM runtime state, atomic wallet, server-only storage, verified receipts, S2S-paid ads).
 
-**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ · Phase 6 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**, **LiveOps config (no-cache) + maintenance gate + min client version + per-user inbox + account linking + account delete cascade + admin RPCs (shared-secret auth) + analytics events + region relay (nodeRole + HMAC relay_token)**, **missions (daily + weekly) + achievements + battle pass + XP economy (race XP via multiplier + mission/achievement XP via catalog) + lazy season close + per-grant XP ledger dedupe**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4, [`docs/liveops.md`](./docs/liveops.md) / [`docs/account-linking.md`](./docs/account-linking.md) / [`docs/admin.md`](./docs/admin.md) for Phase 5, [`docs/missions.md`](./docs/missions.md) / [`docs/pass.md`](./docs/pass.md) for Phase 6.
+**Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ · Phase 6 ✅**: race session lifecycle, leaderboard catalog + writer + read RPCs, profile module with after-auth auto-create, **economy + wallet + ledger, garage + cars + cosmetics + loadout, progression + XP, store with daily rotation + packs**, **matchmaking ticket params + matchmakerMatched hook + bot fill + host recovery + ranked seasons + rating math + abandon policy + lazy close + stats equalization**, **LiveOps config (no-cache) + maintenance gate + min client version + per-user inbox + account linking + account delete cascade + admin RPCs (shared-secret auth) + analytics events** (the region relay was removed on 2026-10-22, plan D-01), **missions (daily + weekly) + achievements + battle pass + XP economy (race XP via multiplier + mission/achievement XP via catalog) + lazy season close + per-grant XP ledger dedupe**. See [`docs/leaderboards.md`](./docs/leaderboards.md) for Phase 2, [`docs/economy.md`](./docs/economy.md) / [`docs/garage.md`](./docs/garage.md) / [`docs/store.md`](./docs/store.md) for Phase 3, [`docs/matchmaking.md`](./docs/matchmaking.md) / [`docs/ranked.md`](./docs/ranked.md) for Phase 4, [`docs/liveops.md`](./docs/liveops.md) / [`docs/account-linking.md`](./docs/account-linking.md) / [`docs/admin.md`](./docs/admin.md) for Phase 5, [`docs/missions.md`](./docs/missions.md) / [`docs/pass.md`](./docs/pass.md) for Phase 6.
 
 ## Quick start (Docker)
 
@@ -10,10 +10,11 @@ Toda la stack corre en Docker — Postgres, Nakama, Prometheus y Grafana. El bui
 
 | Servicio | Puerto host | URL local | Notas |
 |---|---|---|---|
-| **Nakama API** (HTTP/gRPC) | `8081` | `http://localhost:8081` | gRPC + REST API gateway |
-| **Nakama console** (admin) | `8090` | `http://localhost:8090` | UI de administración |
-| **Prometheus** (métricas) | `9090` | `http://localhost:9090` | Scrape cada 15s; retención 30d |
-| **Grafana** (dashboards) | `3000` | `http://localhost:3000` | Datasources auto-provisioned (Viewer anónimo) |
+| **Nakama API** (HTTP/gRPC) | `8081` | `http://127.0.0.1:8081` | gRPC + REST API gateway (entorno `local` de Unity) |
+| **Nakama console** (admin) | `8090` | `http://127.0.0.1:8090` | UI de administración |
+| **Nakama métricas** | `9100` | `http://127.0.0.1:9100` | Endpoint de Prometheus |
+| **Prometheus** (métricas) | `9090` | `http://127.0.0.1:9090` | Scrape cada 15s; retención 30d |
+| **Grafana** (dashboards) | `3000` | `http://127.0.0.1:3000` | Datasources auto-provisioned |
 | **Postgres** (DB) | — | `172.28.0.2:5432` interno | Red `172.28.0.0/16` fija para IP routing del tunnel |
 
 #### Prereqs en tu máquina:
@@ -41,46 +42,112 @@ npm install
 npm run build
 #   Esto produce modules/index.js (gitignored) que se monta en el container
 
-# 5. Levantar la stack completa
-docker compose up -d
+# 4. Crear el override local (ver «Stack local» abajo; no está en git)
+
+# 5. Levantar la stack completa, SIEMPRE con el override local
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 #   Primera vez: tarda ~30s mientras Postgres inicializa + Nakama corre migrate up
 
 # 6. Verificar
-curl -sf http://localhost:8081/v2/console/account | jq . || echo "Nakama not ready yet, retry"
-docker compose logs nakama | tail -20
+docker compose -f docker-compose.yml -f docker-compose.local.yml logs nakama | tail -20
 
-# 7. Smoke test RPC
-HTTP_KEY=$(grep ^NAKAMA_RUNTIME_HTTP_KEY .env | cut -d= -f2)
-SERVER_KEY=$(grep ^NAKAMA_SERVER_KEY .env | cut -d= -f2)
-B64=$(printf "%s:" "$SERVER_KEY" | base64)
-curl -s -X POST "http://localhost:8081/v2/account/authenticate/device?http_key=$HTTP_KEY" \
-  -H "Authorization: Basic $B64" -H 'Content-Type: application/json' \
-  -d '{"id":"smoke-test"}' | jq .
+# 7. Humo en vivo (ver «Humo en vivo» abajo)
+npm run smoke:live
 ```
+
+#### Stack local (puertos solo en 127.0.0.1)
+
+`docker-compose.yml` publica los puertos en todas las interfaces (lo necesita
+el servidor que sale por el túnel). En una máquina de desarrollo se arranca
+**siempre** con un override que los publica solo en `127.0.0.1`, para que
+nada quede expuesto a la LAN ni a internet. El archivo es local a cada
+máquina: créalo en la raíz como `docker-compose.local.yml` y exclúyelo de git
+(`echo docker-compose.local.yml >> .git/info/exclude`):
+
+```yaml
+# Local-only override: every published port binds to 127.0.0.1.
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+# Never start the tunnel-quick / tunnel-named profiles with this setup.
+services:
+  nakama:
+    ports: !override
+      - "127.0.0.1:8081:8081"   # API HTTP/gRPC (Unity "local" environment)
+      - "127.0.0.1:8090:8090"   # admin console
+      - "127.0.0.1:9100:9100"   # Prometheus metrics endpoint
+  prometheus:
+    ports: !override
+      - "127.0.0.1:9090:9090"
+  grafana:
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports: !override
+      - "127.0.0.1:3000:3000"
+```
+
+Todos los comandos de `docker compose` de esta máquina llevan los dos `-f`
+(también `logs`, `down` y `--force-recreate`). No combines el override con
+los perfiles `tunnel-*`.
+
+Variables de `.env` que el runtime lee por `runtime.env` (todas en
+`.env.example`, vacías o en su valor seguro por defecto):
+
+| Variable | Uso | Por defecto |
+|---|---|---|
+| `IAP_MOCK` | `true` acepta los recibos mock de los tests (solo dev/CI) | `false` |
+| `IAP_APPLE_SHARED_SECRET` | verificación de recibos de Apple ([`docs/iap.md`](./docs/iap.md)) | vacía → compras de Apple rechazadas con `SERVICE_UNAVAILABLE` |
+| `IAP_GOOGLE_CLIENT_EMAIL`, `IAP_GOOGLE_PRIVATE_KEY`, `IAP_GOOGLE_PACKAGE_NAME` | cuenta de servicio de Google Play | vacías → compras de Google rechazadas |
+| `LEVELPLAY_S2S_PRIVATE_KEY` | firma del callback S2S de anuncios ([`docs/ads.md`](./docs/ads.md)) | vacía → todo callback rechazado |
+
+#### Humo en vivo (`npm run smoke:live`)
+
+`scripts/smoke-live.mjs` prueba el servidor real (runtime goja de Nakama)
+contra la stack local, con cuentas nuevas en cada ejecución. Lee las claves
+del `.env` sin imprimirlas y solo apunta a `127.0.0.1` salvo con `--host`
+explícito. Comprueba, entre otras cosas, que los puertos solo escuchan en
+`127.0.0.1`, que las RPC registradas responden con el envelope, la identidad
+por sesión y un flujo mínimo de cada fase del plan de arreglos (carreras,
+economía, leaderboards, cuentas, permisos de storage, social, IAP y
+anuncios). Imprime una tabla OK/FAIL/KNOWN y sale con código 1 si hay algún
+FAIL. Tarda varios minutos (espera relojes de carrera reales y recrea Nakama
+para probar los reinicios).
+
+```bash
+npm run build                                        # el humo usa modules/index.js
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --force-recreate nakama
+npm run smoke:live                                   # todo
+npm run smoke:live -- --skip-race                    # sin las carreras (más rápido)
+npm run smoke:live -- --skip-restart                 # sin recrear Nakama
+npm run smoke:live -- --skip-docker                  # solo comprobaciones HTTP
+```
+
+Tras desplegar en otro servidor hay que ejecutar una vez
+`admin_migrate_permissions` ([`docs/admin.md`](./docs/admin.md) §7b).
 
 #### Comandos comunes:
 
 ```bash
+# En una máquina de desarrollo: DC="docker compose -f docker-compose.yml -f docker-compose.local.yml"
+
 # Rebuild + restart Nakama tras editar modules/src/**
-npm run build && docker compose up -d --force-recreate nakama
+npm run build && $DC up -d --force-recreate nakama
 
 # Logs en vivo de un servicio
-docker compose logs -f nakama
-docker compose logs -f postgres
+$DC logs -f nakama
+$DC logs -f postgres
 
 # Parar todo (mantiene volúmenes)
-docker compose down
+$DC down
 
 # Parar + borrar volúmenes (BORRAR DB — todo el progreso se pierde)
-docker compose down -v
+$DC down -v
 
 # Conectar a Postgres directamente
-docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+$DC exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
 ```
 
 #### Túnel a internet (opcional)
 
-Si querés exponer la API fuera de tu red local para que un cliente externo (Unity build, otro dev) se conecte:
+Solo en el servidor, nunca con el override local. Si querés exponer la API fuera de tu red local para que un cliente externo (Unity build, otro dev) se conecte:
 
 ```bash
 # Quick tunnel — URL random *.trycloudflare.com
@@ -149,17 +216,38 @@ npm test
 # Lint
 npm run lint
 
-# Lint + typecheck + test + build
+# Lint, build, typecheck (sources and tests), then every test
 npm run verify
 ```
+
+`verify` builds before the tests because the static registration test and
+several e2e tests load the generated `modules/index.js` (git-ignored); it
+passes from a clean clone without a `.env`. The live checks against the real
+runtime are `npm run smoke:live` (Quick start, "Humo en vivo").
+
+### Contract
+
+- **Client RPCs:** `docs/openapi/unity-client.openapi.json` (and the `.yaml`
+  mirror, same content) documents every RPC a game client may call, plus the
+  server-to-server `ads_levelplay_callback`. Prose reference:
+  [`docs/unity-api.md`](./docs/unity-api.md) (auth, the 14 error codes, race
+  results without socket events).
+- **Operator RPCs:** the `admin_*` RPCs are **not** in an OpenAPI. They are
+  server-to-server (`http_key` + `adminKey`), no game client calls them, and
+  generating client DTOs for them would only widen what a client build knows.
+  Their contract index is the inventory of [`docs/admin.md`](./docs/admin.md) §2.
+- `tests/unit/openapi_contract.test.ts` fails when a registered RPC is
+  missing from the client OpenAPI (or the admin inventory), when either
+  documents an RPC that is not registered, or when the error codes drift.
 
 ## Running Nakama
 
 ```bash
-docker compose up -d
+# Development machine: always with the local override (ports on 127.0.0.1 only)
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 ```
 
-The compose entrypoint runs `nakama migrate up` and starts Nakama with `--runtime.js_entrypoint=index.js`. **Do not change the entrypoint** — the YAML key `runtime.javascript.entrypoint` is ignored in 3.27; only the CLI flag works. After any change to `modules/src/**/*` run `npm run build` then `docker compose up -d --force-recreate nakama` so the runtime re-reads the entrypoint.
+The compose entrypoint runs `nakama migrate up` and starts Nakama with `--runtime.js_entrypoint=index.js`. **Do not change the entrypoint** — the YAML key `runtime.javascript.entrypoint` is ignored in 3.27; only the CLI flag works. After any change to `modules/src/**/*` run `npm run build` then recreate Nakama (`... up -d --force-recreate nakama`, same `-f` files) so the runtime re-reads the entrypoint.
 
 ## RPC envelope
 
@@ -174,6 +262,8 @@ type Resp<T>= Ok<T> | Err;
 Clients branch on `ok`. Nakama's gRPC status stays `OK`; domain error codes ride inside the envelope.
 
 ### Phase 1 error codes
+
+The full, current list (14 codes) is in [`docs/unity-api.md`](./docs/unity-api.md) §4.
 
 | Code | When |
 |---|---|
@@ -192,11 +282,11 @@ Clients branch on `ok`. Nakama's gRPC status stays `OK`; domain error codes ride
 | RPC | Inputs | Errors | Notes |
 |---|---|---|---|
 | `config_get` | `{}` | `INTERNAL` | returns serverTimeMs, catalogsHash, tracks, modes, minClientVersion |
-| `race_session_create` | `{ matchId, mode, trackId, size, hostLoadout, hostUserId? }` | `BAD_REQUEST`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | hostUserId required only on HTTP (when ctx.userId is null) |
-| `race_session_join` | `{ sessionId, userId, callerUserId, loadout }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED` | callerUserId must equal ctx.userId or the joiner; rejects double-join and started-state |
+| `race_session_create` | `{ matchId, mode, trackId, size, hostLoadout, hostUserId? }` | `BAD_REQUEST`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | the host is the session user; `hostUserId` optional and must match it (D-03); the car class comes from the garage (T-10) |
+| `race_session_join` | `{ sessionId, userId, callerUserId, loadout }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED` | identity fields optional and must equal the session user (D-03); rejects double-join and started-state |
 | `race_session_start` | `{ sessionId, callerUserId? }` | `FORBIDDEN`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | only host can start; only valid from `created` |
-| `race_session_get` | `{ sessionId?, callerUserId? }` | `BAD_REQUEST`, `NOT_FOUND` | without sessionId returns the caller's last closed session (via `last_closed/{userId}` index); caller must be in the roster |
-| `race_submit_result` | `{ sessionId, report, callerUserId }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `INVALID_RESULT`, `RATE_LIMITED` | `report.userId` must match caller for human reports; `report.isBotReport=true` requires caller === session.host. Last submitted report closes the session and the response carries `officialResults` + final `confidence` |
+| `race_session_get` | `{ sessionId?, callerUserId? }` | `BAD_REQUEST`, `NOT_FOUND` | without sessionId returns the caller's active session (`race_active` index, T-08) or else the last closed one; caller must be in the roster |
+| `race_submit_result` | `{ sessionId, report, callerUserId?, requestId? }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `INVALID_RESULT`, `RATE_LIMITED` | `report.userId` must match caller for human reports; `report.isBotReport=true` requires caller === session.host. Last submitted report closes the session and the response carries `officialResults` + final `confidence` |
 
 ### `race_submit_result` report payload
 
@@ -227,13 +317,13 @@ Clients branch on `ok`. Nakama's gRPC status stays `OK`; domain error codes ride
 ```
 
 Confidence semantics:
-- `'quorum'` — every roster human reported; no review needed
+- `'quorum'` — at least ⌈n/2⌉ roster humans reported (plan T-09); no review needed
 - `'server'` — zero humans reported (all-bot race); host's order is final
 - `'client'` — incomplete reports; humans must resolve. `reviewReason='incomplete_reports'`
 
 ### Idempotency
 
-`race_submit_result` caches its response in `nk.localcache` for 60 s keyed by `${sessionId}:${report.userId}`. Retries within the window return the cached envelope verbatim (including `officialResults` if the first call closed the session). After 60 s the cache expires and a retry is treated as a fresh call.
+`race_submit_result` accepts an optional `requestId` (1–128 chars, plan T-09) stored with the report: a retry with the same id, at any later time (also after a restart), returns the response of the accepted submission instead of `CONFLICT`.
 
 ## In-process events
 

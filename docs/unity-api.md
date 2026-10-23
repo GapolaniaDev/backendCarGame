@@ -1,13 +1,15 @@
 # Unity Integration API — CarVideoGameBackend (Phase 1 + Phase 2)
 
-API reference for the Unity racing-game client. Covers auth, RPC contracts, the
-`RaceCompleted` event payload (now also drives leaderboard writes), storage
-collections, and catalog shapes.
+API reference for the Unity racing-game client. Covers auth, RPC contracts,
+error codes, storage collections, and catalog shapes. Race results come back in
+RPC responses; the server sends no race event over the socket (§7).
 
-**Status:** Phase 1 (race session + results), Phase 2 (leaderboards +
-profile), Phase 3 (economy + garage + store), and Phase 4 (matchmaking
-+ ranked) are all shipped. Phase 5 (LiveOps + account delete +
-admin RPCs) is next.
+**Status:** every phase through Phase 9 is shipped, plus the server-fixes plan
+(F0–F8, branch `fix/audit-preconditions`). The machine-readable contract is
+`docs/openapi/unity-client.openapi.json` (and its `.yaml` mirror): every
+player-facing RPC the server registers is there, and
+`tests/unit/openapi_contract.test.ts` fails when the two drift. The operator
+`admin_*` RPCs are indexed in `docs/admin.md` §2.
 
 ---
 
@@ -16,14 +18,17 @@ admin RPCs) is next.
 | Channel | URL / transport | Notes |
 |---|---|---|
 | Production (Cloudflare tunnel) | `https://api.gapolaniadev.com` | Public-facing |
-| | Standalone (dev) | `http://localhost:8081` | Direct to Nakama HTTP gateway |
-| Socket (relay match) | `wss://api.gapolaniadev.com` | Relay-pure match; Phase 1 doesn't inspect match frames |
+| Local (Docker + `docker-compose.local.yml`) | `http://127.0.0.1:8081` | Direct to the Nakama HTTP gateway; ports bound to 127.0.0.1 only (README, "Local stack") |
+| Socket (relay match + matchmaker) | `wss://api.gapolaniadev.com` | Relay-pure match; the server does not inspect match frames |
 
-**Server key** (HTTP Basic auth, see §3): `NAKAMA_SERVER_KEY` from `.env`.
-**HTTP key** (query string on every RPC, server-side admin gate): `NAKAMA_RUNTIME_HTTP_KEY` from `.env`.
+**Server key** (HTTP Basic auth on the authenticate calls only, see §2): `NAKAMA_SERVER_KEY` from `.env`.
+**HTTP key** (`?http_key=` query): `NAKAMA_RUNTIME_HTTP_KEY` from `.env`. Only for
+server-to-server RPCs (`admin_*`, `ads_levelplay_callback`); a player RPC never
+needs it.
 
-Both are server-side only. The client gets a **session token** after authentication
-(`POST /v2/account/authenticate/device`) and passes it as `Authorization: Bearer <token>`.
+The client gets a **session token** after authentication
+(`POST /v2/account/authenticate/device`) and passes it as `Authorization: Bearer <token>`
+on every RPC.
 
 ---
 
@@ -49,8 +54,15 @@ Content-Type: application/json
 
 - Use the JWT as `Authorization: Bearer <token>` on every subsequent HTTP call.
 - The same JWT works for sockets; pass it in the WebSocket connect frame.
-- **The server does NOT inject `ctx.userId` over HTTP.** Every RPC that needs the
-  caller's userId takes it in the body) — see §6.
+- Session token: **2 h**; refresh token: **7 days** (`session.token_expiry_sec`
+  7200, `session.refresh_token_expiry_sec` 604800; plan T-02). Refresh with
+  `POST /v2/account/session/refresh`.
+- **Identity comes only from the session** (plan D-03, T-04). Nakama fills
+  `ctx.userId` from the Bearer token on every RPC, HTTP or socket. The body
+  fields `callerUserId`, `hostUserId` and `userId` (race create/join/submit)
+  are optional and kept for compatibility: when present they must equal the
+  session user, otherwise `FORBIDDEN`; when absent the session user is used.
+  No session → `UNAUTHENTICATED`.
 
 ---
 
@@ -82,20 +94,32 @@ JSON object. Send `""` (empty) for no payload, or `"<json-stringified-input>"` f
 
 ## 4. Error codes
 
+`error.code` is one of the 14 codes of `modules/src/core/errors.ts`
+(`ERROR_CODES`): the original 13 plus `CONTENT_REJECTED` (plan T-22). The
+OpenAPI `ErrorCode` enum and this table list exactly those codes
+(`tests/unit/openapi_contract.test.ts`). Many errors also carry
+`error.details.reason` with a finer reason (e.g. `NOT_HOST`, `BLOCKED`,
+`MIN_LEVEL`, `NATIVE_LINK_REQUIRED`, `RECEIPT_USED`, `REFUNDED`,
+`NOT_CONFIGURED`); branch on `code` first.
+
 | Code | When |
 |---|---|
 | `BAD_REQUEST` | Malformed payload, missing field, wrong type, business-rule violation in input (e.g. size not allowed) |
-| `UNAUTHENTICATED` | No/invalid session token |
-| `FORBIDDEN` | Authz violation: caller is not host, not on roster, or impersonation attempt |
-| `NOT_FOUND` | `sessionId` not in storage, or `lastClosed` index has no entry |
-| `CONFLICT` | State transition not allowed (`start` when not `created`, `join` when full, second `start`, etc.) |
+| `UNAUTHENTICATED` | No session (`ctx.userId` empty) |
+| `FORBIDDEN` | Authz violation: not host, not on roster, identity field ≠ session user, blocked, native call refused by a hook |
+| `NOT_FOUND` | Unknown id (session, profile, club, offer, …) |
+| `CONFLICT` | State transition not allowed, lost CAS race after retries, already claimed or used |
 | `RATE_LIMITED` | Per-userId/per-RPC window exceeded |
-| `INVALID_RESULT` | `race_submit_result` failed step-2 plausibility (clock, min time, lap sum) |
-| `INTERNAL` | Uncaught server error — message is safe to surface; details may have stack |
-| `CATALOG_INVALID` | **Fatal at boot** — Nakama exits non-zero; the server is unreachable |
+| `INVALID_RESULT` | `race_submit_result` failed plausibility (clock, min time, lap sum) |
+| `INTERNAL` | Uncaught server error — message is safe to surface |
+| `CATALOG_INVALID` | A catalog failed validation at boot (the server does not start) |
+| `INSUFFICIENT_FUNDS` | Wallet balance too low (store, upgrades, pass, tournaments, clubs, rerolls) |
+| `SERVICE_UNAVAILABLE` | Maintenance window, or a dependency not configured or unreachable (e.g. IAP verification) |
+| `UPGRADE_REQUIRED` | The body declares a `clientVersion` below the LiveOps minimum for its `platform` |
+| `NOT_IMPLEMENTED` | An action the schema names but the server does not implement (admin only) |
 | `CONTENT_REJECTED` | `chat_send`: the message contains a blocked word (plan T-22) |
 
-Nakama's gRPC status stays `OK` on `Err` envelopes — branch on `ok`, not on status code.
+Nakama answers HTTP 200 on `Err` envelopes — branch on `ok`, not on the status code.
 
 ---
 
@@ -133,8 +157,9 @@ interface RaceSession {
 
 ## 6. RPCs
 
-All RPCs are `POST /v2/rpc/<name>?http_key=<HTTP_KEY>` with
-`Authorization: Basic base64(SERVER_KEY:)` and JSON-string body.
+Player RPCs are `POST /v2/rpc/<name>` with `Authorization: Bearer <session token>`
+and a JSON-string body (§3). No `http_key`. The caller is always the session
+user (§2); the identity fields shown in the bodies below are optional.
 
 ### 6.1 `config_get`
 
@@ -179,10 +204,9 @@ Host creates the session and locks in roster size + loadout.
 }
 ```
 
-**Authz**: `hostUserId` MUST match `ctx.userId` when the request comes via an
-authenticated socket; on mismatch → `FORBIDDEN`. Over HTTP gateway, `ctx.userId`
-is null so the server trusts your declared `hostUserId` (the gateway already
-authenticated the caller via Bearer token).
+**Authz**: the host is the session user. `hostUserId` is optional; when present
+it must equal the session user, otherwise `FORBIDDEN` (§2). The car class comes
+from the player's garage, not from `hostLoadout` (plan T-10).
 
 Errors: `BAD_REQUEST` (size not in `mode.allowedSizes`, trackId not in catalog),
 `CONFLICT` (a live session with the same `matchId` exists).
@@ -245,9 +269,11 @@ the caller participated in.
 }
 ```
 
-**Authz**: caller must be in `session.roster` (over socket `ctx.userId` is used;
-over HTTP, `callerUserId` is required). Omitting `sessionId` returns the caller's
-**active** session via an index; if they don't have one → `NOT_FOUND`.
+**Authz**: the session user must be in `session.roster`. Omitting `sessionId`
+returns the caller's **active** session via the `race_active` index (plan T-08)
+or, when there is none, the last closed one; with neither → `NOT_FOUND`. After
+`matchmaker_matched` the client gets the session the matchmaker created this
+way (plan T-09). Each roster entry carries `lastSeenMs` (plan T-07).
 
 The `lastClosed` lookup is wired but returns `NOT_FOUND` until Chunk 9 (close +
 quorum + RaceCompleted emission) finishes — currently active sessions are returned
@@ -273,9 +299,10 @@ landed, the contract is:
 }
 ```
 
-**Authz**: when `ctx.userId` is set (socket), it must match `report.userId`; over
-HTTP, `callerUserId` must match `report.userId`. `isBotReport=true` only
-accepted from host (`session.host` === `report.userId`).
+**Authz**: `report.userId` must be the session user (or a bot of the session
+when `isBotReport=true`, accepted only from the host). Optional `requestId`
+(1–128 chars, plan T-09): a retry with the same id returns the response of the
+accepted submission instead of `CONFLICT`.
 
 **Validations (step-2, Chunk 8)**:
 - `report.userId` in `session.roster`
@@ -349,8 +376,8 @@ season's ranked table that does not exist yet → an empty board.
 
 **`limit`**: clamped to `[1, 100]`, default 20.
 
-**Authz**: `callerUserId` MUST match `ctx.userId` when present (over socket);
-over HTTP gateway it's authoritative. Mismatch → `FORBIDDEN`.
+**Authz**: session user (§2); an optional `callerUserId` must match it, otherwise
+`FORBIDDEN`.
 
 Errors: `BAD_REQUEST` (missing leaderboardId / unknown view), `UNAUTHENTICATED`
 (no caller), `FORBIDDEN` (caller mismatch), `NOT_FOUND` (unknown leaderboardId).
@@ -380,7 +407,7 @@ creates anything: `NOT_FOUND` when that player has no profile.
 }
 ```
 
-**Authz**: `callerUserId` MUST match `ctx.userId` on socket; mismatch →
+**Authz**: session user (§2); an optional `callerUserId` must match it, otherwise
 `FORBIDDEN`.
 
 Errors: `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` (another player without a
@@ -405,7 +432,7 @@ Update the caller's profile. CAS via storage `version`. Validation rules from
 }
 ```
 
-**Authz**: `callerUserId` MUST match `ctx.userId` on socket. **Spoof defense**:
+**Authz**: session user (§2). **Spoof defense**:
 the payload MUST NOT carry a `userId` field that differs from the caller (any
 mismatch → `FORBIDDEN`).
 
@@ -414,10 +441,22 @@ Errors: `BAD_REQUEST` (length, pattern, avatarUrl too long), `FORBIDDEN`
 
 ---
 
-## 7. RaceCompleted event (socket-only)
+## 7. Race results (no socket event)
 
-Subscribed automatically when the player joins a match; emitted by the server
-**exactly once per session**, at close. Shape:
+The server does **not** push a `RaceCompleted` message to the client: nothing
+in the runtime sends it over the socket. The client reads the result from:
+
+- the `race_submit_result` response that closes the session
+  (`officialResults`, `confidence`, `flags`, and `rewards` per player); or
+- `race_session_get` (with or without `sessionId`): once the session is
+  `closed` it carries `results`. A session also closes lazily after the grace
+  period with absent players `DNF` (plan T-06), so a client that did not
+  send the closing report polls `race_session_get`.
+
+`RaceCompleted` is an **internal** server event on the runtime's event bus,
+published exactly once per session at close. Its subscribers write the
+leaderboards (`docs/leaderboards.md`), ranked ratings, missions, achievements,
+tournaments and anti-cheat partials. Shape, for reference only:
 
 ```ts
 interface RaceCompletedEvent {
@@ -433,25 +472,16 @@ interface RaceCompletedEvent {
     totalMs: number;
     abandoned: boolean;
     lapSumInvalid?: boolean;
+    laps?: number[];     // plan T-23 (anti-cheat partials)
   }>;
-  flags: { needsReview: boolean; reviewReason?: string };
+  flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
+  confidence?: 'quorum' | 'client' | 'server';   // plan T-09
   closedAt: number;      // server epoch-ms when close fired
 }
 ```
 
-The Unity client uses this to drive the result screen, personal-best pop-up, and
-the per-player XP / wallet delta (Phase 3).
-
-**Phase 2 note**: the server also subscribes the leaderboard writer to this
-event — every human finisher is written to the appropriate `tt_*` / `lap_*` /
-`wins_week` table (see `docs/leaderboards.md` for the confidence → write
-matrix). The event payload itself is unchanged; the Unity client does not need
-to react to leaderboard writes — it reads through `lb_get` instead.
-
-**Confidence** — still not in the event payload. Clients compute it implicitly
-from `flags.needsReview`: `false` → `quorum` or `server`; `true` → `client`.
-Per-record confidence is now stamped on each leaderboard record's metadata
-(see §6.7 `lb_get`).
+**Confidence** is returned by `race_submit_result` (`confidence`) and stamped
+on each leaderboard record's metadata (see §6.7 `lb_get`).
 
 ---
 
@@ -515,13 +545,12 @@ type Confidence = 'quorum' | 'client' | 'server';
 
 | Value | When | Leaderboard writes (Phase 2) |
 |---|---|---|
-| `quorum` | All human reports agree on order | All tables (`tt_*`, `lap_*`, `wins_week` +1 for rank-1 in `quick`/`ranked`) |
-| `client` | Humans disagree; order is host's; `needsReview: true` | `tt_*` / `lap_*` only when `mode === 'time_trial'`. `wins_week` suppressed. |
-| `server` | No humans reported; order is host's bot roster | All tables but `wins_week` (bots never win) |
+| `quorum` | At least ⌈n/2⌉ of the human players reported (plan T-09) | All tables (`tt_*`, `lap_*`, `wins_week` +1 for rank-1 in `quick`/`ranked`) |
+| `client` | Fewer than ⌈n/2⌉ humans reported (e.g. closed by the grace period); `needsReview: true` (`incomplete_reports`) | `tt_*` / `lap_*` only when `mode === 'time_trial'`. `wins_week` suppressed. |
+| `server` | No humans reported; order is the bot roster by `totalMs` | All tables but `wins_week` (bots never win) |
 
-The Confidence is **not in the `RaceCompletedEvent` payload** — clients infer it
-from `flags.needsReview`: `false` → `quorum` or `server`; `true` → `client`.
-Per-record confidence IS stamped on each leaderboard record's metadata
+`race_submit_result` returns the confidence (`confidence`), and the internal
+`RaceCompleted` event carries it (plan T-09). Per-record confidence is also stamped on each leaderboard record's metadata
 (`metadata.confidence`), so `lb_get` consumers see it directly.
 
 ---
@@ -551,7 +580,6 @@ with the relay frame contract once Phase 1 closes.
 
 ```bash
 SERVER_KEY=$(grep ^NAKAMA_SERVER_KEY .env | cut -d= -f2)
-HTTP_KEY=$(grep ^NAKAMA_RUNTIME_HTTP_KEY .env | cut -d= -f2)
 B64=$(printf "%s:" "$SERVER_KEY" | base64)
 
 # 1) auth as device
@@ -559,20 +587,20 @@ TOKEN=$(curl -s -X POST https://api.gapolaniadev.com/v2/account/authenticate/dev
   -H "Authorization: Basic $B64" -H 'Content-Type: application/json' \
   -d '{"id":"unity-smoke"}' | jq -r .token)
 
-# 2) config_get
-curl -s -X POST "https://api.gapolaniadev.com/v2/rpc/config_get?http_key=$HTTP_KEY" \
+# 2) config_get (player RPCs: Bearer only, no http_key)
+curl -s -X POST "https://api.gapolaniadev.com/v2/rpc/config_get" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '""' | jq
 
 # 3) race_session_create
-curl -s -X POST "https://api.gapolaniadev.com/v2/rpc/race_session_create?http_key=$HTTP_KEY" \
+curl -s -X POST "https://api.gapolaniadev.com/v2/rpc/race_session_create" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"matchId":"<match-id-from-socket>","mode":"quick","trackId":"neon_blvd","size":4,"hostLoadout":{"classId":"C","bodyId":"starter_viper"},"hostUserId":"<uuid-from-token>"}' | jq
+  -d '"{\"matchId\":\"<match-id-from-socket>\",\"mode\":\"quick\",\"trackId\":\"neon_blvd\",\"size\":4,\"hostLoadout\":{\"classId\":\"C\",\"bodyId\":\"starter_viper\"}}"' | jq
 ```
 
-The `hostUserId` and `matchId` come from the auth response and the socket match
-allocation respectively; in the Unity client, wire them from the
-`IAccountService.CurrentUserId` and the `ISession.MatchId` properties.
+The `matchId` comes from the socket match allocation (`ISession.MatchId` in
+the Unity client). Against the local Docker stack, `npm run smoke:live`
+exercises every RPC end to end (README).
 
 ---
 
@@ -582,8 +610,8 @@ allocation respectively; in the Unity client, wire them from the
 - **Never write to leaderboards.** There is no client RPC to write a record. The
   `beforeLeaderboardRecordWrite` hook rejects any record that lacks the
   `__server_token__` server stamp; clients cannot forge it.
-- **Never trust `ctx.userId` over HTTP.** It's always null — pass `hostUserId`/`callerUserId`
-  in the payload.
+- **Never act for another player.** The server takes the caller from the session
+  only; an identity field in the body that names someone else is `FORBIDDEN`.
 - **Never trust `DateTime.UtcNow` for race timing.** Use the offset from
   `config_get.serverTimeMs` and the `race_session_start.startedAt` value.
 - **Never put a `userId` field in `profile_update` payloads.** The server
@@ -609,10 +637,9 @@ exists.
 
 ## 16. Phase 3 RPCs — economy, garage, store
 
-Eight new RPCs landed in Phase 3. All are owner-only (the socket
-`ctx.userId` must equal the payload `callerUserId`; HTTP gateways send
-`callerUserId` explicitly). Cross-user reads/writes return
-`FORBIDDEN`. Missing identity returns `UNAUTHENTICATED`.
+Eight new RPCs landed in Phase 3. All are owner-only: the caller is the
+session user (§2); an optional `callerUserId` must match it. Cross-user
+reads/writes return `FORBIDDEN`. No session returns `UNAUTHENTICATED`.
 
 ### 16.1 `wallet_get`
 
@@ -859,8 +886,7 @@ derived from the player's `lastRatedAt` per `ranked_config.json`.
 For other modes the band is the literal `unrated` so quick and
 ranked pools never accidentally intersect.
 
-**Authz**: same as §16 — `callerUserId` must match `ctx.userId` on
-socket; HTTP gateway uses payload as authoritative.
+**Authz**: same as §16 — session user; an optional `callerUserId` must match it.
 
 Errors: `BAD_REQUEST` (unknown mode / size / platform; malformed
 JSON). Rate limit: 30/60s.
@@ -969,13 +995,13 @@ and spins up the next season.
 }
 ```
 
-**Authz**: `callerUserId` must match `ctx.userId` on socket. NO
-`FORBIDDEN` for cross-user reads — D11 marks ranked as public.
+**Authz**: session user (§2). NO `FORBIDDEN` for cross-user reads — D11
+marks ranked as public.
 
 | Error | When |
 |---|---|
 | `UNAUTHENTICATED` | no caller identity |
-| `FORBIDDEN` | `callerUserId` mismatch on socket |
+| `FORBIDDEN` | `callerUserId` present and ≠ session user |
 | `NOT_FOUND` | no active season in the catalog |
 | `RATE_LIMITED` | 30 calls / 60s per caller |
 | `BAD_REQUEST` | malformed JSON |
