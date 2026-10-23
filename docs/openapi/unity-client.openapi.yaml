@@ -3569,7 +3569,7 @@ paths:
         - "Monetization"
       summary: "Valida un recibo de compra y entrega el contenido"
       operationId: "iap_purchase"
-      description: "Requiere sesión autenticada. NO bloqueado por mantenimiento (el dinero ya se cobró).\n\nErrores posibles (`error.code`): `UNAUTHENTICATED` (sin identidad), `BAD_REQUEST` (payload inválido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción), `INTERNAL` (error interno).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"iap_purchase\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<IapPurchaseData>>(rpc.Payload)`."
+      description: "Requires a session. NOT blocked by maintenance (the money was already charged).\n\nT-24: the receipt is verified with the store credentials of the server's `runtime.env` (Apple shared secret, Google Play service account); the mock verifier only runs with `IAP_MOCK=true` (dev / CI). A refunded purchase is rejected. The content is delivered once per (user, platform, transactionId) in one transaction: a retry, also after a restart, answers `idempotent: true` with the same `content` and delivers nothing.\n\nPossible errors (`error.code`, with `error.details.reason` for receipts): `UNAUTHENTICATED`, `FORBIDDEN` (foreign `callerUserId`), `BAD_REQUEST` (invalid payload, or receipt rejected: `INVALID_RECEIPT` | `PRODUCT_MISMATCH` | `PROVIDER_MISMATCH` | `EXPIRED` | `REFUNDED` | `PENDING`), `NOT_FOUND` (unknown productId), `CONFLICT` (`RECEIPT_USED` by another account, `ALREADY_CONSUMED`, or `VERSION_CONFLICT` after concurrent updates: retry), `SERVICE_UNAVAILABLE` (verification could not run: `NOT_CONFIGURED` | `NETWORK_ERROR` | `VERIFICATION_FAILED`; retryable), `INTERNAL`.\n\nMaintenance: always callable.\n\nUnity: `await client.RpcAsync(session, \"iap_purchase\", JsonUtility.ToJson(req))` and then `JsonUtility.FromJson<Envelope<IapPurchaseData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -3720,9 +3720,9 @@ paths:
     post:
       tags:
         - "Monetization"
-      summary: "Recompensa por anuncio visto"
+      summary: "Reports a rewarded ad watched by the client (does not pay)"
       operationId: "ad_watched"
-      description: "Cooldown por tier y tope diario (10). Hoy solo el proveedor `mock` está verificado en servidor.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción).\n\nMantenimiento: siempre invocable.\n\nUnity: `await client.RpcAsync(session, \"ad_watched\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<AdWatchedData>>(rpc.Payload)`."
+      description: "T-25 (PC-05): does NOT pay. Rewarded ads are paid only by LevelPlay's signed server-to-server callback (`ads_levelplay_callback`); poll `ad_reward_status` after the ad closes. This RPC is an optional report (analytics `ad_watch_initiated`) that answers `granted: false`, `coinsGranted: 0`, the balance and today's paid count.\n\nPossible errors (`error.code`): `UNAUTHENTICATED`, `FORBIDDEN` (foreign `callerUserId`), `BAD_REQUEST` (invalid payload), `NOT_FOUND` (unknown tier).\n\nMaintenance: always callable.\n\nUnity: `await client.RpcAsync(session, \"ad_watched\", JsonUtility.ToJson(req))` and then `JsonUtility.FromJson<Envelope<AdWatchedData>>(rpc.Payload)`."
       security:
         - BearerSession: []
       requestBody:
@@ -3763,6 +3763,145 @@ paths:
                   - "payload"
         "401":
           description: "Token de sesión ausente/expirado (error del gateway de Nakama)"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GatewayError"
+  "/v2/rpc/ad_reward_status":
+    post:
+      tags:
+        - "Monetization"
+      summary: "Rewarded ads paid by the network callback (T-25)"
+      operationId: "ad_reward_status"
+      description: "The caller's rewards paid by LevelPlay's server-to-server callback (newest first), today's paid count, the cap (10 per UTC day) and the balance. Poll it 2-3 times, 2 s apart, after a rewarded ad closes; show the reward when its event appears with `status: granted`.\n\nPossible errors (`error.code`): `UNAUTHENTICATED`, `FORBIDDEN` (foreign `callerUserId`), `BAD_REQUEST` (`sinceUtc` not a number, `limit` outside 1-50).\n\nMaintenance: always callable.\n\nUnity: `await client.RpcAsync(session, \"ad_reward_status\", JsonUtility.ToJson(req))` and then `JsonUtility.FromJson<Envelope<AdRewardStatusData>>(rpc.Payload)`."
+      security:
+        - BearerSession: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "string"
+              contentMediaType: "application/json"
+              description: "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto."
+              contentSchema:
+                "$ref": "#/components/schemas/AdRewardStatusRequest"
+      responses:
+        "200":
+          description: "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`."
+          content:
+            "application/json":
+              schema:
+                type: "object"
+                properties:
+                  payload:
+                    type: "string"
+                    contentMediaType: "application/json"
+                    description: "JSON serializado con el envelope. Parsear y ramificar por `ok`."
+                    contentSchema:
+                      oneOf:
+                        - type: "object"
+                          properties:
+                            ok:
+                              const: true
+                            data:
+                              "$ref": "#/components/schemas/AdRewardStatusData"
+                          required:
+                            - "ok"
+                            - "data"
+                        - "$ref": "#/components/schemas/Err"
+                required:
+                  - "payload"
+        "401":
+          description: "Token de sesión ausente/expirado (error del gateway de Nakama)"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GatewayError"
+  "/v2/rpc/ads_levelplay_callback":
+    get:
+      tags:
+        - "Monetization"
+      summary: "LevelPlay S2S rewarded-ad callback (server-to-server, T-25)"
+      operationId: "ads_levelplay_callback"
+      description: "Called by LevelPlay, never by the client: configure this URL in the LevelPlay dashboard (Apps > Set S2S callback) with `http_key` and `unwrap`, and its Private Key = `LEVELPLAY_S2S_PRIVATE_KEY` of the server `.env`. The server checks `signature = md5(timestamp + eventId + userId + rewards + privateKey)` (lower-case hex, URL-decoded userId, per LevelPlay's documentation) and pays the reward once per `eventId` (durable). `rewards` must be a tier amount (5/15/30/60 coins); the daily cap is 10 paid rewards per user and UTC day. Repeated, capped, non-tier and unknown-user events are acknowledged (`<eventId>:OK`) without paying. A POST with the same fields as a JSON body is accepted too.\n\nErrors (no `:OK` in the body, so LevelPlay retries): `FORBIDDEN` (`BAD_SIGNATURE`, or called with a player session), `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: the private key is empty, every callback is rejected), `BAD_REQUEST` (missing / malformed parameters), `CONFLICT` (`VERSION_CONFLICT`), `INTERNAL`."
+      security:
+        - RuntimeHttpKey: []
+      parameters:
+        - name: "unwrap"
+          in: "query"
+          required: false
+          description: "Present (any value): Nakama returns the RPC string as the raw body"
+          schema:
+            type: "string"
+        - name: "userId"
+          in: "query"
+          required: true
+          description: "Nakama user id ([USER_ID]); `applicationUserId` or `appUserId` are accepted instead"
+          schema:
+            type: "string"
+        - name: "eventId"
+          in: "query"
+          required: true
+          description: "Unique LevelPlay event id ([EVENT_ID]), alphanumeric, up to 100"
+          schema:
+            type: "string"
+        - name: "rewards"
+          in: "query"
+          required: true
+          description: "Reward amount ([REWARDS]); must be 5, 15, 30 or 60"
+          schema:
+            type: "string"
+            pattern: "^[0-9]+$"
+        - name: "timestamp"
+          in: "query"
+          required: true
+          description: "LevelPlay timestamp, YYYYMMDDHHMM"
+          schema:
+            type: "string"
+        - name: "signature"
+          in: "query"
+          required: true
+          description: "md5(timestamp + eventId + userId + rewards + privateKey)"
+          schema:
+            type: "string"
+        - name: "placementName"
+          in: "query"
+          required: false
+          description: "[PLACEMENT_NAME] (stored, not signed)"
+          schema:
+            type: "string"
+        - name: "adNetwork"
+          in: "query"
+          required: false
+          description: "[AD_NETWORK] (stored, not signed)"
+          schema:
+            type: "string"
+        - name: "itemName"
+          in: "query"
+          required: false
+          description: "[ITEM_NAME] (not signed)"
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "With `unwrap`: the envelope as the raw body (else wrapped in `{payload}`). Success carries `data.ack` = `<eventId>:OK`."
+          content:
+            "application/json":
+              schema:
+                oneOf:
+                  - type: "object"
+                    properties:
+                      ok:
+                        const: true
+                      data:
+                        "$ref": "#/components/schemas/AdCallbackData"
+                    required:
+                      - "ok"
+                      - "data"
+                  - "$ref": "#/components/schemas/Err"
+        "401":
+          description: "Missing or wrong http_key (Nakama gateway error)"
           content:
             "application/json":
               schema:
@@ -4070,6 +4209,11 @@ components:
       scheme: "bearer"
       bearerFormat: "JWT"
       description: "Token de sesión devuelto por authenticate_*."
+    RuntimeHttpKey:
+      type: "apiKey"
+      in: "query"
+      name: "http_key"
+      description: "NAKAMA_RUNTIME_HTTP_KEY. Server-to-server only (the LevelPlay callback); never in a client."
   schemas:
     ErrorCode:
       type: "string"
@@ -7431,10 +7575,10 @@ components:
           example: "com.cvg.coins100"
         receiptData:
           type: "string"
-          description: "Recibo base64 opaco"
+          description: "Unity IAP `Order.Info.Receipt`: the unified receipt `{Store, TransactionID, Payload}` (or its Payload). Apple: base64 App Store receipt. Google: `{json, signature}` (UnityPayload mode) or the purchase JSON (PurchaseJson mode). T-24."
         transactionId:
           type: "string"
-          description: "ID único de transacción (dedup key)"
+          description: "Store transaction id (Apple transaction_id; Google orderId or purchaseToken). Idempotency key per user (T-24)."
       required:
         - "platform"
         - "productId"
@@ -7535,6 +7679,7 @@ components:
         provider:
           type: "string"
           enum:
+            - "levelplay"
             - "mock"
             - "admob"
             - "unityads"
@@ -7542,8 +7687,9 @@ components:
           type: "string"
         impressionId:
           type: "string"
-          description: "UUID v4 generado por el cliente"
-          format: "uuid"
+          description: "Client id of the impression (1-128 characters; analytics only)"
+          minLength: 1
+          maxLength: 128
         watchedAtUtc:
           type: "integer"
           description: "Epoch en milisegundos (UTC)"
@@ -7563,6 +7709,15 @@ components:
           type: "string"
         coinsGranted:
           type: "integer"
+          description: "Always 0 since T-25"
+        granted:
+          type: "boolean"
+          description: "Always false since T-25 (additive)"
+        rewardVia:
+          type: "string"
+          enum:
+            - "server_callback"
+          description: "The reward is paid by the ad network callback: poll ad_reward_status (T-25, additive)"
         newBalance:
           "$ref": "#/components/schemas/Wallet"
           description: "Was the coins number until T-12."
@@ -7572,10 +7727,122 @@ components:
           format: "int64"
         dailyCount:
           type: "integer"
+          description: "Rewards paid today (UTC) by the callback"
         dailyCap:
           type: "integer"
         idempotent:
           type: "boolean"
+    AdRewardStatusRequest:
+      type: "object"
+      properties:
+        sinceUtc:
+          type: "integer"
+          description: "Only events received after this instant (epoch ms, UTC)"
+          format: "int64"
+        limit:
+          type: "integer"
+          minimum: 1
+          maximum: 50
+          default: 20
+    AdS2sReward:
+      type: "object"
+      description: "One ad network callback event (T-25)."
+      properties:
+        network:
+          type: "string"
+          enum:
+            - "levelplay"
+        eventId:
+          type: "string"
+        status:
+          type: "string"
+          enum:
+            - "granted"
+            - "capped"
+            - "rejected_amount"
+          description: "granted = paid; capped = over the daily cap; rejected_amount = not a catalog tier (not paid)"
+        coins:
+          type: "integer"
+          description: "Coins paid (0 unless granted)"
+        rewards:
+          type: "integer"
+          description: "Amount the network sent"
+        tier:
+          type: "string"
+          enum:
+            - "small"
+            - "medium"
+            - "large"
+            - "xlarge"
+        placementName:
+          type: "string"
+        adNetwork:
+          type: "string"
+        receivedAtUtc:
+          type: "integer"
+          description: "Epoch en milisegundos (UTC)"
+          format: "int64"
+      required:
+        - "network"
+        - "eventId"
+        - "status"
+        - "coins"
+        - "rewards"
+        - "receivedAtUtc"
+    AdRewardStatusData:
+      type: "object"
+      properties:
+        rewards:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/AdS2sReward"
+          description: "Newest first"
+        dailyCount:
+          type: "integer"
+        dailyCap:
+          type: "integer"
+        dailyResetAtUtc:
+          type: "integer"
+          description: "Epoch en milisegundos (UTC)"
+          format: "int64"
+        newBalance:
+          "$ref": "#/components/schemas/Wallet"
+      required:
+        - "rewards"
+        - "dailyCount"
+        - "dailyCap"
+        - "dailyResetAtUtc"
+        - "newBalance"
+    AdCallbackData:
+      type: "object"
+      properties:
+        ack:
+          type: "string"
+          description: "`<eventId>:OK`, what LevelPlay looks for in the body"
+          example: "dae8e6cf42b1357f8652ad6ecb5b24f1:OK"
+        eventId:
+          type: "string"
+        userId:
+          type: "string"
+        status:
+          type: "string"
+          enum:
+            - "granted"
+            - "capped"
+            - "rejected_amount"
+            - "unknown_user"
+        coinsGranted:
+          type: "integer"
+        idempotent:
+          type: "boolean"
+          description: "The event was already processed by an earlier callback"
+      required:
+        - "ack"
+        - "eventId"
+        - "userId"
+        - "status"
+        - "coinsGranted"
+        - "idempotent"
     GatewayError:
       type: "object"
       description: "Error nativo del gateway gRPC-HTTP de Nakama (no del envelope)."

@@ -2024,17 +2024,26 @@ See `docs/tournaments.md`, `docs/events.md`, `docs/anti-cheat.md`,
 
 ## 22. Phase 9 RPCs — IAP, ads, admin analytics
 
-Phase 9 ships three public RPCs (the IAP + ads + subscription surface)
-and sixteen admin RPCs (six for IAP operations + ten for analytics).
-All bypass maintenance (D63, D72, D77, D79, D91).
+Phase 9 ships the IAP + ads + subscription surface and sixteen admin
+RPCs (six for IAP operations + ten for analytics). Plan F7 (T-24, T-25)
+made receipt verification real and moved ad payouts to LevelPlay's
+signed server-to-server callback. All bypass maintenance (D63, D72, D77,
+D79, D91).
 
 ### 22.1 Public RPCs
 
 - `iap_purchase({platform, productId, receiptData, transactionId})` —
-  single entry point for Apple/Google/Mock purchases. The client passes
-  the platform-specific productId (`com.cvg.coins100` for Apple,
-  `coins_100` for Google). Returns the same shape regardless of provider.
-  Maintenance bypass (D63). See `docs/iap.md` §2.
+  single entry point for Apple/Google purchases. The client passes the
+  platform-specific productId (`com.cvg.coins100` for Apple, `coins_100`
+  for Google), Unity's `Order.Info.Receipt` as `receiptData` (unified
+  receipt; Google in the `UnityPayload` or `PurchaseJson` format) and the
+  store transaction id. The server verifies with the store credentials of
+  `runtime.env` (the mock only with `IAP_MOCK=true`), rejects refunded
+  purchases (`details.reason = REFUNDED`) and delivers once per
+  `(user, platform, transaction)`: a retry answers `idempotent: true`.
+  Rejections carry `details.reason`; a store without credentials is
+  `SERVICE_UNAVAILABLE` / `NOT_CONFIGURED`. Maintenance bypass (D63). See
+  `docs/iap.md` §2–§3.
 - `iap_subscription_status({})` — read the caller's current sub state.
   No body. Returns `{hasSubscription, subscription: {isActive, isExpired,
   expiresAtUtc, autoRenewing, ...}}` or `{hasSubscription: false}`.
@@ -2043,10 +2052,18 @@ All bypass maintenance (D63, D72, D77, D79, D91).
   (D70). Sub remains active until `expiresAtUtc`. Re-cancel returns
   `CONFLICT`. Maintenance bypass (D72).
 - `ad_watched({tier, provider, adUnitId, impressionId, watchedAtUtc})`
-  — single entry point for rewarded ads. The client generates the
-  `impressionId` as a UUID v4; the server verifies format + 60s skew.
-  `provider` is `mock` only in Phase 9 (D76). Maintenance bypass (D77).
-  See `docs/ads.md` §2.
+  — **does not pay** since T-25 (PC-05): an optional report of a watch
+  seen by the client; answers `granted: false`, `coinsGranted: 0`,
+  `rewardVia: 'server_callback'`, the balance and today's paid count.
+  Maintenance bypass (D77). See `docs/ads.md` §5.
+- `ad_reward_status({sinceUtc?, limit?})` — the caller's rewards paid by
+  the ad network's callback (newest first), `dailyCount`, `dailyCap`,
+  `dailyResetAtUtc`, `newBalance`. Poll it after a rewarded ad closes.
+  See `docs/ads.md` §4.
+- `ads_levelplay_callback` — **server-to-server only** (LevelPlay calls
+  it with `http_key`; a session is `FORBIDDEN`). Pays a rewarded ad once
+  per signed LevelPlay event; never called by the client. See
+  `docs/ads.md` §3.
 
 ### 22.2 Admin RPCs (16 total)
 
@@ -2113,12 +2130,13 @@ use 60s in-memory TTL caches keyed on input parameters.
 
 | Code | Cause |
 |---|---|
-| `UNAUTHENTICATED` | `ctx.userId` missing (iap_purchase, ad_watched) |
-| `BAD_REQUEST` | Missing/invalid field; empty refund reason; invalid platform |
+| `UNAUTHENTICATED` | `ctx.userId` missing (iap_purchase, ad_watched, ad_reward_status) |
+| `BAD_REQUEST` | Missing/invalid field; empty refund reason; invalid platform; receipt rejected (`details.reason`: `INVALID_RECEIPT`, `PRODUCT_MISMATCH`, `PROVIDER_MISMATCH`, `EXPIRED`, `REFUNDED`, `PENDING`) |
 | `NOT_FOUND` | Pack not in catalog; tier not in catalog; purchase not found; subscription not on file |
-| `CONFLICT` | Cross-user fraud; refund window expired; already refunded; daily cap reached; cooldown not elapsed; already cancelled |
-| `INTERNAL` | Receipt verify failure; mock verify failure; storage write failure |
-| `SERVICE_UNAVAILABLE` | Admin key not configured |
+| `CONFLICT` | Receipt used by another account (`RECEIPT_USED`); `ALREADY_CONSUMED`; refund window expired; already refunded; already cancelled |
+| `FORBIDDEN` | (callback) bad signature (`BAD_SIGNATURE`) or called with a session |
+| `INTERNAL` | Storage / wallet failure |
+| `SERVICE_UNAVAILABLE` | Receipt verification not configured or unreachable (`NOT_CONFIGURED`, `NETWORK_ERROR`, `VERIFICATION_FAILED`); ad callback secret not configured; admin key not configured |
 
 ### 22.4 Client integration recipe
 
@@ -2143,20 +2161,20 @@ if (content.cosmeticId != null) ShowToast("New cosmetic unlocked");
 ```
 
 ```csharp
-// On rewarded ad completion (Unity Ads / AdMob callback):
-var impressionId = Guid.NewGuid().ToString();
-var watchedAtUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-var r = await NakamaClient.Rpc("ad_watched", new {
-  tier, provider = "mock", adUnitId, impressionId, watchedAtUtc
-});
-if (r.idempotent) {
-  // Same impressionId replayed — same reward. Refresh UI, exit.
-  return;
-}
-ShowToast($"+{r.coinsGranted} coins");
-UpdateDailyAdCounter(r.dailyCount, r.dailyCap);  // e.g. "3 / 10 today"
-if (r.dailyCount >= r.dailyCap) {
-  DisableAdButton();
+// Rewarded ads (T-25): init LevelPlay with the Nakama user id, so its
+// S2S callback names the account to pay:
+//   LevelPlay.SetDynamicUserId / Init(appKey, userId: session.UserId)
+// After the ad closes (onAdRewarded is NOT proof of payment), poll:
+var shownAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 5_000;
+for (var i = 0; i < 3; i++) {
+  await UniTask.Delay(2_000);
+  var r = await NakamaClient.Rpc("ad_reward_status", new { sinceUtc = shownAt });
+  var paid = r.rewards.FirstOrDefault(x => x.status == "granted");
+  if (paid != null) {
+    ShowToast($"+{paid.coins} coins");
+    UpdateDailyAdCounter(r.dailyCount, r.dailyCap);  // e.g. "3 / 10 today"
+    break;
+  }
 }
 ```
 
@@ -2194,7 +2212,8 @@ var r = await NakamaClient.Rpc("iap_subscription_cancel", new {
 | `iap_purchase` | per store-transaction (event) | one-shot |
 | `iap_subscription_status` | every 60s on home tab | balance may change from renewal (server-driven) |
 | `iap_subscription_cancel` | one-shot on user tap | not polled |
-| `ad_watched` | per ad completion (event) | one-shot |
+| `ad_watched` | optional, per ad completion | report only, never pays |
+| `ad_reward_status` | 2–3 polls, 2 s apart, after an ad closes | the network's callback pays a few seconds later |
 | `admin_iap_analytics_get` | every 5min on operator dashboard | 60s server cache makes 30s polls wasteful |
 | `admin_iap_ltv_get` | every 1h on operator dashboard | cohort math is heavy |
 | `admin_iap_funnel_get` | every 5min | 60s server cache |

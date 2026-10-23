@@ -900,8 +900,7 @@ maintenance — money has already been charged or the ad already played.
 |---|---|---|
 | IAP catalog (iap_packs.json) | `modules/src/catalogs/iap_packs.json` | 1 |
 | IAP types + plan + catalog | `modules/src/iap/{types,catalog,plan}.ts` | 1, 3 |
-| Receipt verify (mock + apple + google) | `modules/src/iap/verify*.ts` | 2 |
-| IAP dispatcher + 24h dedup | `modules/src/iap/dispatcher.ts` | 2 |
+| Receipt verify (apple + google; mock only with `IAP_MOCK=true`) | `modules/src/iap/verify*.ts`, `receipt.ts`, `config.ts` | 2, T-24 |
 | `iap_purchase` RPC | `modules/src/iap/rpcs.ts` | 3 |
 | Cross-user fraud detection | `modules/src/iap/fraud.ts` | 3 |
 | First-time bonus dedup | `modules/src/iap/first_time.ts` | 3 |
@@ -909,7 +908,8 @@ maintenance — money has already been charged or the ad already played.
 | 5-min subscription scanner | `modules/src/iap/sub_scanner.ts` | 4 |
 | Ad rewards catalog (ad_rewards.json) | `modules/src/catalogs/ad_rewards.json` | 1 |
 | Ad types + cooldown + cap | `modules/src/ads/{types,cooldown,cap}.ts` | 5 |
-| `ad_watched` RPC + mock verify | `modules/src/ads/rpcs.ts` | 5 |
+| `ad_watched` RPC (report only, never pays) | `modules/src/ads/rpcs.ts` | 5, T-25 |
+| LevelPlay S2S callback + `ad_reward_status` | `modules/src/ads/{s2s_rpcs,levelplay}.ts` | T-25 |
 | Admin IAP RPCs (6) | `modules/src/iap/admin_rpcs.ts` | 6 |
 | Admin refund + fraud + revenue stats | `modules/src/iap/admin_refund.ts` | 6 |
 | Analytics events (11 IAP + 4 ads) | `modules/src/analytics/iap_events.ts` | 7 |
@@ -922,10 +922,12 @@ maintenance — money has already been charged or the ad already played.
 
 | RPC | Caller | Description |
 |---|---|---|
-| `iap_purchase` | any (home) | Apple / Google / mock purchase → grant |
+| `iap_purchase` | any (home) | Verified Apple / Google purchase → one durable delivery (T-24) |
 | `iap_subscription_status` | any (home) | Read current sub state |
 | `iap_subscription_cancel` | any (home) | One-way cancel (D70) |
-| `ad_watched` | any (home) | Reward grant (MOCK provider, D76) |
+| `ad_watched` | any (home) | Watch report only, pays nothing (T-25) |
+| `ad_reward_status` | any (home) | Rewards paid by the LevelPlay callback (T-25) |
+| `ads_levelplay_callback` | LevelPlay (`http_key`) | Signed S2S ad reward, paid once per event (T-25) |
 
 ### Phase 9 RPC quick reference (operator)
 

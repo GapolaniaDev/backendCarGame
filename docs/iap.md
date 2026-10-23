@@ -1,10 +1,12 @@
 # IAP — CarVideoGameBackend
 
 In-app purchases (real money → coins/gems/cosmetics/cars/subscription).
-Three product kinds, ten catalog packs, single mock verification provider
-in dev (Apple sandbox + Google pre-signed bearer in production).
+Three product kinds, ten catalog packs. Receipts are verified against the
+App Store / Google Play with the credentials of `runtime.env`; the mock
+verifier only runs with `IAP_MOCK=true` (dev / CI). Plan T-24 (PC-04,
+HT-75, HT-78) rewrote verification and delivery: see §2–§3.
 
-**Phase**: 9 (Chunks 1-6 + 7 analytics)
+**Phase**: 9 (Chunks 1-6 + 7 analytics), reworked in plan F7 (T-24)
 **Source**: `modules/src/iap/`, `modules/src/analytics/{iap_events,ltv,funnel,top_buyers,rpcs}.ts`
 
 ---
@@ -52,13 +54,12 @@ id in the `productId` field of the `iap_purchase` RPC.
 ### `iap_purchase`
 
 ```http
-POST /v2/rpc/iap_purchase
-{ "callerUserId": "<uuid>", "body": {
-    "platform": "apple" | "google",
-    "productId": "com.cvg.coins100",
-    "receiptData": "<base64-receipt>",  // required, opaque to server
-    "transactionId": "tx-abc-123"       // client-generated dedup key
-} }
+POST /v2/rpc/iap_purchase          Authorization: Bearer <session>
+{ "platform": "apple" | "google",
+  "productId": "com.cvg.coins100",     // the store's product id
+  "receiptData": "<Unity receipt>",    // Order.Info.Receipt (see §3.1)
+  "transactionId": "1000000123456789"  // the store transaction (Apple transaction_id,
+}                                      // Google orderId or purchaseToken)
 ```
 
 Returns:
@@ -80,16 +81,28 @@ Returns:
 
 ### Order of operations
 
-1. **Auth** — `ctx.userId` required (`UNAUTHENTICATED` otherwise).
+1. **Auth** — `ctx.userId` required (`UNAUTHENTICATED` otherwise; a body
+   `callerUserId` must match it, D-03).
 2. **Input validation** — all 4 fields required + `platform` enum + `productId` non-empty.
 3. **Catalog lookup** — `findIapPackByProductId(platform, productId)` → `NOT_FOUND` if missing.
-4. **Cross-user fraud scan** — see §5.
-5. **Idempotency check** — `iap_purchases/{transactionId}` already exists → return cached.
-6. **Receipt verification** — `verifyReceipt({...}, {config: liveops.iapVerification, ...})`.
-7. **Plan + grant** — `planGrant(pack, isFirstTime)` → `wallet.grant(..., 'iap')` with idempotencyKey `iap_purchase:{txId}`.
-8. **Persist** — `iap_purchases/{txId}` + `iap_first_purchase/{userId}_{packId}` (if first time).
-9. **Inbox** — `iap_purchase` reward for the wallet portion.
-10. **Analytics** — see §9.
+4. **Cross-user check** — the transaction belongs to another account → `CONFLICT` (§5).
+5. **Idempotency check** — this user's `iap_purchases` row for the transaction → its content with `idempotent: true`.
+6. **Receipt verification** — `verifyReceipt(nk, …, {config: iapConfigFromEnv(ctx)})` (§3).
+7. **Delivery in ONE transaction** (T-24, plan T-11) — one `moveWallet`
+   under the per-user durable key `iap_purchase:{platform}:{transactionId}`
+   commits together: the coins (base + first-time bonus, plus the monthly
+   coins of a subscription) with their ledger rows, the garage cosmetic,
+   the subscription record, the `iap_purchases` row, the
+   `iap_first_purchase` marker (create-only) and the `iap_transactions`
+   index (create-only). A lost CAS (garage, subscription, marker) re-plans
+   from fresh reads (3 attempts); a concurrent call with the same key
+   replays the stored response.
+8. **Inbox** — `iap_purchase` notice (already delivered: it only informs).
+9. **Analytics** — see §8.
+
+Before T-24 every step wrote on its own, so a failure in the middle kept
+the coins without the purchase row (or the reverse), and the idempotency
+key was the transaction id alone.
 
 ### Maintenance bypass (D63)
 
@@ -99,38 +112,105 @@ still deliver the product.
 
 ### Idempotency
 
-The dedup key is `(userId, transactionId)`. The storage row at
-`iap_purchases/{transactionId}` is `permissionRead=1, permissionWrite=0`
-(server-only). A replay returns the same response with
-`idempotent: true` (D67 — no audit on re-emit).
+The dedup key is `(userId, platform, transactionId)`: the durable
+`idem/{userId}/iap_purchase:{platform}:{transactionId}` record (written in
+the delivery's transaction, `core/idempotency.ts`) plus the
+`iap_purchases/{userId}/{transactionId}` row. A retry — also after a
+Nakama restart, and also when the mock is off again — returns the stored
+content with `idempotent: true` and delivers nothing. The client
+(`BackendCarGamePurchaseFulfiller`) maps it to `AlreadyDelivered`.
+Transaction ids longer than Nakama's 128-character storage keys (a Google
+purchase token can be) are stored as `sha256:<hex>`; the id stays in the
+row's `transactionId`.
 
 ---
 
 ## 3. Receipt verification
 
-`verifyReceipt` (Phase 9 Chunk 2) routes to the configured provider:
+`verifyReceipt(nk, args, deps)` (`iap/verify.ts`) routes by the receipt's
+platform with the settings of `runtime.env` (`iap/config.ts`), read on
+every call:
 
-| Provider | Use case | Mechanism |
-|---|---|---|
-| `mock` | Dev, e2e tests | Validates input shape + UUID v4 + 60s future skew |
-| `apple` | iOS production | Apple App Store Server API, sandbox auto-detect on 21007 |
-| `google` | Android production | Google Play Developer API, pre-signed bearer (no in-runtime JWT) |
+| Setting (`.env` → `runtime.env`) | Effect |
+|---|---|
+| `IAP_MOCK=true` | both platforms use the mock verifier (§3.3). **Default `false`; dev / CI only** |
+| `IAP_APPLE_SHARED_SECRET` | App Store app-specific shared secret; empty = Apple receipts rejected |
+| `IAP_GOOGLE_CLIENT_EMAIL`, `IAP_GOOGLE_PRIVATE_KEY`, `IAP_GOOGLE_PACKAGE_NAME` | Google Play service account (Android Publisher API) and the app id; any empty = Google receipts rejected |
 
-The `iapVerification` block is on the `LiveopsConfig` and is hot-swappable
-(no restart). Operator sets it via the admin override path (see `docs/liveops.md` §5).
+A store without credentials answers `SERVICE_UNAVAILABLE` with
+`details.reason = NOT_CONFIGURED` and **sends nothing to the store**.
+`docker-compose.yml` also writes the same credentials into Nakama's native
+`iap:` block, which the client's `NakamaReceiptValidator` (native
+`ValidatePurchase*` API) uses. Changing them = edit `.env` and recreate
+Nakama (with the local override when running locally).
 
-### Sandbox detection (Apple)
+Before T-24 the provider came from LiveOps (`iapVerification`), whose
+bundled default was `mock`: any JSON receipt bought coins. The LiveOps
+block is still accepted by validation but ignored, and no longer bundled.
 
-When Apple's `verifyReceipt` returns `status: 21007` (sandbox receipt sent
-to production endpoint), the dispatcher auto-re-routes to
-`https://sandbox.itunes.apple.com/verifyReceipt` (D63 follow-up). This
-lets the same key work for both TestFlight and App Store builds.
+### 3.1 Receipt formats (what the client sends)
 
-### Idempotency in verify cache
+`receiptData` is Unity IAP's `Order.Info.Receipt`, the unified receipt
+`{"Store":"AppleAppStore"|"GooglePlay","TransactionID":"…","Payload":"…"}`
+(`iap/receipt.ts`). Accepted, wrapped or already unwrapped:
 
-`verifyReceipt` keeps a sha256(platform+txId) dedup cache for **24h** so
-the same receipt within the window skips the upstream call. The cache
-lives in module-scope memory (D61).
+- **Apple** — `Payload` is the base64 App Store receipt. Anything that is
+  not base64 (e.g. JSON) is `INVALID_RECEIPT` without calling Apple.
+- **Google, `UnityPayload` mode** (default of the client installer) —
+  `Payload` is `{"json":"<purchase JSON>","signature":"…",…}`.
+- **Google, `PurchaseJson` mode** — the purchase JSON itself
+  (`{"orderId","packageName","productId","purchaseTime","purchaseState","purchaseToken",…}`).
+- A bare Google purchase token (older callers).
+
+For Google the purchase token comes from the receipt, its `packageName`
+must be `IAP_GOOGLE_PACKAGE_NAME` (`PROVIDER_MISMATCH`), its `productId`
+the requested one (`PRODUCT_MISMATCH`), and the request `transactionId`
+must be its `orderId` or `purchaseToken` (`INVALID_RECEIPT`).
+
+### 3.2 Store calls
+
+- **Apple** — `POST https://buy.itunes.apple.com/verifyReceipt` with
+  `{receipt-data, password}` through `nk.httpRequest` (10 s timeout, 1
+  retry on a network error); `21007` (a sandbox / TestFlight receipt) is
+  retried on `https://sandbox.itunes.apple.com/verifyReceipt`. The entry
+  whose `transaction_id` is the request's must exist and name the product;
+  an entry with `cancellation_date_ms` is **`REFUNDED`**; an expired
+  subscription is `EXPIRED`. (Before T-24 the default caller read an
+  undefined `deps.nk`, read `content` instead of 3.27's `body` and wrapped
+  the request twice: it never worked.)
+- **Google** — an OAuth2 access token is minted in the runtime from the
+  service account (RS256 JWT with `nk.jwtGenerate`, exchanged at
+  `https://oauth2.googleapis.com/token`, scope `androidpublisher`, cached
+  per VM until a minute before it expires), then
+  `GET …/androidpublisher/v3/applications/{package}/purchases/products/{productId}/tokens/{token}`.
+  `purchaseState` 1 (canceled: refunded or revoked) is **`REFUNDED`**, 2 is
+  `PENDING`, `consumptionState` 1 is `ALREADY_CONSUMED`; 404/400/410 are
+  `INVALID_RECEIPT`, 401/403 `VERIFICATION_FAILED`. (Before T-24 the
+  verifier had no caller and expected a pre-computed bearer token.)
+  Google **subscriptions** are not verified yet (the products endpoint
+  answers 404 for them; `purchases.subscriptionsv2` is a follow-up).
+
+### 3.3 Mock verifier (`IAP_MOCK=true` only)
+
+The payload (wrapped in the unified receipt or not) is
+`{"productId","transactionId","originalTransactionId","purchaseDateUtc","expiresAtUtc"?,"expire"?}`.
+Its `transactionId` must be the request's; `refunded: true`, `refundTime`
+or `RefundTime` → `REFUNDED`; `expire: true` → `EXPIRED`.
+
+### 3.4 Rejections
+
+Every rejection carries `details.reason` = the verifier code:
+
+| Verifier code | Envelope code |
+|---|---|
+| `INVALID_RECEIPT`, `PRODUCT_MISMATCH`, `PROVIDER_MISMATCH`, `EXPIRED`, `REFUNDED`, `PENDING` | `BAD_REQUEST` (the client's validator treats it as an invalid receipt) |
+| `ALREADY_CONSUMED` | `CONFLICT` |
+| `NOT_CONFIGURED`, `NETWORK_ERROR`, `VERIFICATION_FAILED` | `SERVICE_UNAVAILABLE` (retryable; was `INTERNAL`) |
+| `INTERNAL_ERROR` | `INTERNAL` |
+
+There is no verification cache any more (the old per-VM 24 h cache also
+replayed failures): a retry of a delivered purchase is answered from its
+durable record before verifying.
 
 ---
 
@@ -150,10 +230,14 @@ get a one-time windfall to lower the cold-start gap (D65).
 
 ## 5. Cross-user fraud detection
 
-Before any verification, the server checks the 4 most recent `iap_purchases`
-rows for the same `transactionId` with a different `userId`. If found:
+A store transaction is consumed by one account. The
+`iap_transactions/{system}/{platform}:{transactionId}` index (T-24) is
+created with version `*` in the delivery's transaction, so two accounts
+racing with one receipt cannot both commit; rows delivered before the
+index existed are found with a scan of `iap_purchases` (legacy fallback).
+Before verification, and again after a lost race:
 
-1. The current request returns `CONFLICT: duplicate transaction id`.
+1. The current request returns `CONFLICT` (`details.reason = RECEIPT_USED`).
 2. An `iap_fraud_flags` row is created with both `claimedByUserId` and
    `conflictByUserId`, `status: 'pending'`.
 3. The first user (who bought legitimately) is unaffected.
@@ -283,6 +367,8 @@ from `cohortStart` (NOT from each user's first purchase).
 | `iap_packs` | system | catalog (10 packs, frozen at boot) |
 | `iap_purchases` | per-user | `{userId, packId, platform, productId, content, grantedAtUtc, idempotencyKey, isFirstTime, refunded?, refundedAtUtc?, refundedReason?, refundedByAdminId?}` (R=1, W=0) |
 | `iap_first_purchase` | per-user | boolean marker (R=1, W=0) |
+| `iap_transactions` | system, key `{platform}:{transactionId}` | `{userId, platform, transactionId, consumedAtUtc}` (R=0, W=0; T-24). Kept when the account is deleted: a store transaction is consumed once |
+| `idem` | per-user | the durable key `iap_purchase:{platform}:{transactionId}` with the stored response |
 | `iap_fraud_flags` | system | `{transactionId, claimedByUserId, conflictByUserId, packId, platform, detectedAtUtc, status, actionedAtUtc?, ...}` (R=1, W=0) |
 | `iap_subscriptions` | per-user | `{userId, packId, productId, platform, originalTransactionId, latestTransactionId, activatedAtUtc, expiresAtUtc, autoRenewing, cancelledAtUtc?, monthlyCosmeticGranted, renewalHistory}` (R=1, W=0) |
 | `analytics_events` | system | (see `docs/liveops.md`) |
@@ -300,27 +386,33 @@ record is immutable post-grant (CAS updates use the row's `version`).
 | `BAD_REQUEST` | Missing/invalid field (platform, productId, receiptData, transactionId) |
 | `NOT_FOUND` | Pack not in catalog for `(platform, productId)` |
 | `CONFLICT` | Cross-user fraud collision; already refunded; refund window expired; `iap_subscription_cancel` on already-cancelled |
-| `INTERNAL` | Receipt verification failure (`VERIFICATION_FAILED`, `INVALID_RECEIPT`, `TRANSACTION_NOT_FOUND`, etc.) |
-| `SERVICE_UNAVAILABLE` | IAP provider not configured (admin key path only) |
+| `BAD_REQUEST` | Receipt rejected (`details.reason`: `INVALID_RECEIPT`, `PRODUCT_MISMATCH`, `PROVIDER_MISMATCH`, `EXPIRED`, `REFUNDED`, `PENDING`) |
+| `SERVICE_UNAVAILABLE` | Verification could not run (`details.reason`: `NOT_CONFIGURED`, `NETWORK_ERROR`, `VERIFICATION_FAILED`) |
+| `INTERNAL` | Unexpected verifier or wallet failure |
 
 ---
 
 ## 11. Gotchas
 
-- **Cross-user fraud detection uses storageList with 1-arg shape** — D64.
-  The recent-4 window is best-effort, NOT a hard guarantee. Operators
-  audit the `iap_fraud_flags` collection weekly.
+- **Cross-user detection is the `iap_transactions` index** (T-24): a hard
+  guarantee for purchases delivered since T-24; older rows rely on a
+  bounded scan (10 000 rows).
+- **IAP cosmetics are not in `cosmetics.json`** — the five `cosmeticId` /
+  `monthlyCosmeticId` values of `iap_packs.json` (`gem_pack_500`,
+  `starter_bundle`, `paint_neon`, `trail_legendary`, `pass_exclusive_01`)
+  are added to the bag as they are (as before T-24); deciding their
+  catalog entries is a content decision.
 - **First-time bonus dedup row is per `(userId, packId)`** — D65. Two
   different packs each get their own bonus (the row is
   `iap_first_purchase/{userId}_{packId}`).
-- **`iap_purchase` ignores the `server` context userId check** — D63. A
-  client can be in any state (logged-in, anonymous, etc.) and the RPC
-  will still credit if the wallet exists.
-- **Apple sandbox auto-detect triggers ONE re-route** — if the retry
-  also returns 21007 the dispatch fails as `INTERNAL`. The operator
-  should swap the liveops config to the production endpoint.
-- **The 24h verify cache is module-scope** — restart wipes it. Long
-  outages may see more upstream calls than expected.
+- **`iap_purchase` needs a session** (D-03): the buyer is `ctx.userId`;
+  it bypasses maintenance only (D63).
+- **Apple sandbox auto-detect triggers ONE re-route** — sandbox receipts
+  (TestFlight, review) are accepted by the production server, as Apple
+  recommends.
+- **Never ship `IAP_MOCK=true`** — with it any client can forge a JSON
+  receipt. `npm run smoke:live` turns it on for one boot only and
+  recreates Nakama on the `.env` values afterwards.
 - **Inbox storage key format** is `${userId}/${rewardId}` — D89 follow-up.
   When iterating, the key for an IAP refund is `user-A/iap_refund:tx-X`.
 - **top_buyers admin-only** — D92. The RPC returns `username` resolved
