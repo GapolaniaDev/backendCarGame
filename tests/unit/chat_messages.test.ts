@@ -1,4 +1,5 @@
-// Phase 7 Chunk 6 — Chat history storage helpers.
+// Phase 7 Chunk 6 — Chat history storage helpers; plan T-22 numbered
+// channels with a real cursor.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
@@ -6,36 +7,38 @@ import { FakeNakama, type FakeNakama as FakeNakamaType } from '../e2e/_stubs';
 import type { INakama } from '../../modules/src/nkruntime';
 import {
   listChatMessages,
-  readChatMessage,
+  parseChatCursor,
   writeChatMessageCreate,
 } from '../../modules/src/chat/messages';
 import {
+  CHAT_HISTORY_COLLECTION,
   CHAT_HISTORY_TTL_MS,
+  chatMessageKey,
   type ChatMessageRecord,
 } from '../../modules/src/chat/types';
 
 const NOW = 1_700_000_000_000;
 const CHANNEL = 'club:g-1';
+const SYSTEM = '00000000-0000-0000-0000-000000000000';
 
-function mkMsg(
-  overrides: Partial<ChatMessageRecord> & { messageId: string; senderUserId: string; createdAt: number; content: string },
-): ChatMessageRecord {
+type NewMessage = Omit<ChatMessageRecord, 'schemaVersion' | 'expiresAt' | 'seq'> & { expiresAt?: number };
+
+function mkMsg(overrides: Partial<NewMessage> & { messageId: string; createdAt: number; content: string }): NewMessage {
   return {
-    schemaVersion: 1,
     messageId: overrides.messageId,
     channelId: overrides.channelId ?? CHANNEL,
     channelType: overrides.channelType ?? 'club',
     targetId: overrides.targetId ?? 'g-1',
-    senderUserId: overrides.senderUserId,
-    senderName: overrides.senderName ?? overrides.senderUserId,
+    senderUserId: overrides.senderUserId ?? 'u1',
+    senderName: overrides.senderName ?? 'u1',
     content: overrides.content,
     language: overrides.language ?? 'es',
     createdAt: overrides.createdAt,
-    expiresAt: overrides.expiresAt ?? (overrides.createdAt + CHAT_HISTORY_TTL_MS),
+    ...(overrides.expiresAt !== undefined ? { expiresAt: overrides.expiresAt } : {}),
   };
 }
 
-describe('chat messages storage (Phase 7 Chunk 6)', () => {
+describe('chat messages storage (Phase 7 Chunk 6, plan T-22)', () => {
   let fake: FakeNakamaType;
   let nk: INakama;
 
@@ -44,146 +47,80 @@ describe('chat messages storage (Phase 7 Chunk 6)', () => {
     nk = fake.nakama;
   });
 
-  it('writeChatMessageCreate inserts with default TTL = createdAt + 7d', () => {
-    const w = writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm1', senderUserId: 'u1', createdAt: NOW, content: 'hola' }),
-      NOW,
-    );
-    expect(w.message.messageId).toBe('m1');
-    expect(w.expiresAt).toBe(NOW + CHAT_HISTORY_TTL_MS);
-    expect(w.message.expiresAt).toBe(NOW + CHAT_HISTORY_TTL_MS);
+  it('writeChatMessageCreate numbers the channel and sets the default TTL', () => {
+    const a = writeChatMessageCreate(nk, mkMsg({ messageId: 'm1', createdAt: NOW, content: 'a' }), NOW);
+    const b = writeChatMessageCreate(nk, mkMsg({ messageId: 'm2', createdAt: NOW, content: 'b' }), NOW);
+    expect(a.message.seq).toBe(1);
+    expect(b.message.seq).toBe(2);
+    expect(a.expiresAt).toBe(NOW + CHAT_HISTORY_TTL_MS);
+    expect(fake.store.has(`${CHAT_HISTORY_COLLECTION}/${chatMessageKey(CHANNEL, 2)}/${SYSTEM}`)).toBe(true);
   });
 
-  it('readChatMessage returns null for missing message', () => {
-    expect(readChatMessage(nk, CHANNEL, 'absent', NOW)).toBeNull();
+  it('channels are numbered independently', () => {
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'm1', createdAt: NOW, content: 'a' }), NOW);
+    const other = writeChatMessageCreate(nk, mkMsg({ messageId: 'x1', channelId: 'club:g-2', targetId: 'g-2', createdAt: NOW, content: 'x' }), NOW);
+    expect(other.message.seq).toBe(1);
+    expect(listChatMessages(nk, 'club:g-2', {}, NOW).messages.map((m) => m.content)).toEqual(['x']);
   });
 
-  it('readChatMessage returns the message when present', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm1', senderUserId: 'u1', createdAt: NOW, content: 'hola' }),
-      NOW,
-    );
-    const r = readChatMessage(nk, CHANNEL, 'm1', NOW);
-    expect(r).not.toBeNull();
-    expect(r!.content).toBe('hola');
-    expect(r!.senderUserId).toBe('u1');
+  it('listChatMessages returns newest first, empty for an unknown channel', () => {
+    for (const c of ['a', 'b', 'c']) writeChatMessageCreate(nk, mkMsg({ messageId: c, createdAt: NOW, content: c }), NOW);
+    expect(listChatMessages(nk, CHANNEL, {}, NOW).messages.map((m) => m.content)).toEqual(['c', 'b', 'a']);
+    expect(listChatMessages(nk, 'club:none', {}, NOW)).toEqual({ messages: [], nextCursor: '', expiredFiltered: 0 });
   });
 
-  it('readChatMessage returns null for expired messages (lazy TTL)', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({
-        messageId: 'm1',
-        senderUserId: 'u1',
-        createdAt: NOW - (CHAT_HISTORY_TTL_MS + 1000),
-        content: 'old',
-      }),
-      NOW,
-    );
-    expect(readChatMessage(nk, CHANNEL, 'm1', NOW)).toBeNull();
-  });
-
-  it('listChatMessages returns newest first', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm1', senderUserId: 'u1', createdAt: NOW - 2000, content: 'oldest' }),
-      NOW,
-    );
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm2', senderUserId: 'u2', createdAt: NOW - 1000, content: 'middle' }),
-      NOW,
-    );
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm3', senderUserId: 'u3', createdAt: NOW, content: 'newest' }),
-      NOW,
-    );
-    const r = listChatMessages(nk, CHANNEL, {}, NOW);
-    expect(r.messages.map((m) => m.messageId)).toEqual(['m3', 'm2', 'm1']);
-    expect(r.messages[0].content).toBe('newest');
-  });
-
-  it('listChatMessages filters by channelId (no cross-channel leak)', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({
-        messageId: 'm1',
-        senderUserId: 'u1',
-        createdAt: NOW,
-        content: 'in g-1',
-        channelId: 'club:g-1',
-        targetId: 'g-1',
-      }),
-      NOW,
-    );
-    writeChatMessageCreate(
-      nk,
-      mkMsg({
-        messageId: 'm2',
-        senderUserId: 'u2',
-        createdAt: NOW,
-        content: 'in g-2',
-        channelId: 'club:g-2',
-        targetId: 'g-2',
-      }),
-      NOW,
-    );
-    const r = listChatMessages(nk, 'club:g-1', {}, NOW);
-    expect(r.messages.map((m) => m.messageId)).toEqual(['m1']);
-    expect(r.messages[0].content).toBe('in g-1');
-  });
-
-  it('listChatMessages drops expired messages and reports the count', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'fresh', senderUserId: 'u1', createdAt: NOW, content: 'new' }),
-      NOW,
-    );
-    writeChatMessageCreate(
-      nk,
-      mkMsg({
-        messageId: 'stale',
-        senderUserId: 'u1',
-        createdAt: NOW - (CHAT_HISTORY_TTL_MS + 100),
-        content: 'old',
-      }),
-      NOW,
-    );
-    const r = listChatMessages(nk, CHANNEL, {}, NOW);
-    expect(r.messages.map((m) => m.messageId)).toEqual(['fresh']);
-    expect(r.expiredFiltered).toBe(1);
-  });
-
-  it('listChatMessages respects the limit cap', () => {
-    for (let i = 0; i < 5; i++) {
-      writeChatMessageCreate(
-        nk,
-        mkMsg({
-          messageId: `m${i}`,
-          senderUserId: `u${i}`,
-          createdAt: NOW - (5 - i) * 100,
-          content: `msg ${i}`,
-        }),
-        NOW,
-      );
+  it('pages of 50 walk the whole history with the cursor (120 messages)', () => {
+    for (let i = 1; i <= 120; i++) writeChatMessageCreate(nk, mkMsg({ messageId: `m${i}`, createdAt: NOW + i, content: `#${i}` }), NOW);
+    const seen: string[] = [];
+    let cursor = '';
+    const sizes: number[] = [];
+    for (let page = 0; page < 10; page++) {
+      const r = listChatMessages(nk, CHANNEL, { limit: 50, cursor }, NOW + 200);
+      sizes.push(r.messages.length);
+      seen.push(...r.messages.map((m) => m.content));
+      if (r.nextCursor === '') break;
+      cursor = r.nextCursor;
     }
-    const r = listChatMessages(nk, CHANNEL, { limit: 2 }, NOW);
-    expect(r.messages.length).toBe(2);
-    // Newest first
-    expect(r.messages[0].messageId).toBe('m4');
-    expect(r.messages[1].messageId).toBe('m3');
+    expect(sizes).toEqual([50, 50, 20]);
+    expect(seen[0]).toBe('#120');
+    expect(seen[119]).toBe('#1');
+    expect(new Set(seen).size).toBe(120);
   });
 
-  it('listChatMessages returns a card with ts (not createdAt)', () => {
-    writeChatMessageCreate(
-      nk,
-      mkMsg({ messageId: 'm1', senderUserId: 'u1', createdAt: NOW, content: 'hello' }),
-      NOW,
-    );
+  it('the first expired message ends the history', () => {
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'old', createdAt: NOW - CHAT_HISTORY_TTL_MS - 10, content: 'old' }), NOW - CHAT_HISTORY_TTL_MS - 10);
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'new', createdAt: NOW, content: 'new' }), NOW);
     const r = listChatMessages(nk, CHANNEL, {}, NOW);
-    expect(r.messages[0].ts).toBe(NOW);
+    expect(r.messages.map((m) => m.content)).toEqual(['new']);
+    expect(r.expiredFiltered).toBe(1);
+    expect(r.nextCursor).toBe('');
+  });
+
+  it('a purged message is a gap the page skips', () => {
+    for (const c of ['a', 'b', 'c']) writeChatMessageCreate(nk, mkMsg({ messageId: c, createdAt: NOW, content: c }), NOW);
+    fake.store.delete(`${CHAT_HISTORY_COLLECTION}/${chatMessageKey(CHANNEL, 2)}/${SYSTEM}`);
+    expect(listChatMessages(nk, CHANNEL, {}, NOW).messages.map((m) => m.content)).toEqual(['c', 'a']);
+  });
+
+  it('hideSenders leaves out the blocked senders', () => {
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'a', senderUserId: 'u1', createdAt: NOW, content: 'a' }), NOW);
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'b', senderUserId: 'u2', createdAt: NOW, content: 'b' }), NOW);
+    const r = listChatMessages(nk, CHANNEL, { hideSenders: new Set(['u2']) }, NOW);
+    expect(r.messages.map((m) => m.content)).toEqual(['a']);
+  });
+
+  it('a malformed cursor throws RangeError', () => {
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'a', createdAt: NOW, content: 'a' }), NOW);
+    expect(() => listChatMessages(nk, CHANNEL, { cursor: 'abc' }, NOW)).toThrow(RangeError);
+    expect(parseChatCursor('0')).toBeNull();
+    expect(parseChatCursor('17')).toBe(17);
+  });
+
+  it('cards carry ts (not createdAt) and the sender name', () => {
+    writeChatMessageCreate(nk, mkMsg({ messageId: 'a', senderName: 'alice', createdAt: NOW, content: 'a' }), NOW);
+    const card = listChatMessages(nk, CHANNEL, {}, NOW).messages[0]!;
+    expect(card.ts).toBe(NOW);
+    expect(card.senderName).toBe('alice');
+    expect((card as unknown as { createdAt?: number }).createdAt).toBeUndefined();
   });
 });

@@ -106,22 +106,22 @@ describe('validateChatSend (Phase 7 Chunk 6)', () => {
     if (!v.ok) expect(v.code).toBe('BAD_REQUEST');
   });
 
-  it('blocked word (es) returns FORBIDDEN', () => {
+  it('blocked word (es) returns CONTENT_REJECTED (plan T-22)', () => {
     seedMember(fake, 'g1', 'u1');
     const v = validateChatSend(nk, logger, 'u1', {
       channelType: 'club', targetId: 'g1', language: 'es', content: 'eres un IDIOTA',
     }, NOW);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('FORBIDDEN');
+    if (!v.ok) expect(v.code).toBe('CONTENT_REJECTED');
   });
 
-  it('blocked word (en) returns FORBIDDEN', () => {
+  it('blocked word (en) returns CONTENT_REJECTED (plan T-22)', () => {
     seedMember(fake, 'g1', 'u1');
     const v = validateChatSend(nk, logger, 'u1', {
       channelType: 'club', targetId: 'g1', language: 'en', content: 'id1ot',
     }, NOW);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('FORBIDDEN');
+    if (!v.ok) expect(v.code).toBe('CONTENT_REJECTED');
   });
 
   // ── Silenced ───────────────────────────────────────────────────────────

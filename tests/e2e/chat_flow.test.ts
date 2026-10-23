@@ -16,6 +16,7 @@
 //   - maintenance blocks chat_send
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { writeChatMessageCreate } from '../../modules/src/chat/messages';
 
 import {
   FakeContext,
@@ -239,7 +240,7 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
     }
   });
 
-  it('blocked word (es) is rejected with FORBIDDEN', () => {
+  it('blocked word (es) is rejected with CONTENT_REJECTED (plan T-22)', () => {
     const clubId = 'grp-test-2';
     seedClubMember(env, clubId, ALICE);
     const res = call<ChatResp<ChatSendOutput>>(env, 'chat_send', ALICE, {
@@ -250,7 +251,7 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
       content: 'eres un IDIOTA',
     });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error.code).toBe('FORBIDDEN');
+    if (!res.ok) expect(res.error.code).toBe('CONTENT_REJECTED');
   });
 
   it('blocked word (en) bypasses with leet', () => {
@@ -265,7 +266,7 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
       content: '1d10t here',
     });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error.code).toBe('FORBIDDEN');
+    if (!res.ok) expect(res.error.code).toBe('CONTENT_REJECTED');
   });
 
   it('silenced user is rejected with untilUtc in details', () => {
@@ -399,20 +400,7 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
       env.fakeNakama.store.set(rateKey, { ...rate, value: rewound });
     }
 
-    // Force primero's createdAt to be earlier than the second send so
-    // sort by createdAt desc is deterministic (avoids same-ms flakiness
-    // when Date.now() returns the same value for both sends).
-    const primeroKey = `chat_history/${channelId}/${primeroId}/00000000-0000-0000-0000-000000000000`;
-    const primeroObj = env.fakeNakama.store.get(primeroKey);
-    expect(primeroObj).toBeDefined();
-    if (primeroObj !== undefined) {
-      const value = primeroObj.value as { createdAt: number };
-      env.fakeNakama.store.set(primeroKey, {
-        ...primeroObj,
-        value: { ...value, createdAt: value.createdAt - 10 },
-      });
-    }
-
+    // Messages are numbered per channel (plan T-22): no clock tie-break.
     const r2 = call<ChatResp<ChatSendOutput>>(env, 'chat_send', ALICE, {
       callerUserId: ALICE, channelType: 'club', targetId: clubId,
       language: 'es', content: 'segundo',
@@ -430,6 +418,16 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
     if (list.ok) {
       expect(list.data.messages.length).toBe(1);
       expect(list.data.messages[0].content).toBe('segundo');
+      expect(list.data.nextCursor).not.toBe('');
+      const page2 = call<ChatResp<ChatListOutput>>(env, 'chat_list', ALICE, {
+        callerUserId: ALICE, channelType: 'club', targetId: clubId,
+        limit: 1, cursor: list.data.nextCursor,
+      });
+      expect(page2.ok).toBe(true);
+      if (page2.ok) {
+        expect(page2.data.messages.map((m) => m.content)).toEqual(['primero']);
+        expect(page2.data.nextCursor).toBe('');
+      }
     }
 
     const listAll = call<ChatResp<ChatListOutput>>(env, 'chat_list', ALICE, {
@@ -448,35 +446,16 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
     seedClubMember(env, clubId, ALICE);
     seedAccount(env, ALICE, 'alice');
 
+    const channelId = `club:${clubId}`;
+    // An old message (#1) whose retention ran out, then a fresh one (#2).
+    writeChatMessageCreate(env.fakeNakama.nakama, {
+      messageId: 'stale-msg', channelId, channelType: 'club', targetId: clubId,
+      senderUserId: ALICE, senderName: 'alice', content: 'stale', language: 'es',
+      createdAt: 1_000_000_000_000, expiresAt: 1_000_000_000_001,
+    }, 1_000_000_000_000);
     call<ChatResp<ChatSendOutput>>(env, 'chat_send', ALICE, {
       callerUserId: ALICE, channelType: 'club', targetId: clubId,
       language: 'es', content: 'fresh',
-    });
-
-    // Forge a second message with an expired expiresAt.
-    const channelId = `club:${clubId}`;
-    env.fakeNakama.store.set(`chat_history/${channelId}/stale-msg/00000000-0000-0000-0000-000000000000`, {
-      collection: 'chat_history',
-      key: `${channelId}/stale-msg`,
-      userId: '00000000-0000-0000-0000-000000000000',
-      value: {
-        schemaVersion: 1,
-        messageId: 'stale-msg',
-        channelId,
-        channelType: 'club',
-        targetId: clubId,
-        senderUserId: ALICE,
-        senderName: 'alice',
-        content: 'stale',
-        language: 'es',
-        createdAt: 1_000_000_000_000, // very old
-        expiresAt: 1_000_000_000_001, // already expired
-      },
-      version: 'v00000001',
-      permissionRead: 1, permissionWrite: 0,
-      createTime: new Date(0).toISOString(),
-      updateTime: new Date(0).toISOString(),
-      expiresAt: new Date(1_000_000_000_001).toISOString(),
     });
 
     const list = call<ChatResp<ChatListOutput>>(env, 'chat_list', ALICE, {
@@ -486,6 +465,7 @@ describe('chat_send + chat_list flow (Phase 7 Chunk 6)', () => {
     if (list.ok) {
       expect(list.data.messages.length).toBe(1);
       expect(list.data.messages[0].content).toBe('fresh');
+      expect(list.data.nextCursor).toBe('');
     }
   });
 

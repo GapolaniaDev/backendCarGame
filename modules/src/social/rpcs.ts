@@ -22,6 +22,7 @@ import { parseInput } from '../core/parse_input';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { generateFriendCode, isValidCodeFormat } from './friend_code';
+import { isBlockedEitherWay } from './blocks_repo';
 import {
   deleteFriendEdge,
   listFriendEdges,
@@ -30,12 +31,12 @@ import {
   readFriendEdge,
   readRecentRivals,
   writeFriendCode,
-  writeFriendEdgeCreate,
 } from './friends_repo';
 import {
   FRIEND_CODE_LENGTH,
   RECENT_RIVALS_CAP,
   RECENT_RIVALS_WINDOW_MS,
+  asFriendEdgeWrite,
   type FriendAddByCodeOutput,
   type FriendCard,
   type FriendCodeGetOutput,
@@ -176,7 +177,9 @@ export function friend_code_get_impl(
 /**
  * Paste a code, get a mutual friendship. Errors:
  *   - BAD_REQUEST: code missing / wrong format / self-add
- *   - NOT_FOUND:   code has no row (stale or typo)
+ *   - NOT_FOUND:   code has no row (stale or typo), or a block between the
+ *                  two players either way (plan T-22; audit 07 f3): the
+ *                  answer does not reveal the block
  *   - CONFLICT:    already friends
  *   - INTERNAL:    storage failure
  */
@@ -213,6 +216,10 @@ export function friend_add_by_code_impl(
   const friendId = owner.record.userId;
   if (friendId === caller.id) {
     return toJson(err('BAD_REQUEST', 'cannot add yourself as a friend'));
+  }
+  if (isBlockedEitherWay(nk, caller.id, friendId)) {
+    logger.info('friend_add_by_code refused by a block [caller=%s target=%s]', caller.id, friendId);
+    return toJson(err('NOT_FOUND', 'no player with that code'));
   }
 
   // CONFLICT check: edge already exists in caller's row?
@@ -263,8 +270,8 @@ export function friend_add_by_code_impl(
   };
 
   try {
-    writeFriendEdgeCreate(nk, myEdge);
-    writeFriendEdgeCreate(nk, theirEdge);
+    // Both sides in one write: never a one-sided friendship.
+    nk.storageWrite([asFriendEdgeWrite(myEdge), asFriendEdgeWrite(theirEdge)]);
   } catch (e) {
     logger.error(
       'friend_add_by_code: storage write failed: %s',

@@ -27,6 +27,8 @@ export const RECENT_RIVALS_CAP = 20;
 export const RECENT_RIVALS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export const FRIENDS_CODE_COLLECTION = 'friends_code';
+/** code → owner index (system-owned, plan T-22): `friend_add_by_code` reads one key. */
+export const FRIENDS_CODE_INDEX_COLLECTION = 'friends_code_index';
 export const FRIENDS_EDGE_COLLECTION = 'friends_edge';
 export const RECENT_RIVALS_COLLECTION = 'recent_rivals';
 
@@ -267,6 +269,18 @@ export function asFriendCodeWrite(rec: FriendCodeRecord): IStorageObject {
     userId: rec.userId,
     value: rec as unknown as Record<string, unknown>,
     permissionRead: 1,
+    permissionWrite: 0,
+  };
+}
+
+/** Index row of a friend code (upsert: the code is a function of the user id). */
+export function asFriendCodeIndexWrite(rec: FriendCodeRecord): IStorageObject {
+  return {
+    collection: FRIENDS_CODE_INDEX_COLLECTION,
+    key: rec.code,
+    userId: '00000000-0000-0000-0000-000000000000',
+    value: { schemaVersion: 1, code: rec.code, userId: rec.userId } as Record<string, unknown>,
+    permissionRead: 0,
     permissionWrite: 0,
   };
 }

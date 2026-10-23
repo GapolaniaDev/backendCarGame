@@ -11,17 +11,17 @@
 //                                  B↔A resolve to the same channel.
 //
 // Storage keys:
-//   chat_history/{channelId}/{messageId}
+//   chat_channels/{channelId}           — head row { lastSeq } (plan T-22)
+//   chat_history/{channelId}/{seq:12}   — one message per sequence number
 //   chat_rate/{userId}
 //   silenced/{userId}
 //
-// All three are server-only write. Chat_history reads/writes are
-// channel-scoped (no userId filter — the server is the only authority).
-// chat_rate + silenced are owner-scoped (userId === owner).
+// All are server-only write. Chat channels and history are system-owned
+// and channel-scoped (the server is the only authority); chat_rate +
+// silenced are owner-scoped (userId === owner).
 //
 // ChatRetention: 7 days from `createdAt`. Expired messages are filtered
-// from `listMessages` (lazy purge — the runtime's TTL is also set on
-// write so they auto-expire at the storage layer too).
+// from `listChatMessages` (Nakama storage has no TTL).
 
 import type { IStorageObject } from '../nkruntime';
 
@@ -32,6 +32,7 @@ export type ChatLanguage = 'es' | 'en' | 'pt';
 export const CHAT_LANGUAGES: ReadonlyArray<ChatLanguage> = ['es', 'en', 'pt'];
 
 export const CHAT_HISTORY_COLLECTION = 'chat_history';
+export const CHAT_CHANNELS_COLLECTION = 'chat_channels';
 export const CHAT_RATE_COLLECTION = 'chat_rate';
 export const SILENCED_COLLECTION = 'silenced';
 
@@ -89,8 +90,9 @@ export function parseChannelId(
  * Channel-scoped (does NOT include userId — chat history is shared by
  * participants, not owned by a single user).
  */
-export function chatMessageKey(channelId: string, messageId: string): string {
-  return `${channelId}/${messageId}`;
+/** Key of message number `seq` of a channel (zero-padded: keys sort by number). */
+export function chatMessageKey(channelId: string, seq: number): string {
+  return `${channelId}/${String(seq).padStart(12, '0')}`;
 }
 
 /**
@@ -111,6 +113,8 @@ export const CHAT_HISTORY_SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
 export interface ChatMessageRecord {
   schemaVersion: 1;
   messageId: string;
+  /** Position in the channel (1, 2, …): the storage key and the cursor. */
+  seq: number;
   channelId: string;
   channelType: ChatChannelType;
   /**
@@ -174,14 +178,35 @@ export interface SilencedRecord {
 
 // ─── Storage write helpers ──────────────────────────────────────────────────
 
+/** Head row of a channel: the last sequence number used. */
+export interface ChatChannelRecord {
+  schemaVersion: 1;
+  channelId: string;
+  lastSeq: number;
+}
+
 export function asChatMessageWrite(rec: ChatMessageRecord): IStorageObject {
   return {
     collection: CHAT_HISTORY_COLLECTION,
-    key: chatMessageKey(rec.channelId, rec.messageId),
+    key: chatMessageKey(rec.channelId, rec.seq),
     userId: CHAT_HISTORY_SYSTEM_USER, // system-owned (shared across participants)
     value: rec as unknown as unknown as Record<string, unknown>,
     permissionRead: 1, // system-only read — clients must go through RPC
     permissionWrite: 0, // server-only writes
+    version: '*', // a sequence number is used once
+  };
+}
+
+/** `version` '*' creates the head; otherwise the CAS of the previous read. */
+export function asChatChannelWrite(rec: ChatChannelRecord, version: string): IStorageObject {
+  return {
+    collection: CHAT_CHANNELS_COLLECTION,
+    key: rec.channelId,
+    userId: CHAT_HISTORY_SYSTEM_USER,
+    value: rec as unknown as Record<string, unknown>,
+    permissionRead: 1,
+    permissionWrite: 0,
+    version,
   };
 }
 

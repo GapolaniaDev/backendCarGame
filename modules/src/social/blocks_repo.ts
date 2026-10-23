@@ -142,3 +142,25 @@ export function isBlockedEitherWay(
   const b = readBlock(nk, targetUserId, ownerId);
   return b !== null;
 }
+/**
+ * The ids of `others` that have a block with `userId` in either direction,
+ * in one batched read (plan T-22: club chat history hides them).
+ */
+export function blockedEitherWaySet(
+  nk: INakama,
+  userId: string,
+  others: ReadonlyArray<string>,
+): Set<string> {
+  const ids = Array.from(new Set(others.filter((o) => o !== userId)));
+  const out = new Set<string>();
+  if (ids.length === 0) return out;
+  const keys = ids.flatMap((o) => [
+    { collection: BLOCKS_COLLECTION, key: o, userId },
+    { collection: BLOCKS_COLLECTION, key: userId, userId: o },
+  ]);
+  for (const obj of nk.storageRead(keys)) {
+    if (!obj || obj.value === undefined) continue;
+    out.add(obj.userId === userId ? obj.key : obj.userId);
+  }
+  return out;
+}

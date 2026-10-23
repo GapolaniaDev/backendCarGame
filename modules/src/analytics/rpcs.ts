@@ -13,6 +13,7 @@
 // keyed on the input parameters so identical requests share results
 // for 60s.
 
+import { usernamesById } from '../leaderboards/usernames';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, type Resp } from '../core/response';
 import type { ErrorCode } from '../core/errors';
@@ -402,17 +403,14 @@ export const admin_iap_top_buyers_get_impl: RpcHandler = (_ctx, logger, nk, body
   }
   const all = readIapAdEvents(nk);
   const rows = filterByDateRange(all, fromDate, toDate);
-  // Privacy-sensitive: pass userLookup that uses accountGetId to resolve
-  // the runtime username. The function never throws; a null/missing
+  // Privacy-sensitive: userLookup resolves the runtime username with one
+  // batched `usersGetId` (3.27 nests it under `accountGetId(...).user`, so
+  // the old top-level read was always undefined — plan T-22). A missing
   // account yields an empty username (the operator can match by userId).
+  const names = usernamesById(logger, nk, rows.map((r) => r.userId).filter((id): id is string => typeof id === 'string'));
   const userLookup = (userId: string): { username: string } | null => {
-    try {
-      const u = nk.accountGetId(userId) as { username?: string } | null | undefined;
-      if (u && typeof u.username === 'string') return { username: u.username };
-    } catch {
-      // ignore
-    }
-    return null;
+    const username = names.get(userId);
+    return username !== undefined ? { username } : null;
   };
   const buyers = computeTopBuyers({ rows, userLookup, limit });
   const result: AdminIapTopBuyersOutput = { buyers };

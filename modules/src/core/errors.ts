@@ -18,6 +18,9 @@ export const ERROR_CODES = [
   'SERVICE_UNAVAILABLE',
   'UPGRADE_REQUIRED',
   'NOT_IMPLEMENTED',
+  // Plan T-22: a chat message refused by the content filter (the Unity
+  // chat adapter maps exactly this code to ChatError.Rejected).
+  'CONTENT_REJECTED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -37,6 +40,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   SERVICE_UNAVAILABLE: 'El servidor está en mantenimiento. Vuelve pronto.',
   UPGRADE_REQUIRED: 'Tu versión del juego está desactualizada. Actualiza para continuar.',
   NOT_IMPLEMENTED: 'This admin action is not yet implemented; use a more specific RPC',
+  CONTENT_REJECTED: 'The message was refused by the content filter',
 };
 
 /** Type guard for narrowing user input / storage payloads to a known code. */

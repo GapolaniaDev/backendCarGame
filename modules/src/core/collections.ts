@@ -69,6 +69,10 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   },
   // chat
   {
+    name: 'chat_channels', module: 'chat', owner: 'system', purge: [],
+    retained: 'per-channel sequence heads (channel ids name the club or the two players; no content)',
+  },
+  {
     name: 'chat_history', module: 'chat', owner: 'system',
     purge: [{ kind: 'valueField', field: 'senderUserId' }],
   },
@@ -183,6 +187,10 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
   // social
   { name: 'blocks', module: 'social', owner: 'user', purge: [{ kind: 'keyIsUser' }] },
   userOwned('friends_code', 'social'),
+  {
+    name: 'friends_code_index', module: 'social', owner: 'system',
+    purge: [{ kind: 'valueField', field: 'userId' }],
+  },
   { name: 'friends_edge', module: 'social', owner: 'user', purge: [{ kind: 'keyIsUser' }] },
   { name: 'invites', module: 'social', owner: 'user', purge: [{ kind: 'valueField', field: 'fromUserId' }] },
   { name: 'recent_rivals', module: 'social', owner: 'user', purge: [{ kind: 'entries', field: 'entries' }] },

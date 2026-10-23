@@ -18,14 +18,20 @@
 //
 // Errors:
 //   - chat_send:
-//     BAD_REQUEST    (missing fields, length, invalid language, self-chat)
-//     RATE_LIMITED   (1/s, 20/min, or per-RPC 30/min)
-//     FORBIDDEN      (silenced, blocked word, not member / not friend)
-//     NOT_FOUND      (club / peer not resolvable)
+//     BAD_REQUEST      (missing fields, length, invalid language, self-chat)
+//     RATE_LIMITED     (1/s, 20/min, or per-RPC 30/min)
+//     CONTENT_REJECTED (blocked word — plan T-22; it was FORBIDDEN)
+//     FORBIDDEN        (silenced, not member / not friend, a block between
+//                       the two players: `details.reason = 'BLOCKED'`)
+//     NOT_FOUND        (club / peer not resolvable)
 //   - chat_list:
-//     BAD_REQUEST    (missing fields)
+//     BAD_REQUEST    (missing fields, malformed cursor)
 //     FORBIDDEN      (not member / not friend)
 //     NOT_FOUND      (channel target missing)
+//
+// Blocks (plan T-22; audit 07 f3, 7.2.7): a direct message needs no
+// block either way (`checkChatSendBlock`); a club history hides the
+// messages of senders that have a block with the reader.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok, toJson, type Resp } from '../core/response';
@@ -34,7 +40,10 @@ import { parseInput } from '../core/parse_input';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { readFriendEdge } from '../social/friends_repo';
-import { readMember } from '../clubs/members_repo';
+import { listGroupMemberIds, readMember } from '../clubs/members_repo';
+import { blockedEitherWaySet } from '../social/blocks_repo';
+import { usernamesById } from '../leaderboards/usernames';
+import { checkChatSendBlock } from './before_send';
 import { containsBlockedWord } from './blocked_words';
 import { checkChatRateLimit } from './rate_limit';
 import { getSilencedStatus } from './silenced';
@@ -127,6 +136,7 @@ export interface ValidateChatSendErr {
   ok: false;
   code:
     | 'BAD_REQUEST'
+    | 'CONTENT_REJECTED'
     | 'FORBIDDEN'
     | 'NOT_FOUND'
     | 'RATE_LIMITED';
@@ -142,11 +152,12 @@ export type ValidateChatSendResult = ValidateChatSendOk | ValidateChatSendErr;
  *
  *   1. Chat rate limit (1/s, 20/min)        → RATE_LIMITED
  *   2. Length ≤ 200                          → BAD_REQUEST
- *   3. Blocked words (per language)          → FORBIDDEN
+ *   3. Blocked words (per language)          → CONTENT_REJECTED
  *   4. Silenced status (untilUtc > nowMs)    → FORBIDDEN (+ details)
  *   5. Channel resolution + access:
  *        - club:   readMember(clubId, caller) → FORBIDDEN if absent
- *        - direct: readFriendEdge(caller, peerId) → FORBIDDEN if absent
+ *        - direct: readFriendEdge(caller, peerId) → FORBIDDEN if absent,
+ *                  and no block either way (`checkChatSendBlock`)
  *
  * Returns `{ ok: true, channelId }` when all checks pass. The RPC then
  * writes the message + emits + returns. Storage is NOT touched here so
@@ -208,7 +219,7 @@ export function validateChatSend(
   if (containsBlockedWord(input.content, input.language)) {
     return {
       ok: false,
-      code: 'FORBIDDEN',
+      code: 'CONTENT_REJECTED',
       message: 'content contains a blocked word',
     };
   }
@@ -253,6 +264,15 @@ export function validateChatSend(
       ok: false,
       code: 'FORBIDDEN',
       message: 'not friends with target user',
+    };
+  }
+  const block = checkChatSendBlock(nk, logger, callerId, peerId);
+  if (!block.allowed) {
+    return {
+      ok: false,
+      code: 'FORBIDDEN',
+      message: 'cannot message this player',
+      details: { reason: 'BLOCKED' },
     };
   }
   return {
@@ -307,16 +327,10 @@ export function chat_send_impl(
     return toJson(err(verdict.code, verdict.message, verdict.details));
   }
 
-  // Resolve senderName (denormalized so chat_list is cheap).
-  let senderName = 'unknown';
-  try {
-    const acc = nk.accountGetId(caller.id) as { username?: string } | null;
-    if (acc && typeof acc.username === 'string' && acc.username.length > 0) {
-      senderName = acc.username;
-    }
-  } catch {
-    // best-effort — keep 'unknown'
-  }
+  // Resolve senderName (denormalized so chat_list is cheap). The 3.27
+  // account object nests the username under `user`; the old read of
+  // `accountGetId(...).username` was always undefined ('unknown').
+  const senderName = usernamesById(logger, nk, [caller.id]).get(caller.id) ?? 'unknown';
 
   const messageId = nk.uuidv4();
   const targetIdForChannel =
@@ -324,21 +338,27 @@ export function chat_send_impl(
       ? input.targetId
       : directChannelId(caller.id, input.targetId).slice('direct:'.length);
 
-  const write = writeChatMessageCreate(
-    nk,
-    {
-      messageId,
-      channelId: verdict.channelId,
-      channelType: input.channelType,
-      targetId: targetIdForChannel,
-      senderUserId: caller.id,
-      senderName,
-      content: input.content,
-      language: input.language,
-      createdAt: nowMs,
-    },
-    nowMs,
-  );
+  let write;
+  try {
+    write = writeChatMessageCreate(
+      nk,
+      {
+        messageId,
+        channelId: verdict.channelId,
+        channelType: input.channelType,
+        targetId: targetIdForChannel,
+        senderUserId: caller.id,
+        senderName,
+        content: input.content,
+        language: input.language,
+        createdAt: nowMs,
+      },
+      nowMs,
+    );
+  } catch (e) {
+    logger.warn('chat_send: write failed: %s', e instanceof Error ? e.message : String(e));
+    return toJson(err('CONFLICT', 'the channel is busy; please retry'));
+  }
 
   emit(
     nk,
@@ -432,8 +452,22 @@ export function chat_list_impl(
     ? (parsed.data['cursor'] as string)
     : '';
 
+  // A club history hides the messages of senders that have a block with
+  // the reader (a direct channel already requires no block to send).
+  let hideSenders: ReadonlySet<string> | undefined;
+  if (channelType === 'club') {
+    const members = readMemberIdsSafe(nk, targetId);
+    hideSenders = blockedEitherWaySet(nk, caller.id, members);
+  }
+
   const nowMs = Date.now();
-  const result = listChatMessages(nk, channelId, { limit: limitN, cursor }, nowMs);
+  let result;
+  try {
+    result = listChatMessages(nk, channelId, { limit: limitN, cursor, ...(hideSenders !== undefined ? { hideSenders } : {}) }, nowMs);
+  } catch (e) {
+    if (e instanceof RangeError) return toJson(err('BAD_REQUEST', 'invalid cursor'));
+    throw e;
+  }
 
   emit(
     nk,
@@ -450,6 +484,15 @@ export function chat_list_impl(
     nextCursor: result.nextCursor,
   };
   return toJson(ok(out));
+}
+
+/** Club roster ids for the block filter; empty when the roster is unreadable. */
+function readMemberIdsSafe(nk: INakama, clubId: string): string[] {
+  try {
+    return listGroupMemberIds(nk, clubId);
+  } catch {
+    return [];
+  }
 }
 
 // ─── Top-level bindings ──────────────────────────────────────────────────────
