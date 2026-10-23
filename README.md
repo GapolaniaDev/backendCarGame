@@ -227,6 +227,12 @@ runtime are `npm run smoke:live` (Quick start, "Humo en vivo").
 
 ### Contract
 
+- **RPC names:** `snake_case`, `<area>_<action>` with the area first
+  (`race_session_create`, `store_buy`, `club_join`, `inbox_claim`); reads end
+  in `_get` or `_list`. Operator RPCs start with `admin_`; server-to-server
+  callbacks name their provider (`ads_levelplay_callback`). Every RPC answers
+  with the `{ok, data}` / `{ok: false, error: {code, message, details?}}`
+  envelope below.
 - **Client RPCs:** `docs/openapi/unity-client.openapi.json` (and the `.yaml`
   mirror, same content) documents every RPC a game client may call, plus the
   server-to-server `ads_levelplay_callback`. Prose reference:
