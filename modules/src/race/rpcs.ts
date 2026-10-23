@@ -154,7 +154,10 @@ function config_get_impl(
 
 // ─── race_session_create ─────────────────────────────────────────────────────
 
-function validateCreateInput(raw: unknown, nk: INakama): Resp<RaceSessionCreateInput> {
+/** `RaceSessionCreateInput` once validated: the declared loadout may be absent. */
+type ValidatedCreateInput = Omit<RaceSessionCreateInput, 'hostLoadout'> & { hostLoadout: Loadout | null };
+
+function validateCreateInput(raw: unknown, nk: INakama): Resp<ValidatedCreateInput> {
   if (raw === null || typeof raw !== 'object') {
     return err('BAD_REQUEST', 'payload must be a JSON object');
   }
@@ -184,21 +187,6 @@ function validateCreateInput(raw: unknown, nk: INakama): Resp<RaceSessionCreateI
   if (size !== 1 && size !== 2 && size !== 4 && size !== 6) {
     return err('BAD_REQUEST', `size must be 1|2|4|6, got ${String(size)}`);
   }
-  const hostLoadout = obj['hostLoadout'] as Record<string, unknown> | undefined;
-  if (!hostLoadout || typeof hostLoadout !== 'object') {
-    return err('BAD_REQUEST', 'hostLoadout must be an object');
-  }
-  const classId = hostLoadout['classId'];
-  if (
-    classId !== 'D' && classId !== 'C' && classId !== 'B' && classId !== 'A' && classId !== 'S'
-  ) {
-    return err('BAD_REQUEST', 'hostLoadout.classId must be D|C|B|A|S');
-  }
-  const bodyId = hostLoadout['bodyId'];
-  if (typeof bodyId !== 'string' || bodyId.length === 0) {
-    return err('BAD_REQUEST', 'hostLoadout.bodyId must be a non-empty string');
-  }
-
   // Mode must allow this size.
   const modes = getModes(nk);
   const modeEntry = modes.find((m) => m.id === mode);
@@ -218,15 +206,20 @@ function validateCreateInput(raw: unknown, nk: INakama): Resp<RaceSessionCreateI
     mode,
     trackId,
     size: size as RaceSessionCreateInput['size'],
-    hostLoadout: {
-      classId: classId as RaceSessionCreateInput['hostLoadout']['classId'],
-      bodyId,
-      ...(typeof hostLoadout['liveryId'] === 'string'
-        ? { liveryId: hostLoadout['liveryId'] }
-        : {}),
-    },
+    hostLoadout: parseDeclaredLoadout(obj['hostLoadout']),
     hostUserId: typeof obj['hostUserId'] === 'string' ? obj['hostUserId'] : '',
   });
+}
+
+/**
+ * The loadout a client declares is only a hint since T-10: the server
+ * takes the car from the garage (`resolveServerLoadout`). A missing or
+ * malformed declaration (e.g. a placeholder class id) is therefore
+ * ignored instead of rejected.
+ */
+function parseDeclaredLoadout(obj: unknown): Loadout | null {
+  const v = validateLoadout(obj);
+  return v.ok ? v.data : null;
 }
 
 function race_session_create_impl(
@@ -543,9 +536,7 @@ function race_session_join_impl(
   const m = assertNotInMaintenance(logger, nk, joinerId);
   if (m !== null) return toJson(m);
 
-  const loadoutV = validateLoadout(parsed.data.loadout);
-  if (!loadoutV.ok) return toJson(loadoutV);
-  const loadout = loadoutV.data;
+  const loadout = parseDeclaredLoadout(parsed.data.loadout);
 
   const rl = checkRateLimit(nk, {
     rpcName: 'race_session_join',
@@ -1090,15 +1081,13 @@ function race_session_quick_bots_impl(
     return toJson(err('BAD_REQUEST', `size must be 2|4|6, got ${String(input.size)}`));
   }
 
-  // hostLoadout validation; the loadout itself comes from the caller's
-  // garage (T-10, audit PC-16) and the bots reuse its class.
-  const lv = validateLoadout(input.hostLoadout);
-  if (!lv.ok) return toJson(lv);
+  // The loadout comes from the caller's garage (T-10, audit PC-16); the
+  // declared one is only a hint, and the bots reuse the host's class.
   const hostLoadout = resolveServerLoadout(
     nk,
     logger,
     callerId,
-    lv.data,
+    parseDeclaredLoadout(input.hostLoadout),
     'normal',
     'race_session_quick_bots',
   );

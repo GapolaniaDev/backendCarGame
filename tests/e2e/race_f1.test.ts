@@ -407,6 +407,24 @@ describe('F1 races (plan T-06…T-10)', () => {
       expect(env.fakeLogger.lines.some((l) => /declared loadout titan_s1\/S ignored/.test(l))).toBe(true);
     });
 
+    it('a malformed declared loadout is ignored, not rejected (it is only a hint)', () => {
+      const r = call<{ sessionId: string }>(env, 'race_session_create', A, {
+        matchId: 'm-t10-placeholder',
+        mode: 'private',
+        trackId: 'neon_blvd',
+        size: 2,
+        hostLoadout: { classId: 'class_a', bodyId: 'body_a' },
+        hostUserId: A,
+      });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      if (!r.ok) return;
+      const j = call(env, 'race_session_join', B, { sessionId: r.data.sessionId, userId: B });
+      expect(j.ok, JSON.stringify(j)).toBe(true);
+      for (const e of storedSession(env, r.data.sessionId).roster) {
+        expect(e.loadout).toMatchObject({ classId: 'D', bodyId: 'starter_viper' });
+      }
+    });
+
     it('the min-time floor is the garage car class, not the declared one', () => {
       const r = call<{ sessionId: string }>(env, 'race_session_create', A, {
         matchId: 'm-t10b',

@@ -384,8 +384,8 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(joinEnv.error.message).toMatch(/state started/);
     });
 
-    it('rejects missing loadout (BAD_REQUEST)', () => {
-      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload());
+    it('accepts a missing loadout: the server takes the garage car (T-10)', () => {
+      const createEnv = call<CreateData>(env, 'race_session_create', null, makeCreatePayload({ mode: 'quick', size: 2 }));
       if (!createEnv.ok) throw new Error('create failed');
       const sid = createEnv.data.sessionId;
       const joinEnv = call<unknown>(env, 'race_session_join', null, {
@@ -393,9 +393,12 @@ describe('race_lifecycle (Chunk 5)', () => {
         userId: OTHER_ID,
         callerUserId: OTHER_ID,
       });
-      expect(joinEnv.ok).toBe(false);
-      if (joinEnv.ok) return;
-      expect(joinEnv.error.code).toBe('BAD_REQUEST');
+      expect(joinEnv.ok).toBe(true);
+      const read = call<{ session: { roster: Array<{ userId: string; loadout: { bodyId: string } }> } }>(
+        env, 'race_session_get', OTHER_ID, { sessionId: sid });
+      if (!read.ok) throw new Error('get failed');
+      // No garage for OTHER_ID in this fixture: the catalog starter car.
+      expect(read.data.session.roster.find((e) => e.userId === OTHER_ID)?.loadout.bodyId).toBe('starter_viper');
     });
   });
 
