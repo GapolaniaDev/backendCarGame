@@ -12,13 +12,17 @@
 //   1. Stamp firstWinOfDay for every human winner (executed BEFORE
 //      counter evaluation so the map is populated when the counter
 //      runs).
-//   2. For each human finisher:
-//      a. Read daily/weekly/achievements records. If the user has no
-//         storage row for any of them, skip (lazy creation lives in
-//         the read-side RPC — Chunk 3 ensures; Chunk 5 will ensure
-//         achievements).
-//      b. Evaluate increments via counter.ts.
-//      c. Apply pure progress writers; mark completion; CAS-persist.
+//   2. For each human finisher, for the daily, weekly and achievements
+//      records (plan T-20; HT Prog-4, Prog-10):
+//      a. Read the record; a missing one is created with the day's /
+//         week's deterministic assignment (the same as `missions_get`),
+//         so a race finished before the first `*_get` still counts.
+//      b. Evaluate increments via counter.ts, apply the pure progress
+//         writers and mark completion.
+//      c. Write with the version read; on a lost CAS, re-read and
+//         re-apply b. (Before T-20 the retry wrote the stale record with
+//         a fresh version, undoing a claim made in between: the mission
+//         could be claimed twice.)
 //   3. Emit `mission_completed` / `achievement_unlocked` analytics.
 //
 // Idempotency: Phase 4's ranked subscriber uses a `ranked_progress`
@@ -37,14 +41,9 @@ import type { RaceCompletedEvent as RaceCompletedEventFromRace } from '../race/t
 import { RACE_EVENT_RACE_COMPLETED } from '../race/constants';
 import { SYSTEM_USER_ID } from '../race/constants';
 import {
-  readDailyMissions,
-  readWeeklyMissions,
-  readAchievements,
-} from './counter_repo';
-import {
-  writeDailyMissionsCAS,
-  writeWeeklyMissionsCAS,
-  writeAchievementsCAS,
+  updateDailyMissions,
+  updateWeeklyMissions,
+  updateAchievements,
 } from './missions_repo';
 import { evaluateIncrement } from './counter';
 import { extractHumanResults } from './event';
@@ -195,79 +194,42 @@ export function handleRaceCompletedForMissions(
       }
     }
 
-    const dailyRow = readDailyMissions(nk, userId, dateUtc);
-    const weeklyRow = readWeeklyMissions(nk, userId, weekUtc);
-    const achvRow = readAchievements(nk, userId);
-
-    if (dailyRow === null && weeklyRow === null && achvRow === null) {
-      // User has no mission storage at all — likely brand-new and
-      // hasn't called `missions_get` / `achievements_get` yet.
-      // Lazy creation is the RPC's job, not the subscriber's.
-      outcomes.push({
-        userId,
-        dailyWritten: false,
-        weeklyWritten: false,
-        achievementsWritten: false,
-        dailyCompletedIds: [],
-        weeklyCompletedIds: [],
-        achievementCompletedIds: [],
-      });
-      continue;
-    }
-
-    // 5a. Daily missions.
-    let dailyWritten = false;
+    // 5a. Daily missions (created on the fly when missing).
     let dailyCompletedIds: string[] = [];
-    if (dailyRow !== null) {
-      const before = dailyRow.missions;
-      const dailyDeltas = computeDeltas(missionEvent, userId, dailyRow, dailyDefs);
-      if (dailyDeltas.size > 0) {
-        const afterInstances = applyIncrementsToMissions(before, dailyDefs, dailyDeltas);
-        const afterCompleted = markCompletedIfReached(afterInstances, dailyDefs);
-        const flipped = newlyCompleted(before, afterCompleted);
-        dailyCompletedIds = flipped;
-        const next: DailyMissions = { ...dailyRow, missions: afterCompleted };
-        dailyWritten = writeDailyMissionsCAS(nk, logger, userId, dateUtc, next);
-      }
-    }
+    const daily = updateDailyMissions(nk, logger, userId, dateUtc, [...dailyDefs], (row) => {
+      const deltas = computeDeltas(missionEvent, userId, row, dailyDefs);
+      if (deltas.size === 0) return null;
+      const after = markCompletedIfReached(applyIncrementsToMissions(row.missions, dailyDefs, deltas), dailyDefs);
+      dailyCompletedIds = newlyCompleted(row.missions, after);
+      return { ...row, missions: after } satisfies DailyMissions;
+    });
+    const dailyWritten = daily !== null && daily !== false;
+    if (!dailyWritten) dailyCompletedIds = [];
 
     // 5b. Weekly missions.
-    let weeklyWritten = false;
     let weeklyCompletedIds: string[] = [];
-    if (weeklyRow !== null) {
-      const before = weeklyRow.missions;
-      const weeklyDeltas = computeDeltas(missionEvent, userId, weeklyRow, weeklyDefs);
-      if (weeklyDeltas.size > 0) {
-        const afterInstances = applyIncrementsToMissions(before, weeklyDefs, weeklyDeltas);
-        const afterCompleted = markCompletedIfReached(afterInstances, weeklyDefs);
-        const flipped = newlyCompleted(before, afterCompleted);
-        weeklyCompletedIds = flipped;
-        const next: WeeklyMissions = { ...weeklyRow, missions: afterCompleted };
-        weeklyWritten = writeWeeklyMissionsCAS(nk, logger, userId, weekUtc, next);
-      }
-    }
+    const weekly = updateWeeklyMissions(nk, logger, userId, weekUtc, [...weeklyDefs], (row) => {
+      const deltas = computeDeltas(missionEvent, userId, row, weeklyDefs);
+      if (deltas.size === 0) return null;
+      const after = markCompletedIfReached(applyIncrementsToMissions(row.missions, weeklyDefs, deltas), weeklyDefs);
+      weeklyCompletedIds = newlyCompleted(row.missions, after);
+      return { ...row, missions: after } satisfies WeeklyMissions;
+    });
+    const weeklyWritten = weekly !== null && weekly !== false;
+    if (!weeklyWritten) weeklyCompletedIds = [];
 
-    // 5c. Achievements.
-    let achievementsWritten = false;
+    // 5c. Achievements: report only the ones this race completed.
     let achievementCompletedIds: string[] = [];
-    if (achvRow !== null) {
-      const achievementDeltas = computeAchievementDeltas(
-        missionEvent, userId, achvRow, achievementDefs,
-      );
-      if (achievementDeltas.size > 0) {
-        const next: AchievementsRecord = applyIncrementsToAchievements(
-          achvRow, achievementDefs, achievementDeltas,
-        );
-        achievementCompletedIds = newlyCompletedAchievements(next, achievementDefs);
-        achievementsWritten = writeAchievementsCAS(nk, logger, userId, next);
-      } else {
-        // Even with zero deltas, re-evaluate completion in case target
-        // was reached via existing progress + this race's delta (the
-        // delta above would have hit, but defensively check after the
-        // write so they only fire on flips).
-        achievementCompletedIds = newlyCompletedAchievements(achvRow, achievementDefs);
-      }
-    }
+    const achv = updateAchievements(nk, logger, userId, (row) => {
+      const deltas = computeAchievementDeltas(missionEvent, userId, row, achievementDefs);
+      if (deltas.size === 0) return null;
+      const next: AchievementsRecord = applyIncrementsToAchievements(row, achievementDefs, deltas);
+      const before = new Set(newlyCompletedAchievements(row, achievementDefs));
+      achievementCompletedIds = newlyCompletedAchievements(next, achievementDefs).filter((id) => !before.has(id));
+      return next;
+    });
+    const achievementsWritten = achv !== null && achv !== false;
+    if (!achievementsWritten) achievementCompletedIds = [];
 
     outcomes.push({
       userId,

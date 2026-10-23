@@ -22,9 +22,6 @@ import {
   claimAchievement,
   ensureAchievements,
 } from './achievements_repo';
-import { grantAchievementReward } from './reward_granter';
-import { addPassXp } from '../pass/pass_repo';
-import { achievementXPFor } from '../pass/xp_engine';
 import type {
   AchievementDefinition,
   MissionReward,
@@ -234,53 +231,37 @@ export const achievement_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const claimResp = claimAchievement(nk, logger, userId, achievementId, catalog);
   if (!claimResp.ok) return toJson(claimResp);
 
-  // Grant the reward — wallet (coins/gems) + garage (cosmeticId).
-  // Never throws (reward_granter swallows catalog-missing + CAS errors).
-  const grantResult = grantAchievementReward(
-    nk,
-    logger,
-    userId,
-    claimResp.data.reward,
-    'achievement',
-    achievementId,
-  );
-
-  // Phase 6 Chunk 7 — route the catalog XP into the battle pass.
-  const xpAmount = achievementXPFor(claimResp.data.reward);
-  let passXpGranted = 0;
-  let passNewLevel = 0;
-  let passLevelUps: number[] = [];
-  if (xpAmount > 0) {
-    const xpResult = addPassXp(nk, logger, userId, xpAmount);
-    if (xpResult !== null) {
-      passXpGranted = xpAmount;
-      passNewLevel = xpResult.newLevel;
-      passLevelUps = xpResult.levelUps;
-      emit(nk, logger, 'pass_xp_gained', {
-        userId,
-        source: 'achievement_claim',
-        amount: xpAmount,
-        achievementId,
-        newLevel: xpResult.newLevel,
-        levelUps: xpResult.levelUps,
-      });
-    }
+  // The claim, the coins/gems, the cosmetic and the pass XP were one
+  // transaction (plan T-20).
+  const { reward, granted, undelivered, xpGranted, passLevel, levelUps } = claimResp.data;
+  if (xpGranted > 0) {
+    emit(nk, logger, 'pass_xp_gained', {
+      userId,
+      source: 'achievement_claim',
+      amount: xpGranted,
+      achievementId,
+      newLevel: passLevel,
+      levelUps,
+    });
   }
 
   emit(nk, logger, 'achievement_claimed', {
     userId,
     achievementId,
-    reward: claimResp.data.reward,
-    grant: grantResult,
+    reward,
+    grant: granted,
   });
 
   return toJson(ok({
     achievementId,
-    reward: claimResp.data.reward,
-    granted: grantResult,
-    xpGranted: passXpGranted,
-    passLevel: passNewLevel,
-    levelUps: passLevelUps,
+    reward,
+    granted,
+    xpGranted,
+    passLevel,
+    levelUps,
+    // Additive (T-20): reward items missing from the catalogs, and the wallet.
+    ...(undelivered.length > 0 ? { undelivered } : {}),
+    newBalance: claimResp.data.balance,
   }));
 };
 

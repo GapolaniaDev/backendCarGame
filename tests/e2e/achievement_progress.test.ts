@@ -216,9 +216,9 @@ describe('achievement_progress subscriber (Phase 6 Chunk 4)', () => {
     expect(rec.progress.ach_first_win_of_day_3).toBe(1);
   });
 
-  it('user without achievements row is silently skipped (no auto-create)', () => {
+  it('a race before the first achievements_get creates the row and keeps its progress (T-20)', () => {
     const ts = Date.now();
-    // USER_GHOST has no achievements row.
+    // USER_GHOST has no achievements row yet.
     fireRace(env, bus, {
       sessionId: 's7',
       mode: 'quick',
@@ -228,7 +228,9 @@ describe('achievement_progress subscriber (Phase 6 Chunk 4)', () => {
     const ghost = env.fakeNakama.store.get(
       `${ACHIEVEMENTS_COLLECTION}/USER_GHOST/USER_GHOST`,
     );
-    expect(ghost).toBeUndefined();
+    expect(ghost).toBeDefined();
+    expect((ghost?.value as { progress: Record<string, number> }).progress.ach_first_win).toBe(1);
+    expect(ghost?.permissionWrite).toBe(0);
   });
 });
 

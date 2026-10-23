@@ -8,16 +8,16 @@
 // `assertNotInMaintenance` and `assertMinClientVersion` (Phase 5
 // Chunk 2/9). The caller comes from the session via `requireCallerId`
 // (core/caller.ts); a body `callerUserId` must match it.
+//
+// Plan T-20: a claim pays its coins and pass XP in the same transaction
+// as the `claimed` flag, and a paid reroll charges in the same
+// transaction as the new mission (`missions_repo.ts`).
 
 import { err, ok, toJson, type Resp } from '../core/response';
 import { checkRateLimit } from '../core/rate_limit';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
-import { grant, spend, walletGet } from '../economy/wallet';
-import type { LedgerMetadata } from '../economy/types';
 import { utcDate, utcWeek } from '../core/time';
-import { addPassXp } from '../pass/pass_repo';
-import { missionXPFor } from '../pass/xp_engine';
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import {
   getMissionsDailyCatalog,
@@ -34,7 +34,6 @@ import {
   claimDailyMission,
   claimWeeklyMission,
   rerollDailyMission,
-  PAID_REROLL_COST_GEMS,
 } from './missions_repo';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
@@ -278,54 +277,22 @@ export const mission_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
   const dailyCatalog = getMissionsDailyCatalog();
   const weeklyCatalog = getMissionsWeeklyCatalog();
 
-  let reward: MissionReward;
+  const claimResp = kind === 'daily'
+    ? claimDailyMission(nk, logger, userId, dateUtc, missionId, [...dailyCatalog])
+    : claimWeeklyMission(nk, logger, userId, weekUtc, missionId, [...weeklyCatalog]);
+  if (!claimResp.ok) return toJson(claimResp);
+  const { reward, balance, xpGranted, passLevel, levelUps } = claimResp.data;
 
-  if (kind === 'daily') {
-    const claimResp = claimDailyMission(nk, logger, userId, dateUtc, missionId, [...dailyCatalog]);
-    if (!claimResp.ok) return toJson(claimResp);
-    reward = claimResp.data.reward;
-  } else {
-    const claimResp = claimWeeklyMission(nk, logger, userId, weekUtc, missionId, [...weeklyCatalog]);
-    if (!claimResp.ok) return toJson(claimResp);
-    reward = claimResp.data.reward;
-  }
-
-  // Convert reward → wallet changeset (cosmeticId is handled by garage).
-  const changeset: { coins?: number; gems?: number } = {};
-  if (reward.coins !== undefined && reward.coins > 0) changeset.coins = reward.coins;
-  if (reward.gems !== undefined && reward.gems > 0) changeset.gems = reward.gems;
-
-  if (Object.keys(changeset).length > 0) {
-    const meta: LedgerMetadata = { reason: 'mission', sourceId: 'mission_claim' };
-    // The period is in the key: wallet keys are durable (T-11) and a
-    // mission id comes back in later days / weeks.
-    const period = kind === 'daily' ? dateUtc : weekUtc;
-    const grantKey = `mission:${kind}:${period}:${missionId}:${userId}`;
-    const grantResp = grant(nk, userId, changeset, meta, grantKey);
-    if (!grantResp.ok) return toJson(grantResp);
-  }
-
-  // Phase 6 Chunk 7 — route the catalog XP into the battle pass.
-  const xpAmount = missionXPFor(reward);
-  let passXpGranted = 0;
-  let passNewLevel = 0;
-  let passLevelUps: number[] = [];
-  if (xpAmount > 0) {
-    const xpResult = addPassXp(nk, logger, userId, xpAmount);
-    if (xpResult !== null) {
-      passXpGranted = xpAmount;
-      passNewLevel = xpResult.newLevel;
-      passLevelUps = xpResult.levelUps;
-      emit(nk, logger, 'pass_xp_gained', {
-        userId,
-        source: 'mission_claim',
-        amount: xpAmount,
-        missionId,
-        kind,
-        newLevel: xpResult.newLevel,
-        levelUps: xpResult.levelUps,
-      });
-    }
+  if (xpGranted > 0) {
+    emit(nk, logger, 'pass_xp_gained', {
+      userId,
+      source: 'mission_claim',
+      amount: xpGranted,
+      missionId,
+      kind,
+      newLevel: passLevel,
+      levelUps,
+    });
   }
 
   emit(nk, logger, 'mission_claimed', {
@@ -340,10 +307,10 @@ export const mission_claim_impl: RpcHandler = (ctx, logger, nk, body) => {
     reward,
     kind,
     // Additive (T-12): `{coins, gems}` like every money RPC.
-    newBalance: walletGet(nk, userId),
-    xpGranted: passXpGranted,
-    passLevel: passNewLevel,
-    levelUps: passLevelUps,
+    newBalance: balance,
+    xpGranted,
+    passLevel,
+    levelUps,
   }));
 };
 
@@ -375,16 +342,9 @@ export const mission_reroll_impl: RpcHandler = (ctx, logger, nk, body) => {
   const rerollResp = rerollDailyMission(
     nk, logger, userId, dateUtc, missionId, useGems, [...dailyCatalog],
   );
+  // A paid reroll is charged inside `rerollDailyMission` (one
+  // transaction with the new mission): INSUFFICIENT_FUNDS changes nothing.
   if (!rerollResp.ok) return toJson(rerollResp);
-
-  if (rerollResp.data.costGems > 0) {
-    const meta: LedgerMetadata = { reason: 'mission', sourceId: 'mission_reroll' };
-    const spendKey = `mission_reroll:${userId}:${dateUtc}:${missionId}`;
-    const spendResp = spend(
-      nk, userId, { gems: PAID_REROLL_COST_GEMS }, meta, spendKey,
-    );
-    if (!spendResp.ok) return toJson(spendResp);
-  }
 
   emit(nk, logger, 'mission_rerolled', {
     userId,

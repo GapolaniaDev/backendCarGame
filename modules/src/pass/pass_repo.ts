@@ -336,3 +336,50 @@ export function addPassXp(
     applied: false,
   };
 }
+/** A pass XP grant planned as one CAS write, for a caller's transaction (plan T-20). */
+export interface PassXpPlan {
+  write: IStorageObject;
+  /** XP added. */
+  amount: number;
+  newLevel: number;
+  /** Levels crossed by this grant (ascending). */
+  levelUps: number[];
+}
+
+/**
+ * Plan adding `delta` XP to `userId`'s pass of the current season as a
+ * storage write at the record's version (or a create), so a claim can
+ * commit the XP with its reward (`moveWallet` extra write): a lost CAS
+ * rolls both back. Null when `delta` is not a positive integer or the
+ * pass catalog is not loaded.
+ */
+export function planPassXp(nk: INakama, logger: ILogger, userId: string, delta: number): PassXpPlan | null {
+  if (!Number.isInteger(delta) || delta <= 0) return null;
+  let catalog: Readonly<PassCatalog>;
+  try {
+    catalog = getPassCatalog();
+  } catch (e) {
+    logger.warn('planPassXp: pass catalog not loaded (user=%s): %s', userId, e instanceof Error ? e.message : String(e));
+    return null;
+  }
+  const existing = readPassRecord(nk, userId, catalog.seasonId);
+  let base: PassRecord;
+  let version: string;
+  if (existing !== null) {
+    base = existing.record;
+    version = existing.version;
+  } else {
+    const old = nk.storageRead([{ collection: PASS_COLLECTION, key: passRecordKey(userId), userId }])[0];
+    base = {
+      schemaVersion: 1, userId, seasonId: catalog.seasonId, xp: 0,
+      claimedFree: [], claimedPremium: [], premiumPurchased: false, seasonClosed: false,
+    };
+    version = old?.version ?? '*';
+  }
+  const beforeLevel = xpToLevel(catalog, base.xp);
+  const next: PassRecord = { ...base, xp: base.xp + delta };
+  const newLevel = xpToLevel(catalog, next.xp);
+  const levelUps: number[] = [];
+  for (let lvl = beforeLevel + 1; lvl <= newLevel; lvl += 1) levelUps.push(lvl);
+  return { write: passWrite(next, version), amount: delta, newLevel, levelUps };
+}

@@ -67,6 +67,8 @@ export interface DailyMissions {
   rerollsLeftToday: number;
   /** UTC ms of last reroll (for analytics). */
   lastRerollAt?: number;
+  /** Rerolls made today, free or paid: part of a paid reroll's wallet key (plan T-20). */
+  rerollCount?: number;
   missions: MissionInstance[];
 }
 
