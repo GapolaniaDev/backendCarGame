@@ -40,6 +40,17 @@
 //     nothing and their rebuy charges (HT-73); then Nakama is restarted
 //     (same compose files) and neither a rebuy nor a retried race submit
 //     charges or pays again (`--skip-restart` skips this part);
+//   - F3 leaderboards, ranked and profile (plan T-13, T-14), with fresh
+//     K1/K2/K3: three quick races and one ranked race make wins_week list
+//     K1 (3) before K2 (1) with their usernames (lb_get paged with
+//     nextCursor, and the native ListLeaderboardRecords the client uses),
+//     the friends view lists K1 and their friend K2 only, and the ranked
+//     table ranks the best rating first; another player's profile_get is
+//     the public projection and an unknown one is NOT_FOUND without
+//     creating anything; profile_get / garage_get / inbox_claim without
+//     clientVersion pass the version gate and a lower clientVersion gets
+//     UPGRADE_REQUIRED (config_get too, whose minClientVersion is the
+//     LiveOps one);
 //   - `docker compose logs nakama` since the last boot: no error-level
 //     lines, no "rpc registration failed", no "auto-create failed",
 //     periodic service-ticker ticks, and the cost of loading the runtime
@@ -91,7 +102,7 @@ const T11_LOG = /walletLedgerUpdate|race close payout failed|no rows in result s
 const EXPECTED_ROLLBACK = /version check failed|rejected negative value/;
 const isExpectedRollback = (m) => m.msg === 'Error running multi update.' && EXPECTED_ROLLBACK.test(String(m.error));
 /** RPCs that still answer HTTP 500 to `{}`, and the plan card that fixes each. */
-const KNOWN_RPC_500 = { club_search: 'T-21 (groupsList signature)', ranked_get: 'F3 (ranked table not created yet)' };
+const KNOWN_RPC_500 = { club_search: 'T-21 (groupsList signature)' };
 
 // ── report ──────────────────────────────────────────────────────────────────
 const rows = [];
@@ -612,6 +623,190 @@ async function finishF1Races(p, race, h, claimRace, bin) {
   return first.envelope?.ok ? { acct: p.P1, payload: p1Submit, envelope: first.envelope } : null;
 }
 
+// ── F3 leaderboards, ranked and profile (plan T-13, T-14) ───────────────────
+// Fresh K1/K2/K3 run three 2-player quick races (K1 wins two, K2 one) and
+// one ranked race (K1 > K2 > K3), all started together. The quick races
+// (3 laps on neon_blvd) finish after the private race; the ranked one
+// (5 laps, >= 240 s for class D) after the F1 races. Every human reports,
+// so each race closes on its last report (quorum).
+const NEON_LAPS = JSON.parse(readFileSync(resolve(ROOT, 'modules', 'src', 'catalogs', 'tracks.json'), 'utf8'))
+  .tracks.find((t) => t.id === 'neon_blvd').modes;
+const F3_LAP_MS = { first: 48_100, second: 48_500, third: 49_000 };
+const f3Report = (uid, place, laps) => {
+  const lapTimes = Array.from({ length: laps }, () => F3_LAP_MS[place]);
+  return { userId: uid, totalMs: lapTimes.reduce((x, y) => x + y, 0), laps: lapTimes, isBotReport: false };
+};
+
+async function startF3Race(label, mode, size, host, guests) {
+  const created = await rpc(host.token, 'race_session_create', {
+    matchId: `smoke-f3-${label}-${Date.now()}`, mode, trackId: 'neon_blvd', size,
+    hostLoadout: { classId: 'D', bodyId: 'starter_viper' },
+  });
+  const sid = created.envelope?.data?.sessionId;
+  if (!sid) return { label, error: `create: ${errCode(created)}` };
+  for (const g of guests) {
+    const j = await rpc(g.token, 'race_session_join', { sessionId: sid, loadout: { classId: 'D', bodyId: 'starter_viper' } });
+    if (j.envelope?.ok !== true) return { label, error: `join: ${errCode(j)}` };
+  }
+  const started = await rpc(host.token, 'race_session_start', { sessionId: sid });
+  if (started.envelope?.ok !== true) return { label, error: `start: ${errCode(started)}` };
+  return { label, mode, sid, startedAtMs: Date.now() };
+}
+
+async function startF3Races(k) {
+  const races = [
+    { ...(await startF3Race('quick-1', 'quick', 2, k.K1, [k.K3])), order: [k.K1, k.K3] },
+    { ...(await startF3Race('quick-2', 'quick', 2, k.K2, [k.K1])), order: [k.K1, k.K2] },
+    { ...(await startF3Race('quick-3', 'quick', 2, k.K3, [k.K2])), order: [k.K2, k.K3] },
+    { ...(await startF3Race('ranked', 'ranked', 4, k.K1, [k.K2, k.K3])), order: [k.K1, k.K2, k.K3] },
+  ];
+  const failed = races.filter((r) => r.error);
+  record('F3 quick and ranked races set up (K1/K2/K3)', failed.length === 0,
+    failed.map((r) => `${r.label} ${r.error}`).join(', ') || races.map((r) => `${r.label}=${r.sid.slice(0, 8)}…`).join(' '));
+  return failed.length === 0 ? { k, races } : null;
+}
+
+async function finishF3Races(f3, mode) {
+  const races = f3.races.filter((r) => r.mode === mode);
+  const laps = NEON_LAPS[mode];
+  await waitRaceClock(Math.max(...races.map((r) => r.startedAtMs)), laps * F3_LAP_MS.third);
+  const states = [];
+  const rejected = [];
+  for (const race of races) {
+    const places = ['first', 'second', 'third'];
+    for (let i = 0; i < race.order.length; i += 1) {
+      const sub = await rpc(race.order[i].token, 'race_submit_result', { sessionId: race.sid, report: f3Report(race.order[i].uid, places[i], laps) });
+      if (sub.envelope?.ok !== true) {
+        rejected.push(`${race.label}#${i + 1} ${errCode(sub)} ${JSON.stringify(sub.envelope?.error?.details ?? sub.envelope?.error?.message ?? '').slice(0, 120)}`);
+      }
+    }
+    const got = await rpc(race.order[0].token, 'race_session_get', { sessionId: race.sid });
+    states.push(`${race.label}=${got.envelope?.data?.session?.state ?? errCode(got)}`);
+  }
+  record(`F3 ${mode} races closed on the last report (${laps} laps)`, states.every((s) => s.endsWith('=closed')),
+    `${states.join(' ')}${rejected.length ? ` rejected: ${rejected.join('; ')}` : ''}`);
+  // The writers run on the bus after the closing submit.
+  await sleep(1_000);
+}
+
+async function usernameOf(acct) {
+  const r = await http('GET', '/v2/account', { headers: { Authorization: `Bearer ${acct.token}` } });
+  return r.json?.user?.username ?? null;
+}
+
+/** Walk lb_get pages of `limit` until every id in `want` was seen (max 50 pages). */
+async function pageLeaderboard(acct, leaderboardId, limit, want) {
+  const rows = [];
+  const missing = new Set(want);
+  let cursor = null;
+  let pages = 0;
+  let error = null;
+  do {
+    const r = await rpc(acct.token, 'lb_get', { leaderboardId, view: 'global', limit, ...(cursor ? { cursor } : {}) });
+    if (r.envelope?.ok !== true) {
+      error = errCode(r);
+      break;
+    }
+    rows.push(...r.envelope.data.records);
+    for (const rec of r.envelope.data.records) missing.delete(rec.ownerId);
+    cursor = r.envelope.data.nextCursor;
+    pages += 1;
+  } while (cursor && missing.size > 0 && pages < 50);
+  return { rows, pages, error, missing: [...missing] };
+}
+
+const nonIncreasing = (rows) => rows.every((r, i) => i === 0 || rows[i - 1].score >= r.score);
+const consecutiveRanks = (rows) => rows.every((r, i) => r.rank === i + 1);
+
+async function leaderboardChecks(f3) {
+  const { K1, K2, K3 } = f3.k;
+  const names = { K1: await usernameOf(K1), K2: await usernameOf(K2) };
+
+  // wins_week: descending, paged with a cursor, with names (T-13, HT-65).
+  const wins = await pageLeaderboard(K1, 'wins_week', 1, [K1.uid, K2.uid]);
+  const byId = new Map(wins.rows.map((r) => [r.ownerId, r]));
+  const k1 = byId.get(K1.uid);
+  const k2 = byId.get(K2.uid);
+  record('T-13 wins_week from most to fewest wins (K1 3 > K2 1)',
+    !wins.error && nonIncreasing(wins.rows) && consecutiveRanks(wins.rows) && k1?.score === 3 && k2?.score === 1 && k1.rank < k2.rank,
+    wins.error ?? `K1 rank ${k1?.rank} score ${k1?.score}, K2 rank ${k2?.rank} score ${k2?.score}, scores ${wins.rows.map((r) => r.score).join(',')}`);
+  record('T-13 lb_get pages wins_week with nextCursor (limit 1)',
+    !wins.error && wins.pages >= 2 && wins.missing.length === 0, `${wins.pages} pages, ${wins.rows.length} rows, missing ${wins.missing.length}`);
+  record('T-13 wins_week records carry the account usernames',
+    Boolean(names.K1) && k1?.username === names.K1 && k2?.username === names.K2,
+    `K1 ${k1?.username === names.K1 ? 'ok' : `${k1?.username} ≠ ${names.K1}`}, K2 ${k2?.username === names.K2 ? 'ok' : `${k2?.username} ≠ ${names.K2}`}`);
+  // The native API the Unity client uses (LeaderboardAsync on wins_week).
+  const native = await http('GET', `/v2/leaderboard/wins_week?limit=100&owner_ids=${K1.uid}`, { headers: { Authorization: `Bearer ${K1.token}` } });
+  const nativeOwner = (native.json?.owner_records ?? [])[0];
+  const nativeScores = (native.json?.records ?? []).map((r) => Number(r.score));
+  record('T-13 native ListLeaderboardRecords: wins_week descending with usernames',
+    native.status === 200 && nativeScores.every((s, i) => i === 0 || nativeScores[i - 1] >= s) && nativeOwner?.username === names.K1,
+    `HTTP ${native.status} scores ${nativeScores.slice(0, 6).join(',')} K1 username ${nativeOwner?.username === names.K1 ? 'ok' : nativeOwner?.username}`);
+
+  // Friends view: K1 and K2 become friends; K3 is not listed.
+  const code = await rpc(K2.token, 'friend_code_get', {});
+  const add = await rpc(K1.token, 'friend_add_by_code', { code: code.envelope?.data?.code });
+  const friends = await rpc(K1.token, 'lb_get', { leaderboardId: 'wins_week', view: 'friends' });
+  const fIds = (friends.envelope?.data?.records ?? []).map((r) => r.ownerId);
+  record('T-13 friends view lists the caller and their friends only',
+    add.envelope?.ok === true && fIds.length === 2 && fIds[0] === K1.uid && fIds[1] === K2.uid && !fIds.includes(K3.uid),
+    `add=${errCode(add)} view=${errCode(friends)} ids=${fIds.map((x) => x.slice(0, 8)).join(',')}`);
+
+  // Ranked: the season table is descending, rank 1 = best rating.
+  const r1 = await rpc(K1.token, 'ranked_get', {});
+  const r2 = await rpc(K1.token, 'ranked_get', { userId: K2.uid });
+  const r3 = await rpc(K1.token, 'ranked_get', { userId: K3.uid });
+  const rk = [r1, r2, r3].map((r) => r.envelope?.data);
+  record('T-13 ranked_get: K1 > K2 > K3 in rating and rank (desc table)',
+    rk.every(Boolean) && rk[0].rating > rk[1].rating && rk[1].rating > rk[2].rating && rk[0].rank < rk[1].rank && rk[1].rank < rk[2].rank,
+    rk.map((d, i) => `K${i + 1} ${d ? `${d.rating}/#${d.rank}` : errCode([r1, r2, r3][i])}`).join(' '));
+  const seasonId = rk[0]?.seasonId;
+  const top = seasonId ? await rpc(K1.token, 'lb_get', { leaderboardId: `ranked_${seasonId}`, view: 'global', limit: 100 }) : null;
+  const topRows = top?.envelope?.data?.records ?? [];
+  record('T-13 ranked table: rank 1 is the best rating',
+    topRows.length >= 3 && topRows[0].rank === 1 && topRows[0].score === Math.max(...topRows.map((r) => r.score)) && nonIncreasing(topRows),
+    top ? `${errCode(top)} rank1=${topRows[0]?.score} max=${Math.max(...topRows.map((r) => r.score))} rows=${topRows.length}` : 'no seasonId');
+}
+
+async function profileAndVersionChecks(f3, a) {
+  const { K1, K2 } = f3.k;
+  // T-14: another player's profile is the public projection.
+  const other = await rpc(K1.token, 'profile_get', { userId: K2.uid });
+  const keys = Object.keys(other.envelope?.data?.profile ?? {}).sort().join(',');
+  const progression = JSON.stringify(other.envelope?.data?.profile?.progression ?? null);
+  record('T-14 profile_get of another player: public fields only',
+    keys === 'avatarUrl,displayName,progression,userId' && /^\{"level":\d+\}$/.test(progression), `${errCode(other)} keys=${keys} progression=${progression}`);
+  const ghost = crypto.randomUUID();
+  const g1 = await rpc(K1.token, 'profile_get', { userId: ghost });
+  const g2 = await rpc(K1.token, 'profile_get', { userId: ghost });
+  record('T-14 profile_get of an unknown player → NOT_FOUND, nothing created',
+    errCode(g1) === 'NOT_FOUND' && errCode(g2) === 'NOT_FOUND', `${errCode(g1)} then ${errCode(g2)}`);
+
+  // T-14 / D-05: without clientVersion every gate passes (the Unity client sends none).
+  const noVersion = [];
+  for (const [id, body] of [['profile_get', {}], ['garage_get', {}], ['inbox_claim', { messageId: 'smoke-no-such-message' }]]) {
+    const r = await rpc(a.token, id, body);
+    noVersion.push(`${id}=${errCode(r)}`);
+  }
+  record('T-14 profile_get / garage_get / inbox_claim without clientVersion pass the gate',
+    noVersion[0] === 'profile_get=ok' && noVersion[1] === 'garage_get=ok' && noVersion[2] === 'inbox_claim=NOT_FOUND',
+    `${noVersion.join(' ')} (inbox_claim of a missing message: past the gate)`);
+  const old = { clientVersion: '0.0.1', platform: 'android' };
+  const oldResults = [];
+  for (const [id, body] of [['profile_get', old], ['garage_get', old], ['inbox_claim', { ...old, messageId: 'x' }], ['config_get', old]]) {
+    const r = await rpc(a.token, id, body);
+    oldResults.push(`${id}=${errCode(r)}`);
+  }
+  record('T-14 clientVersion below the minimum → UPGRADE_REQUIRED (incl. config_get)',
+    oldResults.every((x) => x.endsWith('=UPGRADE_REQUIRED')), oldResults.join(' '));
+  const cfg = await rpc(a.token, 'config_get', { platform: 'android' });
+  const live = await rpc(a.token, 'liveops_config_get', {});
+  const wantMin = live.envelope?.data?.minClientVersion?.android;
+  record('T-14 config_get.minClientVersion comes from the LiveOps config',
+    cfg.envelope?.ok === true && typeof wantMin === 'string' && cfg.envelope.data.minClientVersion === wantMin,
+    `config_get=${cfg.envelope?.data?.minClientVersion} liveops.android=${wantMin}`);
+}
+
 // ── F2 economy and store (plan T-11, T-12) ──────────────────────────────────
 const CONSOLE_BASE = `http://${HOST}:8090`;
 const FUNDS = { coins: 40_000, gems: 100 };
@@ -862,6 +1057,9 @@ async function main() {
     const claimRace = await hostClaimScenario(h);
     f1 = { p, h, m, three, claimRace };
   }
+  // F3 (T-13, T-14): fresh K1/K2/K3; their races share the same wait.
+  const f3k = await freshAccounts(serverKey, 'f3', ['K1', 'K2', 'K3']);
+  const f3 = SKIP_RACE ? null : await startF3Races(f3k);
 
   // Registration: every id the bundle registers must answer with an envelope.
   const ids = bundleRpcIds();
@@ -922,10 +1120,19 @@ async function main() {
   // F2 (T-11, T-12) while the race clocks run.
   const econ = await economyScenario(serverKey, env);
 
+  // F3 profile and version gate (T-14) while the race clocks run.
+  await profileAndVersionChecks({ k: f3k }, a);
+
   if (f1) await matchmakerScenario(f1.m);
   if (race) await finishPrivateRace(fresh, race);
   else record('1-player private race closes', null, '--skip-race');
+  if (f3) await finishF3Races(f3, 'quick');
+  else record('T-13 wins_week / ranked order (needs races)', null, '--skip-race');
   const f1Retry = f1?.three ? await finishF1Races(f1.p, f1.three, f1.h, f1.claimRace, bin) : null;
+  if (f3) {
+    await finishF3Races(f3, 'ranked');
+    await leaderboardChecks(f3);
+  }
 
   if (bin) {
     const registered = checkLogs(bin);
