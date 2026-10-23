@@ -272,7 +272,8 @@ The only public ranked RPC. Returns the public ranked summary for
 ### Storage record
 
 `ranked/{userId}` is written with `permissionRead = 2` (public) and
-`permissionWrite = 1` (owner only). Clients cannot forge
+`permissionWrite = 0` (server only, plan T-18 / D-10: a client cannot
+rewrite its rating). Clients cannot forge
 `__server_token__` server stamps on the leaderboard record (see §2 of
 `docs/leaderboards.md`).
 

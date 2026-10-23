@@ -55,9 +55,17 @@ catalogue uses **100 XP per level** past 1, so a player who finishes
   shapes (Phase 6 Chunk 1 contract).
 - Per-player PassRecord is **lazy-created on first `pass_get`** — a
   player who has never opened the pass has no row in `pass` storage.
-- The lazy-create works under the same `SERVER_OWNED_READ=1` /
-  `SERVER_OWNED_WRITE=1` permission bits as the rest of the
-  server-owned collections.
+- Every pass object is owner-read, server-only write
+  (`SERVER_OWNED_READ=1`, `SERVER_OWNED_WRITE=0`, plan T-18 / D-10): a
+  client cannot rewrite `premiumPurchased` or its XP with the native
+  storage API (see [`storage-permissions.md`](./storage-permissions.md)).
+- **Content check (T-19):** reward items that name a car or cosmetic
+  missing from `cars.json` / `cosmetics.json` are neither invented nor
+  dropped. The boot logs them once (`catalog content: …`, error level),
+  `pass_claim` / `inbox_claim` return them in `undelivered`, and
+  `tests/unit/catalog_content.test.ts` lists them exactly. On
+  2026-10-22 every cosmetic (19) and car (2) of `pass_s1.json` is
+  missing: a content decision.
 
 ---
 
@@ -65,9 +73,9 @@ catalogue uses **100 XP per level** past 1, so a player who finishes
 
 | Collection | Key | Owner | Perms | Schema version | Notes |
 |---|---|---|---|---|---|
-| `pass` | `userId` | `userId` | 1/1 | 1 | One per player. Lazy-created. Stores xp, claimed lists, premium flag, seasonClosed. |
-| `pass_xp_ledger` | `${userId}/${source}/${dedupeId}` | `userId` | 1/1 | 1 | Per-grant dedupe marker. Source ∈ `PASS_XP_SOURCES`. |
-| `season_close` | `passSeasonId` | `SYSTEM_USER_ID` | 1/1 | 1 | Global close marker for the pass season. |
+| `pass` | `userId` | `userId` | 1/0 | 1 | One per player. Lazy-created (create-only). Stores xp, claimed lists, premium flag, season close fields. |
+| `pass_xp_ledger` | `${userId}/${source}/${dedupeId}` | `userId` | 1/0 | 1 | Per-grant dedupe marker, written in the same storage write as the XP. |
+| `season_close` | `passSeasonId` | `SYSTEM_USER_ID` | 1/0 | 1 | Global close marker with the settle cursor (§5). |
 
 `PassRecord`:
 
@@ -80,7 +88,9 @@ interface PassRecord {
   claimedFree: number[];     // levels where free reward has been claimed
   claimedPremium: number[];  // levels where premium reward has been claimed
   premiumPurchased: boolean; // one-way flag (never reverts)
-  seasonClosed: boolean;     // flipped by lazy close on first pass_get past endUtc
+  seasonClosed: boolean;     // set when the season close settles the record
+  endRewards?: { free: number[]; premium: number[] }; // levels sent to the inbox at close
+  endRewardsSentAt?: number; // the end-of-season inbox message was sent
 }
 ```
 
@@ -155,9 +165,12 @@ double-granting:
 // pass_xp_ledger/${userId}/race_quick/${sessionId}
 ```
 
-Mission/achievement claims don't need the ledger because the claim
-itself is a CAS-protected operation: the second claim returns
-`CONFLICT` before `addPassXp` is reached.
+Mission/achievement claims don't need the ledger: since T-20 their XP
+is the pass record's CAS write inside the claim's wallet transaction
+(`planPassXp`), so the claim and its XP commit together and a second
+claim returns `CONFLICT`. The race XP and its ledger mark are one
+storage write (the mark is create-only), so a crash cannot apply the
+XP without the mark.
 
 | Caller | `dedupeKey.source` | `dedupeKey.id` | Behaviour on retry |
 |---|---|---|---|
@@ -167,49 +180,64 @@ itself is a CAS-protected operation: the second claim returns
 
 ---
 
-## 5. Season close (D11)
+## 5. Season close (plan T-19)
 
 The pass has its own season metadata independent from `ranked`
-seasons. The catalogue carries `endUtc`; the lazy close fires when
-`pass_get` (or `pass_claim`) runs after `Date.parse(endUtc) <= now`.
+seasons. Once the catalog's `endUtc` has passed, the season closes
+for **every** player (before T-19 only the first caller's flag was
+flipped and nothing was paid):
 
 ```
-maybeCloseSeason(nk, logger, now, seasonId)
-  ├── now < endUtc                    → {closed: false}, no-op
-  ├── season_close marker present     → {closed: false}, no-op
-  └── first caller post-endUtc
-       ├── nk.storageWrite(season_close/{seasonId})
-       └── {closed: true, seasonId, endUtc}
+season_close/{seasonId}   (system user, server-only)
+  { schemaVersion: 1, closedAt, state: 'settling' | 'settled',
+    cursor, settled, settledAt? }
 ```
 
-After the lazy close, every `pass_get` also calls
-`settleClosedSeasonRewards` which CAS-flips the per-player
-`seasonClosed` flag (3 retries). Once `seasonClosed: true`, every
-`pass_claim` returns `CONFLICT: 'pass season is closed'` even when the
-player has the XP.
+1. **Open** — `maybeCloseSeason` writes the marker (create-only) from
+   `pass_get`, the service ticker (every 5 min) or
+   `admin_pass_season_close`. From then on `pass_claim` and
+   `pass_buy_premium` answer `CONFLICT: 'pass season is closed'`.
+2. **Settle every record** — `closePassSeason` lists the `pass`
+   collection (all owners, 100 per page) from the marker's `cursor`,
+   settles each record of the season and saves the cursor after each
+   page, so a close interrupted by a restart resumes where it stopped.
+   The last page sets `state: 'settled'`. A page with a record left in
+   CAS conflict is read again by the next run.
+3. **Settle one record** (`settleClosedSeasonRewards`), idempotent:
+   - one CAS sets `seasonClosed: true` and `endRewards` = the levels
+     reached (`xp >= xpRequired`) and not claimed, free always and
+     premium only when bought. A concurrent `pass_claim` either landed
+     first (excluded) or loses its CAS and then sees the closed record;
+   - `sendReward` (single inbox, T-17) sends one claimable message
+     `pass_end:{seasonId}` with the summed coins/gems and the cosmetics,
+     plus one `pass_end:{seasonId}:car:{carId}` per car (ids are
+     deterministic and create-only, so a resend is a no-op);
+   - `endRewardsSentAt` marks the record done.
 
-**Reward migration across seasons**: there is **no** end-of-season
-reward distribution for the pass. Players pick up their track by
-level as they go via `pass_claim`; the `seasonClosed` flag is the only
-signal that the season is over. (Ranked seasons, by contrast, dump
-tier rewards to the inbox — see [`docs/ranked.md`](./ranked.md).)
+`pass_get` also settles the caller at once, so their inbox has the
+rewards on the first visit after the close. `inbox_claim` pays the
+message once; reward items missing from the catalogs come back in its
+`undelivered` field.
 
-**Storage ownership**: `season_close` lives under `SYSTEM_USER_ID` so
-the marker is visible to every player's `pass_get` without writing N
-per-player rows.
+`admin_pass_season_close` (`{adminKey, seasonId?, maxRecords?}`) runs
+the same close by hand: the loaded season only after `endUtc`
+(`CONFLICT` before); another `seasonId` settles that season's leftover
+records with the loaded level table (stray records, drills). Call it
+until `state` is `settled`.
 
 ---
 
 ## 6. RPCs
 
-The module exposes **4 RPCs** (3 player-facing + 1 admin):
+The module exposes **5 RPCs** (3 player-facing + 2 admin):
 
 | RPC | Purpose | Gated by | Idempotent? |
 |---|---|---|---|
 | `pass_get` | Lazy-create PassRecord, lazy-close season, return level cards | `assertNotInMaintenance` | yes (lazy-create safe; closes existing claim silently if `claimedFree` already includes the level) |
-| `pass_claim` | Claim a level's free or premium reward | `assertNotInMaintenance` | yes (`CONFLICT` if already claimed) |
-| `pass_buy_premium` | Spend `premiumPriceGems`, unlock the premium track | `assertNotInMaintenance` | yes (returns 200-style payload without re-charging) |
+| `pass_claim` | Claim a level's free or premium reward: claim mark, coins/gems and garage items in one transaction (T-19) | `assertNotInMaintenance` | yes (`CONFLICT` if already claimed) |
+| `pass_buy_premium` | Charge `premiumPriceGems` and unlock the premium track in one transaction (T-19) | `assertNotInMaintenance` | yes (returns 200-style payload without re-charging) |
 | `admin_grant_premium` | Shared-secret grant (no gem charge) | none (admin) | yes |
+| `admin_pass_season_close` | Settle a closed season for every player, resumable (§5) | none (admin) | yes |
 
 Rate limits:
 
@@ -256,14 +284,19 @@ interface PassLevelOutput {
 | `NOT_FOUND` | PassRecord missing after lazy-create (theoretical — lazy-create always succeeds) |
 | `INVALID_RESULT` | Player XP < level threshold |
 | `FORBIDDEN` | `track === 'premium'` and `premiumPurchased: false` |
-| `CONFLICT` | Already claimed (idempotent); season closed; CAS retries exhausted |
+| `CONFLICT` | Already claimed (idempotent); season closed; CAS retries exhausted (nothing paid) |
+
+Additive response fields (T-19): `newBalance` (`{coins, gems}`) and
+`undelivered` (`car:<id>` / `cosmetic:<id>` missing from the catalogs;
+also counted in `granted.skippedCosmetics` / `skippedCars`). A failed
+payout writes nothing: the level stays claimable.
 
 ### `pass_buy_premium` errors
 
 | Error | When |
 |---|---|
-| `INSUFFICIENT_FUNDS` | Wallet gems < `premiumPriceGems` |
-| `CONFLICT` | Season closed; CAS retries exhausted |
+| `INSUFFICIENT_FUNDS` | Wallet gems < `premiumPriceGems` (nothing changes) |
+| `CONFLICT` | Season closed; CAS retries exhausted (nothing charged) |
 
 ### `admin_grant_premium` errors
 
@@ -296,9 +329,9 @@ This matches the pattern from Phase 5 (`inbox_claim`,
 | D7 | Race XP = `Math.floor(20 × mode-multiplier)` | `pass/xp_engine.ts::raceXPFor` |
 | D8 | Mission/achievement XP = `reward.xp` from catalogue | `pass/xp_engine.ts::missionXPFor` / `achievementXPFor` |
 | D9 | `pass_xp_ledger` dedupe keyed by `(user, source, session)` — first-call-wins | `pass/pass_repo.ts::addPassXp` |
-| D10 | `pass_claim` CAS retries = 3 (matches Phase 4 / Phase 6 standard) | `pass/rpcs.ts::pass_claim` |
-| D11 | Lazy season close on first `pass_get` post-`endUtc`; marker in `season_close/{seasonId}` | `pass/season.ts::maybeCloseSeason` |
-| D12 | Pass-level cosmetic delta from `pass_claim` is best-effort (never throws) | `pass/reward_granter.ts::grantPassReward` |
+| D10 | `pass_claim` / `pass_buy_premium`: 3 attempts, each re-reads the record and commits record + wallet + garage in one `moveWallet` (T-19) | `pass/claim.ts` |
+| D11 | Season close settles every record, paged and resumable; unclaimed reached levels go to the inbox (T-19) | `pass/season.ts` |
+| D12 | Reward items missing from the catalogs: `undelivered` + error log, never invented or dropped (T-19) | `garage/delivery.ts`, `core/content_check.ts` |
 | D13 | `addPassXp` returns null when pass catalogue not loaded (best-effort, never crashes subscriber) | `pass/pass_repo.ts::addPassXp` |
 
 ---
@@ -320,33 +353,25 @@ This matches the pattern from Phase 5 (`inbox_claim`,
    `levelUps: []`. No ledger row is written (would otherwise create
    noise from the subscriber's no-op path).
 
-4. **`pass_buy_premium` does NOT use `spend()`'s pre-check path** —
-   the wallet helper would race. Instead the RPC calls
-   `walletSpend` directly, surfaces `INSUFFICIENT_FUNDS` on the
-   wallet error code, then CAS-updates the flag. The compensating-refund
-   pattern (Phase 3 D3) does NOT apply because there's no parallel
-   multi-update — wallet and pass storage are sequential writes.
+4. **`pass_buy_premium` charges and flips the flag in one
+   transaction** (T-19): the gem movement and the pass record CAS are
+   one `nk.multiUpdate`. A lost CAS or a short balance changes nothing,
+   so there is no refund path any more.
 
-5. **`pass_claim` rewards go through `grantPassReward` which NEVER
-   throws** (matches `mirrors/reward_granter.ts`). Catalog-missing
-   cosmetics / cars are logged + skipped; the response payload
-   carries `skippedCosmetics` / `skippedCars` arrays so the client
-   can surface what didn't land.
+5. **`pass_claim` delivers in one transaction** (T-19): catalog-missing
+   cosmetics / cars are logged at error level and returned in
+   `undelivered` (and `skippedCosmetics` / `skippedCars`); everything
+   else lands with the claim mark or not at all.
 
-6. **Lazy close is opt-in** — only fires on `pass_get` access. A
-   `pass_claim` against a long-closed season returns `CONFLICT` (the
-   per-player `seasonClosed` is only flipped when a Pre-RPC access
-   reads the close marker). This is benign because clients are expected
-   to refresh `pass_get` on every pass-tab mount.
+6. **The close does not depend on players** — the service ticker
+   settles every record once `endUtc` has passed, and `pass_claim`
+   checks the global marker, so a long-closed season refuses claims
+   even for a player whose record was not settled yet.
 
 ---
 
 ## 10. Future work
 
-- Cron-triggered lazy close so the per-player flag flips even when
-  no one's online.
-- Cross-season reward migration (today: players lose unclaimed
-  premium levels at season end; future: maybe an inbox dump).
 - Multiple concurrent seasons (s1, s2, ...) with a `seasonSelector`
   field — the catalog loader today accepts a single season.
 - Pruning for `pass_xp_ledger` once a season is closed (no

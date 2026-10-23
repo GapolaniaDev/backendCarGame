@@ -9925,6 +9925,17 @@
             "items": {
               "type": "integer"
             }
+          },
+          "newBalance": {
+            "$ref": "#/components/schemas/Wallet",
+            "description": "Additive (T-20)."
+          },
+          "undelivered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "T-19/T-20, additive: reward items missing from the catalogs (`cosmetic:<id>`, `car:<id>`), not delivered and logged as errors."
           }
         }
       },
@@ -10063,6 +10074,17 @@
           },
           "nextLevel": {
             "type": "integer"
+          },
+          "newBalance": {
+            "$ref": "#/components/schemas/Wallet",
+            "description": "Additive (T-19)."
+          },
+          "undelivered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "T-19/T-20, additive: reward items missing from the catalogs (`cosmetic:<id>`, `car:<id>`), not delivered and logged as errors."
           }
         }
       },

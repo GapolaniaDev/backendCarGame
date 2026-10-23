@@ -199,7 +199,8 @@ The reader does NOT cache, so the rotation is immediate.
 
 Every server-side event lands in `analytics_events` storage
 (`collection: "analytics_events"`, `key: "<ts>-<uuid>"`,
-`permissionRead: 2`, `permissionWrite: 0`). When
+`permissionRead: 0`, `permissionWrite: 0`: server-only since plan T-18,
+because events such as `friend_added` name other players). When
 `analyticsWebhook` is set, every `emit()` also fires a best-effort
 `POST` to the configured URL.
 

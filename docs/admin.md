@@ -46,6 +46,8 @@ window.
 | `admin_sanitize_session` | Force-close a single race session, mark bots DNF | yes |
 | `admin_remove_player` | Remove a player from a single race session | yes |
 | `admin_cleanup_race_sessions` | Delete closed race sessions older than N hours | yes |
+| `admin_migrate_permissions` (T-18) | One-shot: make every existing server object server-only (write 0; analytics read 0), resumable | yes |
+| `admin_pass_season_close` (T-19) | Settle a closed battle pass season for every player, resumable ([`pass.md`](./pass.md) §5) | yes |
 | `admin_tournament_list` (chunk 7) | List ALL tournament instances (any state) | yes |
 | `admin_tournament_get` (chunk 7) | Get full tournament detail + leaderboard + prizes | yes |
 | `admin_tournament_release_prizes` (chunk 7) | Re-distribute prizes (idempotent) | yes |
@@ -198,6 +200,30 @@ per call: 1000 records.
 
 `dryRun: true` scans but does not delete — useful for pre-flight
 checks. The RPC enforces `limit <= 1000` to bound runtime.
+
+---
+
+## 7b. `admin_migrate_permissions` (plan T-18)
+
+Rewrites the objects created before T-18 so that every server
+collection is server-only (see [`storage-permissions.md`](./storage-permissions.md)):
+`permissionWrite` 0 in every collection of `core/collections.ts`, and
+`permissionRead` 0 in `analytics_events`. Values are kept; each
+rewrite checks the object's version, so a concurrent server write wins
+(and already writes the new permissions). The cloud-save collections
+(`save`, `public`) are never touched.
+
+```json
+// request (first call)
+{ "adminKey": "<LiveopsConfig.adminRpcKey>", "maxObjects": 2000 }
+// response.data
+{ "scanned": 2000, "rewritten": 140, "byCollection": { "pass": 12, "ranked": 8, ... },
+  "skipped": 0, "done": false, "next": { "collection": "missions_daily", "cursor": "..." } }
+// next call: pass `collection` and `cursor` from `next`, until `done: true`
+```
+
+`BAD_REQUEST` for an unknown `collection`. Idempotent: a second full
+run rewrites 0 objects.
 
 ---
 

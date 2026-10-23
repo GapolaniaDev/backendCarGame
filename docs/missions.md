@@ -158,10 +158,13 @@ the same algorithm with `ASSIGNMENT_SALT:'cv-missions-assignment-v1'`
 
 | Collection | Key | Owner | Perms | Schema | Notes |
 |---|---|---|---|---|---|
-| `missions_daily` | `${userId}/${dateUtc}` | `userId` | 1/1 | 1 | Per-user per-day row. 3 assigned missions. |
-| `missions_weekly` | `${userId}/${weekUtc}` | `userId` | 1/1 | 1 | Per-user per-week row. 3 assigned missions. |
-| `achievements` | `userId` | `userId` | 1/1 | 1 | Single per-user achievements progress. |
-| `first_win_today` | `userId` | `userId` | 1/1 | 1 | Stamped on first win of UTC day; CAS-guarded. |
+| `missions_daily` | `${userId}/${dateUtc}` | `userId` | 1/0 | 1 | Per-user per-day row. 3 assigned missions. |
+| `missions_weekly` | `${userId}/${weekUtc}` | `userId` | 1/0 | 1 | Per-user per-week row. 3 assigned missions. |
+| `achievements` | `userId` | `userId` | 1/0 | 1 | Single per-user achievements progress. |
+| `first_win_today` | `userId` | `userId` | 1/0 | 1 | Stamped on first win of UTC day; CAS-guarded. |
+
+Perms are read/write: owner read, server-only write (plan T-18 / D-10,
+[`storage-permissions.md`](./storage-permissions.md)).
 
 `DailyMissions`:
 
@@ -173,6 +176,7 @@ interface DailyMissions {
   assignedAt: number;               // ms
   rerollsLeftToday: number;         // 1 by default (D3)
   lastRerollAt?: number;            // ms (for analytics)
+  rerollCount?: number;             // rerolls made today (part of the paid reroll's wallet key, T-20)
   missions: MissionInstance[];      // length === 3
 }
 
@@ -198,9 +202,11 @@ interface AchievementsRecord {
 }
 ```
 
-The achievements row is **lazy-created on first `achievements_get`**
-(D13 — analog of the pass lazy-create). Same pattern as
-`PassRecord`.
+Rows are created lazily, with version `*` (create-only), by the first
+of: the read RPC (`missions_get` / `achievements_get`) or a race that
+advances them (T-20). The race subscriber uses the same deterministic
+assignment (`newDailyRecord` / `newWeeklyRecord`), so progress made
+before the first `*_get` of a period is kept.
 
 ---
 
@@ -265,8 +271,13 @@ interface MissionCardOutput {
 | `BAD_REQUEST` | `missionId` missing or empty; `kind` not `daily` or `weekly` |
 | `NOT_FOUND` | `missionId` not in catalog; not in the user's current row |
 | `INVALID_RESULT` | Mission not yet completed (progress < target) |
-| `CONFLICT` | Already claimed |
+| `CONFLICT` | Already claimed; CAS retries exhausted (nothing paid) |
 | `RATE_LIMITED` | Per-caller window exceeded |
+
+The `claimed` flag, the coins/gems and the pass XP commit in one
+transaction (T-20): two racing claims pay once, and a failed payout
+writes nothing (the mission stays claimable). The wallet key carries
+the period: `mission:{kind}:{dateUtc|weekUtc}:{missionId}:{userId}`.
 
 ### `mission_reroll` errors
 
@@ -274,8 +285,12 @@ interface MissionCardOutput {
 |---|---|
 | `BAD_REQUEST` | `missionId` missing/empty |
 | `NOT_FOUND` | Mission not in catalog |
-| `INSUFFICIENT_FUNDS` | `useGems: true` and wallet < 50 gems |
+| `INSUFFICIENT_FUNDS` | `useGems: true` and wallet < 50 gems (the mission does not change) |
 | `RATE_LIMITED` | Per-caller window exceeded |
+
+A paid reroll charges the gems and swaps the mission in one transaction
+(T-20), with the wallet key `mission_reroll:{userId}:{dateUtc}:{rerollCount}`,
+so every paid reroll is charged once, even when a mission id comes back.
 
 The free reroll (default `useGems: undefined`) decrements
 `rerollsLeftToday` from 1 to 0 and never charges gems. A second reroll
@@ -310,8 +325,12 @@ interface AchievementCardOutput {
 |---|---|
 | `BAD_REQUEST` | `achievementId` missing/empty |
 | `NOT_FOUND` | Unknown achievement or not in user's row |
-| `CONFLICT` | Already claimed |
+| `CONFLICT` | Already claimed; CAS retries exhausted (nothing paid) |
 | `RATE_LIMITED` | Per-caller window exceeded |
+
+Like `mission_claim`, the claim, the coins/gems, the cosmetic and the
+pass XP are one transaction (T-20). Additive response fields:
+`newBalance` and `undelivered` (cosmetics missing from the catalog).
 
 ---
 
@@ -327,23 +346,23 @@ interface AchievementCardOutput {
       mission/achievement storage yet) still receive pass XP for the
       race. `addPassXp` carries the `sessionId` as `dedupeKey.id` so a
       replay doesn't double-apply.
-   2. **Read** the user's daily/weekly/achievements rows (or `null`
-      for brand-new players).
-   3. **If all three rows are null** → log + skip (lazy creation is the
-      RPC's job, not the subscriber's). Push a `dailyWritten: false,
-      weeklyWritten: false, achievementsWritten: false` outcome so the
-      subscriber return shape stays uniform.
-   4. **Compute deltas** via `computeDeltas(event, userId, row, defs)`
-      — calls `evaluateIncrement` per definition, returns a Map of
-      `missionId → delta`.
-   5. **Apply increments**, mark completed, write back via CAS.
+   2. **For the daily, weekly and achievements rows** (T-20), via
+      `updateDailyMissions` / `updateWeeklyMissions` /
+      `updateAchievements`: read the row (a missing one is the
+      period's deterministic assignment, or an empty achievements
+      record), compute the deltas (`computeDeltas` →
+      `evaluateIncrement`), apply them, mark completion and write with
+      the version read (`*` to create). Nothing to add → no write.
+   3. **On a lost CAS**, re-read and re-apply step 2 to the fresh row
+      (3 attempts). Before T-20 the retry wrote the row read before the
+      race with a fresh version, undoing a claim made in between.
    6. **Emit analytics** for every newly-completed mission /
       achievement (`mission_completed`, `achievement_unlocked`) and
       for every `pass_xp_gained` (already emitted by Chunk 7's
       `addPassXp` path).
-3. **`progress_writer.ts`** does the CAS with **3 retries**; on
-   exhaustion it logs and skips the write (never throws — subscribers
-   must never crash the race-close path).
+3. **`missions_repo.ts::updateWithCas`** does the CAS with **3
+   retries**; on exhaustion it logs and skips the write (never throws —
+   subscribers must never crash the race-close path).
 
 The subscriber's outcome:
 
@@ -379,30 +398,27 @@ first of the UTC day wins, subsequent wins are no-ops).
 Claim RPCs route the catalog `reward` to the wallet/garage/pass:
 
 ```
-mission_claim:
-  grant(wallet, {coins, gems}, reason='mission')
-  addPassXp(...)          // missionXPFor(reward)
-  emit('mission_claimed', ...)
-  emit('pass_xp_gained', ...)  // when xpGranted > 0
-
-achievement_claim:
-  grantAchievementReward(wallet + garage CAS)
-  addPassXp(...)          // achievementXPFor(reward)
-  emit('achievement_claimed', ...)
-  emit('pass_xp_gained', ...)
+mission_claim / achievement_claim (T-20), one moveWallet:
+  record CAS (claimed)              // missions_daily|weekly / achievements
+  wallet {coins, gems}              // durable key with the period
+  pass record CAS (+xp)             // planPassXp(missionXPFor / achievementXPFor)
+  garage CAS (+cosmetic)            // achievements only (garage/delivery.ts)
+then emit('mission_claimed' | 'achievement_claimed'), emit('pass_xp_gained')
 ```
 
 `missionXPFor({coins?, xp?, gems?, cosmeticId?})` and the achievement
 counterpart return `reward.xp` only when it's a positive integer
-(fractional or non-integer → 0, never `Math.floor`'d silently). The
-`reward_granter.ts` (`reward_granter`) handles the wallet/garage CAS,
-logs + returns `swallowedCosmetics` for catalog-missing cosmetic IDs.
+(fractional or non-integer → 0, never `Math.floor`'d silently).
+Catalog-missing cosmetic ids are logged at error level and returned in
+`undelivered` (and `granted.skippedCosmetics`).
 
 The `LedgerReason` union is extended with `'mission'|'achievement'|'store'`
 already in Phase 6 Chunk 1 (Ledger metadata carries `reason` as a
-short string for analytics). The wallet idempotency key for a mission
-claim is `mission:${kind}:${missionId}:${userId}` — second claim hits
-the cache and returns `applied:true` no-op.
+short string for analytics). The durable wallet key of a mission claim
+is `mission:${kind}:${period}:${missionId}:${userId}` and of an
+achievement claim `achievement:${userId}:${achievementId}`; with the
+record CAS in the same transaction a replay means "already claimed"
+(`CONFLICT`).
 
 ---
 
@@ -419,10 +435,10 @@ the cache and returns `applied:true` no-op.
 | D7 | Bots filtered FIRST in `matchesEvent` | `missions/counter.ts::findHumanResult` |
 | D8 | Assignment salt = `'cv-missions-assignment-v1'` | `missions/assignment.ts` |
 | D9 | Subscriber never throws; analytics best-effort | `missions/subscriber.ts` |
-| D10 | Claim CAS retries = 3 (matches Phase 6 Chunk 6 pass_claim) | `missions/missions_repo.ts::claimDailyMission` |
+| D10 | Claim: 3 attempts, each re-reads the row; record + wallet + pass XP in one `moveWallet` (T-20) | `missions/missions_repo.ts::claimDailyMission` |
 | D11 | `first_win_today` CAS-guarded; first-write-wins | `missions/subscriber.ts` |
 | D12 | Achievement `unlockLevel` reserved field (no current lock) | `catalogs/achievements.json` |
-| D13 | Achievements row lazy-created on first `achievements_get` | `missions/achievements_repo.ts::ensureAchievements` |
+| D13 | Rows lazy-created (create-only) by the read RPC or by the first race that advances them (T-20) | `missions/missions_repo.ts::update*`, `achievements_repo.ts::ensureAchievements` |
 
 ---
 
@@ -443,10 +459,9 @@ the cache and returns `applied:true` no-op.
    the UTC day (CAS version includes `dateUtc`). This means a player
    who plays across midnight UTC gets the stamp reset automatically.
 
-4. **The subscriber's "skip brand-new player" path** (when all three
-   rows are null) doesn't create them — that's the RPC's job. So a
-   fresh account that finishes a race before ever opening the missions
-   tab receives pass XP (Chunk 7 ordering) but no mission progress.
+4. **A race before the first `missions_get` counts** (T-20): the
+   subscriber creates the period's row with the same deterministic
+   assignment the RPC would create, then applies the race.
 
 5. **`mission_claim` is reachable even for `locked: true` missions**
    because the lock is a UI hint (`definition.unlockLevel > playerLevel`)
@@ -459,9 +474,9 @@ the cache and returns `applied:true` no-op.
    `mission_claim`; the row always exists. The error code surfaces only
    in pathological cases (admin manipulation, parallel RPCs).
 
-7. **`mission_reroll` doesn't refund the gems** on CAS failure — the
-   reroll is a single CAS-write of `missions_daily` (no wallet write
-   in the same operation), so a CAS conflict is just a retry.
+7. **`mission_reroll` never charges without swapping** (T-20) — the
+   gem charge and the `missions_daily` CAS are one transaction, so a
+   CAS conflict or a short balance changes nothing.
 
 8. **Achievements don't have `dailyWritten` style per-mission rows**;
    the whole achievements state is one row (`per-record`) with a

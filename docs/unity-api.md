@@ -1373,11 +1373,11 @@ the assignment is **deterministic** per `(userId, dateUtc)` via
 
 ### 19.2 `mission_claim`
 
-Claim the reward for a completed mission. Idempotent via CAS — a
-second claim returns `CONFLICT`. Routes `reward.coins/gems` to the
-wallet (idempotent ledger key `mission:${kind}:${missionId}:${userId}`),
-`reward.xp` to the battle pass via `addPassXp`, and `reward.cosmeticId`
-to the garage bag.
+Claim the reward for a completed mission. The `claimed` flag,
+`reward.coins/gems` (durable key
+`mission:${kind}:${period}:${missionId}:${userId}`) and `reward.xp`
+(battle pass) commit in one transaction (T-20): a second claim returns
+`CONFLICT`, and a failed payout leaves the mission claimable.
 
 ```json
 // request
@@ -1394,6 +1394,7 @@ to the garage bag.
   "missionId":   "daily_race_5",
   "reward":      { "coins": 100, "xp": 50 },
   "kind":        "daily",
+  "newBalance":  { "coins": 1100, "gems": 0 },
   "xpGranted":   50,           // routed to Battle Pass
   "passLevel":   2,
   "levelUps":    [2]
@@ -1412,7 +1413,9 @@ to the garage bag.
 
 Re-roll a single daily mission. First call per UTC day is **free**
 (decrements `rerollsLeftToday`); subsequent calls cost 50 gems
-(`PAID_REROLL_COST_GEMS = 50`). Returns the new mission definition.
+(`PAID_REROLL_COST_GEMS = 50`), charged in the same transaction as the
+new mission (T-20: without gems the mission does not change). Returns
+the new mission definition.
 
 ```json
 // request (free reroll)
@@ -1477,10 +1480,10 @@ first access (D13).
 
 ### 19.5 `achievement_claim`
 
-Claim the reward for a completed achievement. Idempotent via CAS.
-Routes `reward.coins/gems` to the wallet, `reward.xp` to the battle
-pass, `reward.cosmeticId` to the garage bag (best-effort — missing in
-catalog → log + skip, never throws).
+Claim the reward for a completed achievement. The `claimed` flag,
+`reward.coins/gems`, `reward.cosmeticId` (garage bag) and `reward.xp`
+(battle pass) commit in one transaction (T-20). A cosmetic missing from
+the catalog is logged and returned in `undelivered` (additive).
 
 ```json
 // request
@@ -1490,10 +1493,11 @@ catalog → log + skip, never throws).
 {
   "achievementId": "achv_wins_quick_10",
   "reward":        { "coins": 500, "xp": 200 },
-  "granted":       { "coins":500, "gems":0, "cosmetics":[], "cars":[], "skippedCosmetics":[], "skippedCars":[] },
+  "granted":       { "coins":500, "gems":0, "cosmetics":[], "skippedCosmetics":[] },
   "xpGranted":     200,
   "passLevel":     3,
-  "levelUps":      [3]
+  "levelUps":      [3],
+  "newBalance":    { "coins": 1500, "gems": 0 }
 }
 ```
 
@@ -1550,10 +1554,11 @@ levels today (`pass_s1.json`); each level has a free + premium reward.
 
 ### 19.7 `pass_claim`
 
-Claim the reward for a single level's free or premium track.
-Idempotent — second claim returns `CONFLICT`. Cosmetic / car rewards
-are best-effort (`reward_granter.ts::grantPassReward` never throws;
-missing in catalog → log + skip).
+Claim the reward for a single level's free or premium track. The
+claim mark, the coins/gems and the garage items commit in one
+transaction (T-19): a second claim returns `CONFLICT` and a failed
+payout leaves the level claimable. Cosmetics / cars missing from the
+catalogs are logged and returned in `undelivered` (additive).
 
 ```json
 // request (free)
@@ -1570,7 +1575,9 @@ missing in catalog → log + skip).
   "granted":      { "coins":100, "gems":0, "cosmetics":[], "cars":[], "skippedCosmetics":[], "skippedCars":[] },
   "newXp":        0,
   "currentLevel": 1,
-  "nextLevel":    2
+  "nextLevel":    2,
+  "newBalance":   { "coins": 100, "gems": 0 },
+  "undelivered":  ["cosmetic:paint_winter01"]   // only when something is missing
 }
 ```
 
@@ -1584,8 +1591,9 @@ missing in catalog → log + skip).
 
 ### 19.8 `pass_buy_premium`
 
-Spend `premiumPriceGems` from the wallet and unlock the premium track.
-Idempotent — second call returns the current state without re-charging.
+Spend `premiumPriceGems` from the wallet and unlock the premium track,
+in one transaction (T-19: a failed charge changes nothing). Idempotent —
+second call returns the current state without re-charging.
 
 ```json
 // request
@@ -1638,38 +1646,39 @@ The Battle Pass XP is granted through `addPassXp(nk, logger, userId, delta, dedu
 | `race_ranked` | × 1.25 (= 25 XP) | `sessionId` | same |
 | `race_private` | × 0.25 (= 5 XP) | `sessionId` | same |
 | `race_time_trial` | × 0.5 (= 10 XP) | `sessionId` | same |
-| `mission_claim` | n/a | (none) | `reward.xp` from mission catalog on claim |
-| `achievement_claim` | n/a | (none) | `reward.xp` from achievement catalog on claim |
+| `mission_claim` | n/a | (claim) | `reward.xp` from mission catalog, in the claim's transaction |
+| `achievement_claim` | n/a | (claim) | `reward.xp` from achievement catalog, in the claim's transaction |
 
 Race XP is **deduplicated** via the `pass_xp_ledger` collection keyed
-by `(userId, source, sessionId)`. Mission/achievement XP grants are
-naturally deduplicated by the claim CAS (second claim returns
-`CONFLICT` before `addPassXp` is reached).
+by `(userId, source, sessionId)`, written in the same storage write as
+the XP. Mission/achievement XP is the pass record CAS inside the
+claim's transaction (T-20), so the claim and its XP land together.
 
 `addPassXp` returns `{record, levelUps: number[], applied: boolean}`.
 `applied: false` is non-fatal — the subscriber never throws.
 
 ### 19.11 Season close + lazy storage
 
-- **Lazy close** — `pass_get` checks the catalog's `endUtc` on every
-  access. When `now > endUtc` AND the global `season_close/{seasonId}`
-  marker is absent, it writes the marker (server-owned,
-  `SYSTEM_USER_ID`) and flips the per-player `seasonClosed` flag.
-  After close, every `pass_claim` returns `CONFLICT: 'pass season is
-  closed'`. The pass has **no** end-of-season reward dump (only
-  ranked does — see [`docs/ranked.md`](./ranked.md) D7).
-- **Lazy storage** — `PassRecord` and `AchievementsRecord` are
-  both lazy (no per-user row until the first read RPC). A player who
-  never opens the pass or achievements has no storage footprint.
+- **Season close (T-19)** — once `now > endUtc`, the global
+  `season_close/{seasonId}` marker is written (by `pass_get`, the
+  service ticker or `admin_pass_season_close`) and every player's
+  record is settled, paged and resumable: the levels reached and not
+  claimed go to the inbox as one claimable `pass_end:{seasonId}`
+  message (plus one per car). After close, `pass_claim` and
+  `pass_buy_premium` return `CONFLICT: 'pass season is closed'`. See
+  [`docs/pass.md`](./pass.md) §5.
+- **Lazy storage** — `PassRecord`, mission rows and
+  `AchievementsRecord` are created on first need: the read RPC, or a
+  race / claim that touches them (T-20). Everything is owner-read,
+  server-only write (T-18).
 
 ### 19.12 Cosmetic / car idempotency
 
-`reward_granter.ts` (missions + achievements) and
-`reward_granter.ts` (pass) grant cosmetic IDs to `garage.cosmetics
-Bag` and car IDs to `garage.cars` via CAS. Idempotent because both
-helpers check "already in bag / already in garage" before writing. A
-claim RPC that lands a cosmetic already in the bag returns a `200`
-envelope with `skippedCosmetics: [cosmeticId]` — never an error.
+`garage/delivery.ts` plans the garage CAS that each claim commits in
+its transaction (cosmetic ids to `garage.cosmeticsBag`, car ids to
+`garage.cars`). A cosmetic already in the bag is skipped (`200` with
+`skippedCosmetics: [cosmeticId]`, never an error); one missing from the
+catalog is also listed in `undelivered`.
 
 ### 19.13 Phase 6 client integration checklist
 
