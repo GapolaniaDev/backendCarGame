@@ -73,6 +73,19 @@
 //     3 through the inbox; two concurrent mission_claim pay once;
 //     mission_reroll without gems keeps the mission; the 1-player race,
 //     finished before the first missions_get / achievements_get, counts;
+//   - F6 social, clubs, tournaments and events (plan T-21, T-22, T-23),
+//     with fresh accounts (levels raised and wallets set through the
+//     console): club_search answers and finds a new club by prefix;
+//     club_join puts the joiner in club_members_list and a level-1 player
+//     gets MIN_LEVEL; a native JoinGroup and AddGroupUsers answer 403 and
+//     add nobody; chat_list shows the account username; a blocked word is
+//     CONTENT_REJECTED; a blocked player cannot chat (BLOCKED) or add by
+//     code (NOT_FOUND, no edges); 5 club messages page 2 by 2 with the
+//     cursor; tournament_join without funds leaves no entry and with funds
+//     charges once; a drill tournament that ended a minute before closes
+//     once (one close log line, ticks after it) and its prize is a
+//     claimable inbox reward; event_list is not empty and the liveops
+//     calendar is the events.json one;
 //   - `docker compose logs nakama` since the last boot: no error-level
 //     lines, no "rpc registration failed", no "auto-create failed",
 //     periodic service-ticker ticks, and the cost of loading the runtime
@@ -125,7 +138,7 @@ const T11_LOG = /walletLedgerUpdate|race close payout failed|no rows in result s
 const EXPECTED_ROLLBACK = /version check failed|rejected negative value/;
 const isExpectedRollback = (m) => m.msg === 'Error running multi update.' && EXPECTED_ROLLBACK.test(String(m.error));
 /** RPCs that still answer HTTP 500 to `{}`, and the plan card that fixes each. */
-const KNOWN_RPC_500 = { club_search: 'T-21 (groupsList signature)' };
+const KNOWN_RPC_500 = {};
 /** http_key of the runtime (.env), for the admin RPCs; never printed. */
 let ENV_HTTP_KEY = '';
 
@@ -1456,6 +1469,224 @@ async function earlyProgressCheck(ct, acct) {
     `achievements row before *_get: ${stored ? `ach_10_races=${stored.progress?.ach_10_races}` : 'missing'}; achievements_get ${card?.progress}; daily row before *_get ${daily ? 'yes' : 'no'} (progress now ${dailyProgress})`);
 }
 
+// ── F6: social, clubs, tournaments and events (plan T-21, T-22, T-23) ──────
+const CLUB_LEVEL = 8;
+
+/** Raise a smoke account's profile level through the console (club rules need 8). */
+async function setLevel(ct, acct, level) {
+  await rpc(acct.token, 'profile_get', GATE); // the after-auth hook created it; make sure
+  const path = objectPath('profiles', acct.uid, acct.uid);
+  const got = await consoleGet(ct, path);
+  if (got.status !== 200 || typeof got.body?.value !== 'string') return false;
+  const value = JSON.parse(got.body.value);
+  value.progression = { ...(value.progression ?? { xp: 0, lastDailyWinAt: 0 }), level };
+  const put = await consoleSend(ct, 'PUT', path, { value: JSON.stringify(value), permission_read: 0, permission_write: 0 });
+  return put === 200;
+}
+
+async function rosterOf(acct, clubId) {
+  const r = await rpc(acct.token, 'club_members_list', { clubId, limit: 50 });
+  return r.envelope?.ok ? r.envelope.data.members : null;
+}
+
+/** T-21: club_search, club_join visible in the roster, native group writes refused. */
+async function clubChecks(ct, serverKey) {
+  const g = await freshAccounts(serverKey, 'club', ['G1', 'G2', 'G3', 'G4']);
+  const leveled = [];
+  for (const n of ['G1', 'G2', 'G3']) leveled.push(await setLevel(ct, g[n], CLUB_LEVEL));
+  await fund(ct, g.G1.uid, { coins: 10_000, gems: 0 });
+  const name = `Smoke ${Date.now() % 1_000_000}`;
+  const created = await rpc(g.G1.token, 'club_create', { name, motto: 'Fast cars', emblemId: 'emblem_default', region: 'us' });
+  const clubId = created.envelope?.data?.clubId;
+  record('T-21 club_create (level 8, 5000 coins) ok', created.envelope?.ok === true && leveled.every(Boolean),
+    `${errCode(created)} paid=${created.envelope?.data?.costPaid} left=${created.envelope?.data?.newBalance?.coins}`);
+  if (!clubId) return null;
+
+  const search = await rpc(g.G2.token, 'club_search', { name: 'Smoke', limit: 50 });
+  const found = (search.envelope?.data?.clubs ?? []).find((c) => c.clubId === clubId);
+  record('T-21 club_search answers (was HTTP 500) and finds the club by prefix', search.envelope?.ok === true && found !== undefined,
+    `${errCode(search)} clubs=${search.envelope?.data?.clubs?.length ?? '-'} open=${found?.open}`);
+
+  const joined = await rpc(g.G2.token, 'club_join', { clubId });
+  const roster = (await rosterOf(g.G1, clubId)) ?? [];
+  const g2 = roster.find((m) => m.userId === g.G2.uid);
+  record('T-21 club_join → the joiner is in club_members_list', joined.envelope?.ok === true && g2?.role === 'member' && typeof g2?.username === 'string' && g2.username.length > 0,
+    `${errCode(joined)} roster=${roster.map((m) => m.role).join(',')}`);
+
+  const lowLevel = await rpc(g.G4.token, 'club_join', { clubId });
+  record('T-21 club_join below level 8 → FORBIDDEN MIN_LEVEL', errCode(lowLevel) === 'FORBIDDEN' && lowLevel.envelope?.error?.details?.reason === 'MIN_LEVEL',
+    `${errCode(lowLevel)} ${lowLevel.envelope?.error?.details?.reason ?? ''}`);
+
+  const nativeJoin = await http('POST', `/v2/group/${clubId}/join`, { headers: { Authorization: `Bearer ${g.G3.token}` } });
+  const nativeAdd = await http('POST', `/v2/group/${clubId}/add?user_ids=${g.G3.uid}`, { headers: { Authorization: `Bearer ${g.G1.token}` } });
+  const after = (await rosterOf(g.G1, clubId)) ?? [];
+  const groupUsers = await http('GET', `/v2/group/${clubId}/user?limit=100`, { headers: { Authorization: `Bearer ${g.G1.token}` } });
+  const g3Edge = (groupUsers.json?.group_users ?? []).some((u) => u.user?.id === g.G3.uid);
+  record('T-21 native JoinGroup / AddGroupUsers do not skip the rules (403, not a member)',
+    nativeJoin.status === 403 && nativeAdd.status === 403 && !after.some((m) => m.userId === g.G3.uid) && !g3Edge,
+    `join HTTP ${nativeJoin.status}, add HTTP ${nativeAdd.status}, edge=${g3Edge}`);
+  return { g, clubId };
+}
+
+const sendChat = (acct, channelType, targetId, content) =>
+  rpc(acct.token, 'chat_send', { channelType, targetId, language: 'es', content });
+
+/** T-22: blocks in chat and add-by-code, CONTENT_REJECTED, usernames, a paged history. */
+async function socialChecks(ct, serverKey, club) {
+  const s = await freshAccounts(serverKey, 'social', ['S1', 'S2', 'S3', 'S4']);
+  const code2 = (await rpc(s.S2.token, 'friend_code_get', {})).envelope?.data?.code;
+  const added = await rpc(s.S1.token, 'friend_add_by_code', { code: code2 });
+  const hello = await sendChat(s.S1, 'direct', s.S2.uid, 'hola, que tal');
+  const list = await rpc(s.S2.token, 'chat_list', { channelType: 'direct', targetId: s.S1.uid });
+  const name1 = await usernameOf(s.S1);
+  const sender = list.envelope?.data?.messages?.[0]?.senderName;
+  record('T-22 chat messages carry the account username (3.27 .user.username)',
+    added.envelope?.ok === true && hello.envelope?.ok === true && sender === name1 && sender !== 'unknown',
+    `add=${errCode(added)} send=${errCode(hello)} senderName ${sender === name1 ? '= account username' : `${sender} vs ${name1}`}`);
+
+  await sleep(1_100);
+  const word = await sendChat(s.S1, 'direct', s.S2.uid, 'eres un idiota');
+  record('T-22 blocked word → CONTENT_REJECTED', errCode(word) === 'CONTENT_REJECTED', errCode(word));
+
+  const block = await rpc(s.S2.token, 'block_add', { targetUserId: s.S1.uid });
+  await sleep(1_100);
+  const blocked = await sendChat(s.S1, 'direct', s.S2.uid, 'sigues ahi?');
+  record('T-22 a blocked player cannot chat (FORBIDDEN BLOCKED)',
+    block.envelope?.ok === true && errCode(blocked) === 'FORBIDDEN' && blocked.envelope?.error?.details?.reason === 'BLOCKED',
+    `block=${errCode(block)} send=${errCode(blocked)} ${blocked.envelope?.error?.details?.reason ?? ''}`);
+
+  const block4 = await rpc(s.S4.token, 'block_add', { targetUserId: s.S3.uid });
+  const code4 = (await rpc(s.S4.token, 'friend_code_get', {})).envelope?.data?.code;
+  const byCode = await rpc(s.S3.token, 'friend_add_by_code', { code: code4 });
+  const edgeA = await consoleGet(ct, objectPath('friends_edge', s.S4.uid, s.S3.uid));
+  const edgeB = await consoleGet(ct, objectPath('friends_edge', s.S3.uid, s.S4.uid));
+  record('T-22 a blocked player cannot add by code (NOT_FOUND, no edges)',
+    block4.envelope?.ok === true && errCode(byCode) === 'NOT_FOUND' && edgeA.status === 404 && edgeB.status === 404,
+    `add=${errCode(byCode)} edges HTTP ${edgeA.status}/${edgeB.status}`);
+
+  if (!club) {
+    record('T-22 chat history pages with the cursor', null, 'no club');
+    return;
+  }
+  const { g, clubId } = club;
+  const texts = [];
+  for (let i = 0; i < 5; i++) {
+    const who = i % 2 === 0 ? g.G1 : g.G2;
+    const text = `mensaje ${i + 1}`;
+    const r = await sendChat(who, 'club', clubId, text);
+    if (r.envelope?.ok) texts.push(text);
+    await sleep(600);
+  }
+  const seen = [];
+  let cursor = '';
+  let pages = 0;
+  for (; pages < 10; pages++) {
+    const page = await rpc(g.G1.token, 'chat_list', { channelType: 'club', targetId: clubId, limit: 2, ...(cursor ? { cursor } : {}) });
+    if (!page.envelope?.ok) break;
+    seen.push(...page.envelope.data.messages.map((m) => m.content));
+    cursor = page.envelope.data.nextCursor;
+    if (!cursor) break;
+  }
+  const expected = [...texts].reverse();
+  const bad = await rpc(g.G1.token, 'chat_list', { channelType: 'club', targetId: clubId, cursor: 'x' });
+  record('T-22 chat history pages with the cursor (newest first, every message once)',
+    texts.length === 5 && JSON.stringify(seen) === JSON.stringify(expected) && errCode(bad) === 'BAD_REQUEST',
+    `sent=${texts.length} pages=${pages + 1} seen=${seen.length} badCursor=${errCode(bad)}`);
+}
+
+/** T-23 seeding (at the start): an open paid tournament and one that ended a minute ago with a winner. */
+async function seedTournaments(ct, serverKey) {
+  const t = await freshAccounts(serverKey, 'tour', ['T1', 'T2', 'W1']);
+  const now = Date.now();
+  const base = { schemaVersion: 1, kind: 'time_trial', trackId: 'neon_blvd', maxAttempts: 3, minLevel: 1, createdAt: now - 7_200_000 };
+  const payId = `smoke_pay_${now}`;
+  const closeId = `smoke_close_${now}`;
+  const writes = [
+    await consoleSend(ct, 'PUT', objectPath('tournament_instances', payId, SYSTEM_USER), {
+      value: JSON.stringify({ ...base, id: payId, templateId: payId, startsAt: now - 3_600_000, endsAt: now + 86_400_000, entryFee: 500, prizes: [] }),
+      permission_read: 1, permission_write: 0,
+    }),
+    await consoleSend(ct, 'PUT', objectPath('tournament_instances', closeId, SYSTEM_USER), {
+      value: JSON.stringify({ ...base, id: closeId, templateId: closeId, startsAt: now - 7_200_000, endsAt: now - 60_000, entryFee: 0, prizes: [{ rankFrom: 1, rankTo: 1, rewards: { coins: 300 } }] }),
+      permission_read: 1, permission_write: 0,
+    }),
+    await consoleSend(ct, 'PUT', objectPath('tournament_leaderboard', closeId, SYSTEM_USER), {
+      value: JSON.stringify({ schemaVersion: 1, tournamentId: closeId, updatedAt: now, entries: [{ userId: t.W1.uid, bestTimeMs: 150_000, recordedAt: now }] }),
+      permission_read: 1, permission_write: 0,
+    }),
+  ];
+  const ok = writes.every((w) => w === 200);
+  record('T-23 drill tournaments seeded (an open paid one, one that ended with a winner)', ok, `writes ${writes.join(',')}`);
+  return ok ? { t, payId, closeId, seededAt: now } : null;
+}
+
+/** T-23: a join without funds leaves no entry; one with funds charges once. */
+async function tournamentJoinChecks(ct, seeded) {
+  const { t, payId } = seeded;
+  await fund(ct, t.T1.uid, { coins: 100, gems: 0 });
+  const poor = await rpc(t.T1.token, 'tournament_join', { tournamentId: payId });
+  const entry = await consoleGet(ct, objectPath('tournament_entries', payId, t.T1.uid));
+  const poorWallet = await walletOf(t.T1);
+  record('T-23 tournament_join without funds → INSUFFICIENT_FUNDS and no entry',
+    errCode(poor) === 'INSUFFICIENT_FUNDS' && entry.status === 404 && poorWallet?.coins === 100,
+    `${errCode(poor)} entry HTTP ${entry.status} coins=${poorWallet?.coins}`);
+
+  await fund(ct, t.T2.uid, { coins: 1_000, gems: 0 });
+  const paid = await rpc(t.T2.token, 'tournament_join', { tournamentId: payId });
+  const again = await rpc(t.T2.token, 'tournament_join', { tournamentId: payId });
+  const entry2 = await consoleGet(ct, objectPath('tournament_entries', payId, t.T2.uid));
+  const wallet2 = await walletOf(t.T2);
+  record('T-23 tournament_join with funds: entry written, charged once',
+    paid.envelope?.ok === true && errCode(again) === 'CONFLICT' && entry2.status === 200 && wallet2?.coins === 500,
+    `${errCode(paid)} / again ${errCode(again)} entry HTTP ${entry2.status} coins=${wallet2?.coins}`);
+  const got = await rpc(t.T2.token, 'tournament_get', { tournamentId: payId });
+  record('T-23 tournament_get answers topTimes and myRank', got.envelope?.ok === true && Array.isArray(got.envelope.data.topTimes) && 'myRank' in got.envelope.data,
+    `${errCode(got)} topTimes=${got.envelope?.data?.topTimes?.length}`);
+}
+
+/** T-23: the ended tournament closed once (closedAt stable across ticks) and its prize is a claimable inbox reward. */
+async function tournamentCloseChecks(ct, seeded, bin) {
+  const { t, closeId } = seeded;
+  const inst = await consoleGet(ct, objectPath('tournament_instances', closeId, SYSTEM_USER));
+  const v = inst.status === 200 ? JSON.parse(inst.body.value) : null;
+  let closes = null;
+  let ticksAfter = null;
+  if (bin) {
+    const { lines } = nakamaLogsSinceBoot(bin);
+    const msgs = parseLogLines(lines);
+    const closeLines = msgs.filter((m) => String(m.msg).startsWith(`tournament closed tid=${closeId} `));
+    closes = closeLines.length;
+    const firstClose = closeLines[0]?.ts;
+    ticksAfter = firstClose ? msgs.filter((m) => TICK_LOG.test(String(m.msg)) && m.ts > firstClose).length : 0;
+  }
+  const closedAtInLog = closes === 1 && v !== null;
+  record('T-23 an ended tournament closes once (closedAt stable between ticks)',
+    v?.state === 'closed' && typeof v?.closedAt === 'number' && v?.rewardsDistributed === true && (bin ? closes === 1 && ticksAfter >= 1 : true),
+    `state=${v?.state} rewardsDistributed=${v?.rewardsDistributed} close lines=${closes ?? '-'} ticks after=${ticksAfter ?? '-'}${closedAtInLog ? '' : ''}`);
+
+  const inbox = await rpc(t.W1.token, 'inbox_list', {});
+  const msg = (inbox.envelope?.data?.messages ?? []).find((m) => m.id === `tournament:${closeId}:prize:${t.W1.uid}:1`);
+  const before = await walletOf(t.W1);
+  const claim = msg ? await rpc(t.W1.token, 'inbox_claim', { messageId: msg.id, ...GATE }) : null;
+  const afterW = await walletOf(t.W1);
+  record('T-23 the prize is a claimable reward in the single inbox (paid by inbox_claim)',
+    msg?.kind === 'reward' && msg?.reward?.coins === 300 && claim?.envelope?.ok === true && afterW?.coins === (before?.coins ?? 0) + 300,
+    `kind=${msg?.kind} coins=${msg?.reward?.coins} claim=${claim ? errCode(claim) : '-'} wallet ${before?.coins}→${afterW?.coins}`);
+}
+
+/** T-23: one event source — event_list and the liveops calendar. */
+async function eventChecks(acct) {
+  const ev = await rpc(acct.token, 'event_list', {});
+  const events = ev.envelope?.data?.events ?? [];
+  record('T-23 event_list is not empty', ev.envelope?.ok === true && events.length > 0, `${errCode(ev)} events=${events.length} active=${events.filter((e) => e.isActive).length}`);
+  const cfg = await rpc(acct.token, 'liveops_config_get', {});
+  const cal = (cfg.envelope?.data?.calendar ?? []).filter((c) => c.type === 'event').map((c) => c.id).sort();
+  const notEnded = events.filter((e) => Date.parse(e.endsAtUtc) >= Date.now()).map((e) => e.id).sort();
+  record('T-23 the liveops calendar is the events.json calendar (one source)',
+    cfg.envelope?.ok === true && cal.length > 0 && JSON.stringify(cal) === JSON.stringify(notEnded),
+    `calendar events=${cal.length} not-ended events=${notEnded.length}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
@@ -1555,6 +1786,9 @@ async function main() {
 
   // F4 (T-15): native linking, no token or secret in the bundle.
   const ct4 = await consoleToken(env);
+  // F6 (T-23): seed the drill tournaments early, so the service ticker
+  // closes the ended one and ticks again before the end of the run.
+  const seededT = ct4 ? await seedTournaments(ct4, serverKey) : null;
   await linkingScenario(serverKey, ct4);
 
   // Minimal F0 flow (what BackendSmoke needs first).
@@ -1587,6 +1821,16 @@ async function main() {
     record('F5 storage and progression checks', null, 'console credentials or NAKAMA_RUNTIME_HTTP_KEY not in .env');
   }
 
+  // F6 (T-21, T-22, T-23) while the race clocks run.
+  if (ct4) {
+    const club = await clubChecks(ct4, serverKey);
+    await socialChecks(ct4, serverKey, club);
+    if (seededT) await tournamentJoinChecks(ct4, seededT);
+  } else {
+    record('F6 social, clubs and tournaments checks', null, 'console credentials not in .env');
+  }
+  await eventChecks(a);
+
   if (f1) await matchmakerScenario(f1.m);
   if (race) await finishPrivateRace(fresh, race);
   else record('1-player private race closes', null, '--skip-race');
@@ -1603,6 +1847,9 @@ async function main() {
   } else {
     record('T-16 account_delete of an account with a race', null, '--skip-race');
   }
+
+  // F6 (T-23): by now the ticker closed the ended drill tournament and ticked again.
+  if (seededT) await tournamentCloseChecks(ct4, seededT, bin);
 
   if (bin) {
     const registered = checkLogs(bin);
