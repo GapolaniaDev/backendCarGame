@@ -24,6 +24,10 @@ const ANONYMOUS_RPCS = new Set([
 const SERVER_TO_SERVER_RPCS = new Set([
   'ads_levelplay_callback',
   'rs_heartbeat',
+  'rs_join_validate',
+  'rs_session_start',
+  'rs_submit_results',
+  'rs_session_release',
 ]);
 
 const SELF = '11111111-1111-4111-8111-111111111111';

@@ -3,7 +3,7 @@
   "info": {
     "title": "CarVideoGameBackend — Unity Client API",
     "version": "1.0.0",
-    "description": "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (`http_key` + `adminKey`) y no están en este documento: se documentan en `docs/admin.md` (ver «Contract» en el `README.md`). Los RPCs de servidor a servidor de este documento son `ads_levelplay_callback` y `rs_heartbeat` (esquema `RuntimeHttpKey`; este último con la etiqueta `server-to-server`).\n- No hay eventos de carrera por socket: el resultado llega en la respuesta de `race_submit_result` (el envío que cierra la sesión trae `officialResults` y `rewards`) o con `race_session_get` (`state: closed` y `results`). `RaceCompleted` es un evento interno del servidor (ver `components/schemas/RaceCompletedEvent`). El socket solo lleva el relay de la partida (op codes en `docs/race-protocol-ops.md`) y el matchmaker.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
+    "description": "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (`http_key` + `adminKey`) y no están en este documento: se documentan en `docs/admin.md` (ver «Contract» en el `README.md`). Los RPCs de servidor a servidor de este documento son `ads_levelplay_callback` y los `rs_*` de los servidores de carrera dedicados (`rs_heartbeat`, `rs_join_validate`, `rs_session_start`, `rs_submit_results`, `rs_session_release`) (esquema `RuntimeHttpKey`; los `rs_*` con la etiqueta `server-to-server`).\n- No hay eventos de carrera por socket: el resultado llega en la respuesta de `race_submit_result` (el envío que cierra la sesión trae `officialResults` y `rewards`) o con `race_session_get` (`state: closed` y `results`). `RaceCompleted` es un evento interno del servidor (ver `components/schemas/RaceCompletedEvent`). El socket solo lleva el relay de la partida (op codes en `docs/race-protocol-ops.md`) y el matchmaker.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
   },
   "servers": [
     {
@@ -1609,7 +1609,7 @@
         ],
         "summary": "Un jugador se une a la sesión",
         "operationId": "race_session_join",
-        "description": "Errores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_join\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionJoinData>>(rpc.Payload)`.",
+        "description": "Errores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción).\n\nSesión con servidor dedicado (`serverHosted`): `FORBIDDEN` con `details.reason = SERVER_HOSTED` (solo el servidor de carrera actúa; los jugadores no entran por aquí).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_join\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionJoinData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1693,7 +1693,7 @@
         ],
         "summary": "El host inicia la carrera (sella startedAt)",
         "operationId": "race_session_start",
-        "description": "Iniciar la cuenta atrás local con el reloj del servidor, no con DateTime.UtcNow.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_start\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionStartData>>(rpc.Payload)`.",
+        "description": "Iniciar la cuenta atrás local con el reloj del servidor, no con DateTime.UtcNow.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción).\n\nSesión con servidor dedicado (`serverHosted`): `FORBIDDEN` con `details.reason = SERVER_HOSTED` (solo el servidor de carrera actúa; los jugadores no entran por aquí).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_session_start\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSessionStartData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1861,7 +1861,7 @@
         ],
         "summary": "Reporta tiempos del jugador (cierra la sesión por quórum)",
         "operationId": "race_submit_result",
-        "description": "`laps.length` == vueltas del modo; `sum(laps) == totalMs`.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción; también un informe tras el cierre por gracia, T-06), `INVALID_RESULT` (resultado no plausible).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_submit_result\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSubmitResultData>>(rpc.Payload)`.",
+        "description": "`laps.length` == vueltas del modo; `sum(laps) == totalMs`.\n\nErrores posibles (`error.code`): `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe), `CONFLICT` (estado no permite la acción; también un informe tras el cierre por gracia, T-06), `INVALID_RESULT` (resultado no plausible).\n\nSesión con servidor dedicado (`serverHosted`): `FORBIDDEN` con `details.reason = SERVER_HOSTED` (solo el servidor de carrera actúa; los jugadores no entran por aquí).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_submit_result\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceSubmitResultData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -2029,7 +2029,7 @@
         ],
         "summary": "Sucesión de host tras desconexión",
         "operationId": "race_host_claim",
-        "description": "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido; con el host vivo, `details.reason = NOT_HOST`: el host lleva menos de 10 s sin contacto o el llamador no es el primer vivo de la sucesión), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `RATE_LIMITED` (demasiadas llamadas).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_host_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceHostClaimData>>(rpc.Payload)`.",
+        "description": "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `FORBIDDEN` (no permitido; con el host vivo, `details.reason = NOT_HOST`: el host lleva menos de 10 s sin contacto o el llamador no es el primer vivo de la sucesión), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `RATE_LIMITED` (demasiadas llamadas).\n\nSesión con servidor dedicado (`serverHosted`): `FORBIDDEN` con `details.reason = SERVER_HOSTED` (solo el servidor de carrera actúa; los jugadores no entran por aquí).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"race_host_claim\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<RaceHostClaimData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -6973,6 +6973,342 @@
                               },
                               "data": {
                                 "$ref": "#/components/schemas/RsHeartbeatData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/rpc/rs_join_validate": {
+      "post": {
+        "tags": [
+          "server-to-server"
+        ],
+        "summary": "Validate the join ticket of a connecting player (server-to-server)",
+        "operationId": "rs_join_validate",
+        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). A player connected to the race server and presented the `joinTicket` the client got in `race_session_get` (`myJoinTicket`). The ticket must belong to a human of the roster of the session assigned to this server; it is compared in constant time and stays valid while the session is `created` or `started` (a reconnection uses it again). Answers who the player is and the car loadout fixed by the matchmaker.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server); `BAD_STATE`: the session is closed; `BAD_TICKET`: the ticket matches nobody), `BAD_REQUEST` (invalid `serverId`, `sessionId` or `joinTicket`).\n\nMaintenance: not gated.",
+        "security": [
+          {
+            "RuntimeHttpKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/RsJoinValidateRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/RsJoinValidateData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/rpc/rs_session_start": {
+      "post": {
+        "tags": [
+          "server-to-server"
+        ],
+        "summary": "Start the race of the assigned session (server-to-server)",
+        "operationId": "rs_session_start",
+        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). Moves the session from `created` to `started` and stamps `startedAt` with the server clock. Idempotent: on a session already `started` it answers the same `startedAt`.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server)), `NOT_FOUND` (no such session), `CONFLICT` (`BAD_STATE`: the session is closed), `BAD_REQUEST`.\n\nMaintenance: not gated.",
+        "security": [
+          {
+            "RuntimeHttpKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/RsSessionStartRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/RsSessionStartData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/rpc/rs_submit_results": {
+      "post": {
+        "tags": [
+          "server-to-server"
+        ],
+        "summary": "Submit the official results of the race (server-to-server)",
+        "operationId": "rs_submit_results",
+        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). The race server is the authority of a dedicated race: this call closes the session with confidence `server` (it feeds the time and wins leaderboards like `quorum`), pays the coins and XP of the humans and frees the server. Checks: every finisher (`dnf` false) has as many `laps` as the session and `sum(laps) == totalMs`; every human (`isBot` false) is a human of the roster, once; bots (`isBot` true, `userId` null or an id of the server) only appear in the results and are never paid. A human lap under the class minimum of the track does not reject the results: the session is closed with `flags.needsReview = true` (`reviewReason: lap_below_min`). Humans that are not listed, or listed with `dnf`, are DNF. Ranks: finishers by `totalMs` (ties keep the sent order), then the DNFs. A session still `created` is started implicitly (`startedAt` = now) in the same close, so a failed `rs_session_start` does not lose the results. Idempotent by `requestId`: a retry returns the same response and pays nothing more; another `requestId` on a closed session is `CONFLICT`.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server)), `NOT_FOUND`, `CONFLICT` (`BAD_STATE`: the session is closed; `VERSION_CONFLICT`), `INVALID_RESULT` (`details.reason`: `LAP_COUNT_MISMATCH`, `LAP_SUM_MISMATCH`, `LAP_NOT_POSITIVE`, `NOT_IN_ROSTER`, `DUPLICATE_RESULT`, `BOT_ID_CLASH`), `BAD_REQUEST` (invalid body).\n\nMaintenance: not gated.",
+        "security": [
+          {
+            "RuntimeHttpKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/RsSubmitResultsRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/RsSubmitResultsData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/rpc/rs_session_release": {
+      "post": {
+        "tags": [
+          "server-to-server"
+        ],
+        "summary": "Give the assigned session up (server-to-server)",
+        "operationId": "rs_session_release",
+        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). The server cannot run the session (nobody joined in time, an error): a `created` or `started` session is closed as abandoned without payouts (every player DNF) and the server is freed. Idempotent: a closed or unknown session only frees the server and answers `released: true`.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server)), `BAD_REQUEST` (invalid `reason`), `CONFLICT` (`VERSION_CONFLICT`).\n\nMaintenance: not gated.",
+        "security": [
+          {
+            "RuntimeHttpKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/RsSessionReleaseRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/RsSessionReleaseData"
                               }
                             },
                             "required": [
@@ -12581,6 +12917,316 @@
                 "format": "int64"
               }
             }
+          }
+        }
+      },
+      "RsJoinValidateRequest": {
+        "type": "object",
+        "required": [
+          "serverKey",
+          "serverId",
+          "sessionId",
+          "joinTicket"
+        ],
+        "properties": {
+          "serverKey": {
+            "type": "string",
+            "description": "Shared secret, equal to RACE_SERVER_SECRET of the server `.env`"
+          },
+          "serverId": {
+            "type": "string",
+            "description": "Id the process registered with `rs_heartbeat`",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Session assigned to this server (from the heartbeat `assignment`)"
+          },
+          "joinTicket": {
+            "type": "string",
+            "description": "Ticket of the player (32 hex characters)"
+          }
+        }
+      },
+      "RsJoinValidateData": {
+        "type": "object",
+        "required": [
+          "userId",
+          "displayName",
+          "classId",
+          "bodyId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string",
+            "description": "Account display name, else the username"
+          },
+          "classId": {
+            "type": "string",
+            "enum": [
+              "D",
+              "C",
+              "B",
+              "A",
+              "S"
+            ]
+          },
+          "bodyId": {
+            "type": "string"
+          }
+        }
+      },
+      "RsSessionStartRequest": {
+        "type": "object",
+        "required": [
+          "serverKey",
+          "serverId",
+          "sessionId"
+        ],
+        "properties": {
+          "serverKey": {
+            "type": "string",
+            "description": "Shared secret, equal to RACE_SERVER_SECRET of the server `.env`"
+          },
+          "serverId": {
+            "type": "string",
+            "description": "Id the process registered with `rs_heartbeat`",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Session assigned to this server (from the heartbeat `assignment`)"
+          }
+        }
+      },
+      "RsSessionStartData": {
+        "type": "object",
+        "required": [
+          "startedAt"
+        ],
+        "properties": {
+          "startedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server epoch ms at which the race started"
+          }
+        }
+      },
+      "RsSubmitResultsRequest": {
+        "type": "object",
+        "required": [
+          "serverKey",
+          "serverId",
+          "sessionId",
+          "requestId",
+          "results"
+        ],
+        "properties": {
+          "serverKey": {
+            "type": "string",
+            "description": "Shared secret, equal to RACE_SERVER_SECRET of the server `.env`"
+          },
+          "serverId": {
+            "type": "string",
+            "description": "Id the process registered with `rs_heartbeat`",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Session assigned to this server (from the heartbeat `assignment`)"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Id of this submission; a retry with the same id replays the response"
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "required": [
+                "userId",
+                "isBot",
+                "totalMs",
+                "laps",
+                "dnf"
+              ],
+              "properties": {
+                "userId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The human player; null (or a server id) for a bot"
+                },
+                "isBot": {
+                  "type": "boolean"
+                },
+                "displayName": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "totalMs": {
+                  "type": "number",
+                  "description": "Finish time in ms; sum of `laps`"
+                },
+                "laps": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "Lap times in ms; as many as the laps of the session when the entry finished"
+                },
+                "dnf": {
+                  "type": "boolean",
+                  "description": "Did not finish (`totalMs` and `laps` are then ignored)"
+                }
+              }
+            }
+          }
+        }
+      },
+      "RsSubmitResultsData": {
+        "type": "object",
+        "required": [
+          "officialResults",
+          "rewards"
+        ],
+        "properties": {
+          "officialResults": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "rank",
+                "userId",
+                "isBot",
+                "totalMs",
+                "abandoned"
+              ],
+              "properties": {
+                "rank": {
+                  "type": "integer"
+                },
+                "userId": {
+                  "type": "string",
+                  "description": "Bots get the id the server sent, else `bot_ds_{index}`"
+                },
+                "isBot": {
+                  "type": "boolean"
+                },
+                "totalMs": {
+                  "type": "integer",
+                  "description": "0 for a DNF"
+                },
+                "abandoned": {
+                  "type": "boolean",
+                  "description": "DNF"
+                }
+              }
+            }
+          },
+          "rewards": {
+            "type": "object",
+            "description": "userId -> reward, same entries as `race_submit_result`; only the humans that were paid",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "coins": {
+                  "type": "integer"
+                },
+                "gems": {
+                  "type": "integer"
+                },
+                "xp": {
+                  "type": "integer"
+                },
+                "isFirstWinOfDay": {
+                  "type": "boolean"
+                },
+                "leveledUp": {
+                  "type": "boolean"
+                },
+                "newLevel": {
+                  "type": "integer"
+                },
+                "newBalance": {
+                  "$ref": "#/components/schemas/Wallet"
+                },
+                "levelUpRewards": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "coins",
+                          "gems"
+                        ]
+                      },
+                      "amount": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "RsSessionReleaseRequest": {
+        "type": "object",
+        "required": [
+          "serverKey",
+          "serverId",
+          "sessionId"
+        ],
+        "properties": {
+          "serverKey": {
+            "type": "string",
+            "description": "Shared secret, equal to RACE_SERVER_SECRET of the server `.env`"
+          },
+          "serverId": {
+            "type": "string",
+            "description": "Id the process registered with `rs_heartbeat`",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Session assigned to this server (from the heartbeat `assignment`)"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Why the server gives the session up (logged)"
+          }
+        }
+      },
+      "RsSessionReleaseData": {
+        "type": "object",
+        "required": [
+          "released"
+        ],
+        "properties": {
+          "released": {
+            "type": "boolean",
+            "const": true
           }
         }
       }

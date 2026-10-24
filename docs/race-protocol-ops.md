@@ -78,6 +78,7 @@ plausibility check that fired:
 - `race_submit_result` — human report whose `callerUserId` does not match `report.userId`
 - `race_submit_result` — `isBotReport=true` but caller is not `session.host`
 - `race_session_get` — caller is not in the session roster (surfaced as `NOT_FOUND` to avoid leaking roster membership)
+- `race_session_join`, `race_session_start`, `race_host_claim`, `race_submit_result` — the session is run by a dedicated race server (`serverHosted`): `details.reason = SERVER_HOSTED` (§9)
 
 ## 6. Race state machine
 
@@ -100,7 +101,7 @@ matching `flags`:
 | Confidence | Cause | `flags.needsReview` | `flags.reviewReason` |
 |---|---|---|---|
 | `quorum` | every roster human reported | `false` | absent |
-| `server` | zero humans reported (pure bot race) | `false` | absent |
+| `server` | zero humans reported (pure bot race), or the results come from a dedicated race server (§9) | `false`; `true` for a dedicated race with a lap under the class minimum | absent; `lap_below_min` in that case |
 | `client` | not every roster human reported | `true` | `incomplete_reports` |
 
 When `confidence=client`, the server has still persisted an
@@ -122,6 +123,31 @@ with perms `0/0`:
 All writes use `nk.multiUpdate` for atomicity. Bumping `session.version`
 is the optimistic-concurrency token; a CAS mismatch on any write rolls
 back the whole `multiUpdate`.
+
+## 9. Dedicated race server sessions
+
+A session created by the matchmaker for a `hosting: "dedicated"` group is run by a
+headless race server instead of the relay (plan `fishnet-nakama-server`; contract in
+`docs/unity-api.md` §23). Differences with a relay race:
+
+- The session carries `serverHosted: true`, `server`, `laps` and a `joinTicket` per
+  roster entry (never returned in the roster; each player reads only `myJoinTicket`).
+- Only the race server acts, with the server-to-server RPCs `rs_join_validate`,
+  `rs_session_start`, `rs_submit_results` and `rs_session_release`
+  (`http_key` + `serverKey`). The client RPCs that drive a race answer `FORBIDDEN` /
+  `SERVER_HOSTED` (§5).
+- `rs_submit_results` closes with confidence `server` (§7) through the same close path
+  as every other race (`closeRace`): CAS close write, `RaceCompleted`, payouts. The
+  results come from the server, not from the players' reports; bots appear only in
+  the results and are not paid. A human lap under the class minimum closes the race
+  with `flags.needsReview = true`, `reviewReason = lap_below_min`.
+- `rs_session_release` (or the 30 minutes abandoned close) closes it without payouts.
+- Every close of a server-hosted session frees its server (`race_servers/{serverId}`
+  gets `sessionId = null`); a server that reports no active session at its next
+  heartbeat is freed as well.
+- Storage: the answer to a `rs_submit_results` `requestId` is kept in
+  `race_sessions/{sid}/reports/00000000-0000-0000-0000-000000000000` (owner: system)
+  so a retry replays it.
 
 ## 10. Smoke-test commands
 

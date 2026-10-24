@@ -6,6 +6,9 @@
 //     players who did not report marked DNF;
 //   - `abandoned`: `ABANDONED_SESSION_MS` after the start with no human
 //     report at all (everyone DNF).
+// A dedicated-server session (plan fishnet-nakama-server) also closes with
+// `server_results` (the race server submitted the official results) or as
+// `abandoned` when the server releases it; closing it frees its server.
 // The last two are "due" closes. They run lazily in `race_session_get` and
 // `race_submit_result` (a late report finds the session closed and gets
 // CONFLICT) and from the service ticker (`runRaceCloseTick`). Every path
@@ -16,6 +19,7 @@
 import type { ILogger, INakama } from '../nkruntime';
 import { emit } from '../core/admin/analytics';
 import { ensureRuntimeState } from '../core/runtime_state';
+import { releaseServerOfSession } from '../race_servers/registry_repo';
 import { ABANDONED_SESSION_MS, CLOSE_GRACE_MS } from './constants';
 import {
   deleteOpenIndex,
@@ -23,6 +27,7 @@ import {
   readSession,
   tryCloseAndPublish,
   type CloseOutcome,
+  type CloseOverride,
   type ReadSessionResult,
 } from './session_repo';
 import type { RaceCompletedEvent, RaceSession, RaceSubmitResultRewardEntry } from './types';
@@ -35,7 +40,7 @@ import {
   type RaceCompletedProgressionSummary,
 } from '../progression/subscriber';
 
-export type CloseReason = 'all_reported' | 'grace' | 'abandoned';
+export type CloseReason = 'all_reported' | 'grace' | 'abandoned' | 'server_results';
 
 /** The close write lost the CAS: another caller changed the session first. */
 export class CloseConflictError extends Error {
@@ -75,7 +80,9 @@ export function closeDeadlineMs(session: RaceSession): number | null {
  * caller changed it first), then pay the
  * rewards. `payoutErrors: 'throw'` keeps the submit path's behaviour (the
  * RPC fails when a grant fails); `'log'` is for the lazy and ticker
- * closes, where the caller only reads the session.
+ * closes, where the caller only reads the session. `override` carries
+ * results decided by the dedicated race server instead of the players'
+ * reports (D-07, D-10).
  */
 export function closeRace(
   nk: INakama,
@@ -85,15 +92,17 @@ export function closeRace(
   nowMs: number,
   reason: CloseReason,
   payoutErrors: 'throw' | 'log',
+  override?: CloseOverride,
 ): ClosedRace {
   // The race bus of the VM serving this call (plan T-29, D-11).
   const bus = ensureRuntimeState(nk, logger);
   let outcome: CloseOutcome;
   try {
-    outcome = tryCloseAndPublish(nk, bus, session, version, nowMs);
+    outcome = tryCloseAndPublish(nk, bus, session, version, nowMs, override);
   } catch (e) {
     throw new CloseConflictError(session.id, e);
   }
+  freeRaceServer(nk, logger, session);
   logger.info(
     'race closed sid=%s reason=%s confidence=%s needsReview=%s dnf=%d',
     session.id,
@@ -145,6 +154,25 @@ export function closeRace(
     );
   }
   return closed;
+}
+
+/**
+ * A closed dedicated-server session frees its server (D-07); best effort:
+ * the heartbeat of a server that reports no active session and the ticker
+ * free it anyway.
+ */
+function freeRaceServer(nk: INakama, logger: ILogger, session: RaceSession): void {
+  if (session.serverHosted !== true || session.server === undefined) return;
+  try {
+    releaseServerOfSession(nk, session.server.serverId, session.id);
+  } catch (e) {
+    logger.warn(
+      'race closed sid=%s: server %s not released: %s',
+      session.id,
+      session.server.serverId,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
 }
 
 /**

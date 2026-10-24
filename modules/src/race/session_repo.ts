@@ -582,6 +582,22 @@ export function allSubmitted(roster: readonly RosterEntry[]): boolean {
   return true;
 }
 
+/**
+ * Results decided outside the roster reports, for the close of a
+ * dedicated-server session (plan fishnet-nakama-server, D-07, D-10): the
+ * race server is the authority, so the close writes these instead of
+ * aggregating the players' own reports.
+ */
+export interface CloseOverride {
+  /** Roster of the closed session (finishers carry `totalMs` / `laps`, the rest `abandoned`). */
+  roster: RosterEntry[];
+  /** Final results, bots included (they are never paid). */
+  results: RaceResult[];
+  confidence: Confidence;
+  needsReview: boolean;
+  reviewReason?: string;
+}
+
 export interface CloseOutcome {
   results: RaceResult[];
   confidence: Confidence;
@@ -608,6 +624,7 @@ export function tryCloseAndPublish(
   session: RaceSession,
   expectedVersion: string,
   nowMs: number,
+  override?: CloseOverride,
 ): CloseOutcome {
   // If we're already closed, return the persisted result without emitting.
   if (session.state === 'closed') {
@@ -624,20 +641,30 @@ export function tryCloseAndPublish(
     };
   }
 
-  // Collect every per-user report that was written by submitReport.
+  // Collect every per-user report that was written by submitReport (a
+  // server-decided close has none: the override carries the results).
   const reports: RaceReport[] = [];
-  for (const entry of session.roster) {
-    const r = readReport(nk, session.id, entry.userId);
-    if (r !== null) reports.push(r as RaceReport);
+  if (override === undefined) {
+    for (const entry of session.roster) {
+      const r = readReport(nk, session.id, entry.userId);
+      if (r !== null) reports.push(r as RaceReport);
+    }
   }
 
-  const agg = aggregateForClose({ roster: session.roster, reports });
+  const agg = override !== undefined
+    ? {
+        results: override.results,
+        confidence: override.confidence,
+        needsReview: override.needsReview,
+        ...(override.reviewReason !== undefined ? { reviewReason: override.reviewReason } : {}),
+      }
+    : aggregateForClose({ roster: session.roster, reports });
   const closed: RaceSession = {
     ...session,
     // Players without a report are DNF (T-06: the grace expired).
-    roster: session.roster.map((e) =>
-      e.reportedAt === undefined ? { ...e, abandoned: true } : e,
-    ),
+    roster: override !== undefined
+      ? override.roster
+      : session.roster.map((e) => (e.reportedAt === undefined ? { ...e, abandoned: true } : e)),
     state: 'closed',
     results: agg.results,
     flags: {

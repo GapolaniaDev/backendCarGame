@@ -292,8 +292,8 @@ session is not `closed` — the response adds two top-level fields:
 }
 ```
 
-`myJoinTicket` (32 hex characters) is the **caller's own** single-use ticket for the race
-server. The roster entries never expose `joinTicket`, neither the caller's nor anybody
+`myJoinTicket` (32 hex characters) is the **caller's own** ticket for the race
+server, valid until the session closes (a reconnection presents it again). The roster entries never expose `joinTicket`, neither the caller's nor anybody
 else's, in any response. Sessions without a server (and closed ones) have neither field.
 
 Errors: `NOT_FOUND`, `FORBIDDEN`.
@@ -2337,3 +2337,80 @@ Rules:
 
 - If `activeSessionId` is `null` and the registry still holds a `sessionId` whose session is `closed` or no longer exists, the server is freed (`sessionId = null`).
 - The service ticker frees the `sessionId` of any server without heartbeat for more than 30 s.
+
+
+All the RPCs below take `serverId` (the id of the heartbeat) and `sessionId` (the session of the `assignment`) beside `serverKey`. A session that is not hosted by that server — a relay session, or one assigned to another server — is `FORBIDDEN` with `details.reason: NOT_ASSIGNED`.
+
+### 23.2 `rs_join_validate`
+
+A player connected to the race server and presented the `joinTicket` the client received in `race_session_get` (`myJoinTicket`, see `race_session_get`). The ticket must belong to a human of the roster of the session; it is compared in constant time and stays valid while the session is `created` or `started` (a reconnection uses it again).
+
+Request: `{ "serverKey": "…", "serverId": "race-eu-1", "sessionId": "…", "joinTicket": "…" }`
+
+Response `data`:
+
+```json
+{ "userId": "…", "displayName": "Ana", "classId": "D", "bodyId": "starter_viper" }
+```
+
+`displayName` is the account display name, else its username. `classId` and `bodyId` are the loadout the matchmaker fixed for the player.
+
+| Condition | `error.code` | `details.reason` |
+|---|---|---|
+| session unknown, not hosted, or assigned to another server | `FORBIDDEN` | `NOT_ASSIGNED` |
+| session `closing` or `closed` | `FORBIDDEN` | `BAD_STATE` |
+| the ticket matches no human of the roster | `FORBIDDEN` | `BAD_TICKET` |
+| `joinTicket` is not a string | `BAD_REQUEST` | |
+
+### 23.3 `rs_session_start`
+
+Moves the session `created → started` and stamps `startedAt` with the server clock. Idempotent: on a session already `started` it answers the same `startedAt`.
+
+Request: `{ "serverKey": "…", "serverId": "…", "sessionId": "…" }` — Response `data`: `{ "startedAt": 1761340000000 }`. A closed session is `CONFLICT` (`details.reason: BAD_STATE`); an unknown one is `NOT_FOUND`.
+
+### 23.4 `rs_submit_results`
+
+The official results of the race. The race server is the authority: the call closes the session with confidence `server` (it feeds the time and wins leaderboards like `quorum`), pays the humans, and frees the server.
+
+Request:
+
+```json
+{ "serverKey": "…", "serverId": "race-eu-1", "sessionId": "…", "requestId": "any-unique-id",
+  "results": [
+    { "userId": "…", "isBot": false, "displayName": "Ana", "totalMs": 150000, "laps": [50000, 50000, 50000], "dnf": false },
+    { "userId": null, "isBot": true,  "displayName": "Bot 1", "totalMs": 152000, "laps": [51000, 50000, 51000], "dnf": false },
+    { "userId": "…", "isBot": false, "displayName": "Bruno", "totalMs": 0, "laps": [], "dnf": true }
+  ] }
+```
+
+Response `data`:
+
+```json
+{ "officialResults": [ { "rank": 1, "userId": "…", "isBot": false, "totalMs": 150000, "abandoned": false } ],
+  "rewards": { "<userId>": { "coins": 120, "xp": 12, "gems": 0, "leveledUp": false, "newLevel": 1, "…": "same entries as race_submit_result" } } }
+```
+
+Rules:
+
+- A finisher (`dnf: false`) has as many `laps` as the session (`laps` of the assignment) and `sum(laps) == totalMs`; otherwise `INVALID_RESULT` (`details.reason`: `LAP_COUNT_MISMATCH`, `LAP_SUM_MISMATCH`, `LAP_NOT_POSITIVE`).
+- A human (`isBot: false`) must be a human of the roster, once (`INVALID_RESULT`: `NOT_IN_ROSTER`, `DUPLICATE_RESULT`). Humans that are not listed, or listed with `dnf: true`, are DNF (`abandoned: true`, `totalMs: 0`, no payout).
+- Bots (`isBot: true`) only appear in `results`/`officialResults` and are never paid. Their `userId` may be `null`: the response then names them `bot_ds_{index}`. A bot may not use the id of a player (`BOT_ID_CLASH`).
+- A human lap under the minimum of the car class on that track does not reject the results: the session closes with `flags.needsReview = true` and `reviewReason: lap_below_min`.
+- Ranks: finishers by `totalMs` (ties keep the sent order), then the DNFs.
+- The session must be `created` or `started`; a `created` one is started implicitly (`startedAt` = now) in the same close, so a failed `rs_session_start` does not lose the results. A closed one is `CONFLICT` (`details.reason: BAD_STATE`).
+- Idempotent by `requestId` (1-128 characters): a retry returns the stored response and pays nothing more. Another `requestId` on an already closed session is `CONFLICT` (`BAD_STATE`).
+- `rewards` has an entry only for the humans that were paid, with the entries of `race_submit_result`.
+
+### 23.5 `rs_session_release`
+
+The server cannot run the session (nobody joined in time, an error). A `created` or `started` session is closed as abandoned without payouts (every player DNF) and the server is freed.
+
+Request: `{ "serverKey": "…", "serverId": "…", "sessionId": "…", "reason": "no_players" }` (`reason`: optional string, up to 256 characters, logged) — Response `data`: `{ "released": true }`.
+
+Idempotent: a session that is already closed, or gone, only frees the server.
+
+### 23.6 Client RPCs on a server-hosted session
+
+On a session with `serverHosted: true` the players neither join, start, claim the host nor report: `race_session_join`, `race_session_start`, `race_host_claim` and `race_submit_result` answer `FORBIDDEN` with `details.reason: SERVER_HOSTED`. The client reads the outcome with `race_session_get` (`state: closed` and `results`); the payouts of the race arrive through the usual wallet and profile reads.
+
+Closing a server-hosted session (results, release, the ticker or a lazy close) frees its server in the registry at once.

@@ -133,6 +133,20 @@ export function releaseServer(nk: INakama, entry: ServerEntry, expectedSessionId
 }
 
 /**
+ * Frees `serverId` when it still holds `sessionId` (a session that closed).
+ * A lost CAS (a heartbeat landed in between) is retried against the fresh
+ * row. Returns true when this call freed the server.
+ */
+export function releaseServerOfSession(nk: INakama, serverId: string, sessionId: string): boolean {
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
+    const current = readServer(nk, serverId);
+    if (current === null || current.record.sessionId !== sessionId) return false;
+    if (releaseServer(nk, { serverId, record: current.record, version: current.version }, sessionId)) return true;
+  }
+  return false;
+}
+
+/**
  * Ticker job: frees the session of every server whose last heartbeat is
  * older than `RACE_SERVER_STALE_MS`. Returns how many were freed.
  */

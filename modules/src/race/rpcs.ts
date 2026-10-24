@@ -113,6 +113,16 @@ export function getRaceBus(nk: INakama, logger: ILogger): EventBus {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Sessions run by a dedicated race server (plan fishnet-nakama-server, D-07)
+ * are driven by that server alone: the players neither join, start, claim
+ * the host nor report. `null` when the session is a relay one.
+ */
+function rejectIfServerHosted(session: RaceSession): string | null {
+  if (session.serverHosted !== true) return null;
+  return toJson(err('FORBIDDEN', 'this race is run by a dedicated race server', { reason: 'SERVER_HOSTED' }));
+}
+
 /** Parse the JSON-string RPC body. Returns a `BAD_REQUEST` envelope on failure. */
 function parsePayload<T>(payload: string): Resp<T> | null {
   if (payload === '' || payload === undefined) {
@@ -592,6 +602,8 @@ function race_session_join_impl(
   if (!cur) {
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
+  const hostedJoin = rejectIfServerHosted(cur.session);
+  if (hostedJoin !== null) return hostedJoin;
   if (cur.session.state !== 'created') {
     return toJson(
       err('CONFLICT', `cannot join session in state ${cur.session.state}`, {
@@ -701,6 +713,8 @@ function race_session_start_impl(
   if (!cur) {
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
+  const hostedStart = rejectIfServerHosted(cur.session);
+  if (hostedStart !== null) return hostedStart;
   if (cur.session.host !== callerId) {
     logger.warn(
       'race_session_start sid=%s callerId=%s != host=%s — denying',
@@ -870,6 +884,8 @@ function race_submit_result_impl(
   if (!found) {
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
+  const hostedSubmit = rejectIfServerHosted(found.session);
+  if (hostedSubmit !== null) return hostedSubmit;
   // A session past its grace closes first (T-06), so a late report meets
   // a closed session and gets CONFLICT from step-1.
   const cur = closeIfDue(nk, logger, found, serverNowMs(), 'race_submit_result').current;
@@ -1403,6 +1419,8 @@ function race_host_claim_impl(
     return toJson(err('NOT_FOUND', `no session with id ${sessionId}`));
   }
 
+  const hostedClaim = rejectIfServerHosted(cur.session);
+  if (hostedClaim !== null) return hostedClaim;
   // The claimant is alive; the host is judged by its last contact (T-07).
   const nowMs = serverNowMs();
   recordContact(nk, logger, cur.session, callerId, nowMs);
