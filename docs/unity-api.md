@@ -2254,3 +2254,47 @@ audit buyers during a maintenance window.
 
 See `docs/iap.md`, `docs/ads.md`, and `docs/admin.md` §13-15 for the
 full operator surface.
+
+## 23. Dedicated race servers (server-to-server)
+
+These RPCs are called by the headless race servers (dedicated builds), **never by the game client**. They use the runtime `http_key` in the URL (no player session) and carry `serverKey` in the JSON body. `serverKey` must equal `RACE_SERVER_SECRET` of the server `.env` (`runtime.env`), compared in constant time. While the secret is empty every call is rejected. OpenAPI tag: `server-to-server`.
+
+| Condition | `error.code` |
+|---|---|
+| `RACE_SERVER_SECRET` empty (`details.reason: NOT_CONFIGURED`) | `SERVICE_UNAVAILABLE` |
+| wrong or missing `serverKey`, or a player session (`details.reason: BAD_SERVER_KEY`) | `FORBIDDEN` |
+| invalid input | `BAD_REQUEST` |
+| concurrent update (`details.reason: VERSION_CONFLICT`) | `CONFLICT` |
+
+### 23.1 `rs_heartbeat`
+
+Registers the server or refreshes its registry row (`race_servers/{serverId}`, system-owned, permissions 0/0). Send one every 3 s: a server is alive while `lastSeenMs` is at most 10 s old.
+
+Request:
+
+```json
+{ "serverKey": "…", "serverId": "race-eu-1", "host": "203.0.113.7", "port": 7770,
+  "capacity": 1, "activeSessionId": null, "buildVersion": "0.1.0" }
+```
+
+| Field | Rule |
+|---|---|
+| `serverId` | 1-64 characters of `[A-Za-z0-9._-]` |
+| `host` | non-empty |
+| `port` | integer 1-65535 |
+| `capacity` | integer 1-16 (stored; each process declares 1) |
+| `activeSessionId` | the session being served, or `null` |
+| `buildVersion` | optional string, up to 64 characters |
+
+Response `data`:
+
+```json
+{ "assignment": null }
+```
+
+`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs }`; it is always `null` until session assignment is implemented.
+
+Rules:
+
+- If `activeSessionId` is `null` and the registry still holds a `sessionId` whose session is `closed` or no longer exists, the server is freed (`sessionId = null`).
+- The service ticker frees the `sessionId` of any server without heartbeat for more than 30 s.

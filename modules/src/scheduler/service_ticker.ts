@@ -11,6 +11,8 @@
 //   - events: live events of events.json (read-only) every 5 min
 //   - subscriptions: expiry notices + grants      every 5 min
 //   - races: close sessions past their grace       every 15 s (plan T-06)
+//   - race servers: free the session of servers
+//     without heartbeat for 30 s                   every 15 s (with races)
 //   - pass season: settle every player once the
 //     battle pass season has ended                 every 5 min (plan T-19)
 // A storage lease (`tick_lock.ts`) makes sure only one tick runs at a
@@ -30,6 +32,7 @@ import { runEventScannerTick } from '../events/scanner';
 import { scanOnce as runSubscriptionTick } from '../iap/subscription_scanner';
 import { runRaceCloseTick } from '../race/close';
 import { runPassSeasonTick } from '../pass/season';
+import { releaseStaleServers } from '../race_servers/registry_repo';
 import { tryAcquireTickLock, releaseTickLock } from './tick_lock';
 
 export const SERVICE_TICKER_MODULE = 'service_ticker';
@@ -66,6 +69,7 @@ export interface ServiceTickResult {
   events: string;
   subscriptions: string;
   races: string;
+  raceServers: string;
   passSeason: string;
 }
 
@@ -94,13 +98,13 @@ export function runServiceTick(
   const dueSubscription = nowMs - state.lastSubscriptionMs >= SUBSCRIPTION_TICK_MS;
   const dueRaces = nowMs - (state.lastRaceCloseMs ?? 0) >= RACE_CLOSE_TICK_MS;
   const duePassSeason = nowMs - (state.lastPassSeasonMs ?? 0) >= PASS_SEASON_TICK_MS;
-  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-', races: '-', passSeason: '-' };
+  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-', races: '-', raceServers: '-', passSeason: '-' };
   if (!dueTournament && !dueEvent && !dueSubscription && !dueRaces && !duePassSeason) return idle;
   if (nowMs < state.nextAttemptMs) return idle;
   if (!tryAcquireTickLock(nk, SERVICE_TICK_LOCK_NAME, holder, nowMs, SERVICE_TICK_LOCK_TTL_MS)) {
     // Another ticker holds the lease; back off instead of retrying every loop.
     state.nextAttemptMs = nowMs + LOCK_RETRY_MS;
-    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked', races: 'locked', passSeason: 'locked' };
+    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked', races: 'locked', raceServers: 'locked', passSeason: 'locked' };
   }
   const result: ServiceTickResult = { ...idle, ran: true };
   try {
@@ -131,6 +135,7 @@ export function runServiceTick(
         const r = runRaceCloseTick(nk, logger, nowMs);
         return `open=${r.scanned}/closed=${r.closed}`;
       });
+      result.raceServers = runJob(logger, 'race servers', () => `freed=${releaseStaleServers(nk, logger, nowMs)}`);
     }
     if (duePassSeason) {
       state.lastPassSeasonMs = nowMs;

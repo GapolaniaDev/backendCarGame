@@ -22,6 +22,7 @@ runtime:
     - "IAP_GOOGLE_PRIVATE_KEY=${IAP_GOOGLE_PRIVATE_KEY:-}"
     - "IAP_GOOGLE_PACKAGE_NAME=${IAP_GOOGLE_PACKAGE_NAME:-}"
     - "LEVELPLAY_S2S_PRIVATE_KEY=${LEVELPLAY_S2S_PRIVATE_KEY:-}"  # T-25; empty = callbacks rejected
+    - "RACE_SERVER_SECRET=${RACE_SERVER_SECRET:-}"                # dedicated race servers; empty = rs_* RPCs rejected
 
 # Nakama's native purchase validation, same store credentials (T-24).
 iap:

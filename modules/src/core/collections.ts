@@ -165,6 +165,10 @@ export const COLLECTIONS: readonly CollectionSpec[] = [
     retained: 'index of open session ids',
   },
   {
+    name: 'race_servers', module: 'race_servers', owner: 'system', purge: [],
+    retained: 'registry of dedicated race servers; no player data',
+  },
+  {
     name: 'race_presence', module: 'race', owner: 'system',
     purge: [{ kind: 'systemKeySuffix', suffix: (u) => `/${u}` }],
   },

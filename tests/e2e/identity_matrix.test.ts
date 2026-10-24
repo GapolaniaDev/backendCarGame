@@ -23,6 +23,7 @@ const ANONYMOUS_RPCS = new Set([
 /** Server-to-server (http_key + the network's signature): a session is FORBIDDEN. */
 const SERVER_TO_SERVER_RPCS = new Set([
   'ads_levelplay_callback',
+  'rs_heartbeat',
 ]);
 
 const SELF = '11111111-1111-4111-8111-111111111111';

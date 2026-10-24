@@ -2,7 +2,7 @@ openapi: "3.1.0"
 info:
   title: "CarVideoGameBackend — Unity Client API"
   version: "1.0.0"
-  description: "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (`http_key` + `adminKey`) y no están en este documento: se documentan en `docs/admin.md` (ver «Contract» en el `README.md`). El único RPC de servidor a servidor de este documento es `ads_levelplay_callback` (esquema `RuntimeHttpKey`).\n- No hay eventos de carrera por socket: el resultado llega en la respuesta de `race_submit_result` (el envío que cierra la sesión trae `officialResults` y `rewards`) o con `race_session_get` (`state: closed` y `results`). `RaceCompleted` es un evento interno del servidor (ver `components/schemas/RaceCompletedEvent`). El socket solo lleva el relay de la partida (op codes en `docs/race-protocol-ops.md`) y el matchmaker.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
+  description: "API de cliente para **CarVideoGameBackend** (Nakama 3.27, runtime JS). El backend no expone endpoints REST propios: toda la lógica de juego son **RPCs de Nakama** invocables en `POST /v2/rpc/{id}`. Este documento modela cada RPC como una operación para poder generar DTOs/clientes.\n\n## Cómo se llama un RPC\n1. Autenticar (`/v2/account/authenticate/device`) con `Authorization: Basic base64(SERVER_KEY:)` -> `token`.\n2. Llamar `POST /v2/rpc/{id}` con `Authorization: Bearer <token>`.\n3. **El body HTTP es una cadena JSON** (el payload serializado como string), no un objeto. Sin payload: `\"\"`.\n4. La respuesta HTTP es `{ \"payload\": \"<json string>\" }`; dentro va el envelope `{ok:true,data}` o `{ok:false,error:{code,message}}`. El status HTTP es 200 incluso con errores de dominio: **ramificar por `ok`**.\n5. Con el SDK de Unity: `client.RpcAsync(session, id, payloadJson)` ya hace el wrapping; `rpc.Payload` es el envelope.\n\n## Autenticación / identidad\nSesión = Bearer JWT. La identidad sale **solo** de la sesión (`ctx.userId`, que Nakama rellena con Bearer). Los campos `callerUserId` (y `hostUserId` / `userId` en `race_session_create` / `race_session_join`) son opcionales y se mantienen por compatibilidad: si vienen deben ser el `uid` del JWT (si no -> `FORBIDDEN`). Sin sesión -> `UNAUTHENTICATED`.\n\n## Reglas importantes\n- Nunca escribir storage ni leaderboards desde el cliente (el servidor lo hace al cerrar la carrera).\n- Tiempo de carrera: usar el offset de `config_get.serverTimeMs` y `race_session_start.startedAt`, no `DateTime.UtcNow`.\n- Enviar `clientVersion` + `platform` en los RPCs que lo aceptan: habilita `UPGRADE_REQUIRED` y el gate de mantenimiento (`SERVICE_UNAVAILABLE`).\n- Los RPCs `admin_*` son **solo operador** (`http_key` + `adminKey`) y no están en este documento: se documentan en `docs/admin.md` (ver «Contract» en el `README.md`). Los RPCs de servidor a servidor de este documento son `ads_levelplay_callback` y `rs_heartbeat` (esquema `RuntimeHttpKey`; este último con la etiqueta `server-to-server`).\n- No hay eventos de carrera por socket: el resultado llega en la respuesta de `race_submit_result` (el envío que cierra la sesión trae `officialResults` y `rewards`) o con `race_session_get` (`state: closed` y `results`). `RaceCompleted` es un evento interno del servidor (ver `components/schemas/RaceCompletedEvent`). El socket solo lleva el relay de la partida (op codes en `docs/race-protocol-ops.md`) y el matchmaker.\n\nFuente de verdad: `modules/src/**` y `docs/unity-api.md`. Donde ambas difieren se siguió el código (p. ej. `friend_list_get` devuelve `friends`, `block_list` devuelve `blocks`)."
 servers:
   - url: "https://api.gapolaniadev.com"
     description: "Producción (Cloudflare tunnel)"
@@ -43,6 +43,8 @@ tags:
     description: "Torneos y eventos"
   - name: "Monetization"
     description: "IAP y anuncios"
+  - name: "server-to-server"
+    description: "Servidores de carrera dedicados (http_key + serverKey); nunca los llama el cliente"
 paths:
   "/v2/rpc/config_get":
     post:
@@ -4198,6 +4200,57 @@ paths:
                 type: "object"
                 additionalProperties: true
                 description: "api.Account de Nakama"
+  "/v2/rpc/rs_heartbeat":
+    post:
+      tags:
+        - "server-to-server"
+      summary: "Dedicated race server heartbeat (server-to-server)"
+      operationId: "rs_heartbeat"
+      description: "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). Registers the server or refreshes its registry row (`race_servers/{serverId}`, `lastSeenMs` = server clock); a server is alive while its last heartbeat is at most 10 s old, so send one every 3 s. If `activeSessionId` is null and the registry still holds a session that is closed or gone, the server is freed. `capacity` is stored; each process declares 1. The assignment of a session is delivered in `assignment` (always null until the assignment feature lands). A server silent for 30 s loses its session (the service ticker frees it).\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session), `BAD_REQUEST` (invalid `serverId`, `host`, `port`, `capacity`, `activeSessionId` or `buildVersion`), `CONFLICT` (`VERSION_CONFLICT`).\n\nMaintenance: not gated."
+      security:
+        - RuntimeHttpKey: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "string"
+              contentMediaType: "application/json"
+              description: "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto."
+              contentSchema:
+                "$ref": "#/components/schemas/RsHeartbeatRequest"
+      responses:
+        "200":
+          description: "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`."
+          content:
+            "application/json":
+              schema:
+                type: "object"
+                properties:
+                  payload:
+                    type: "string"
+                    contentMediaType: "application/json"
+                    description: "JSON serializado con el envelope. Parsear y ramificar por `ok`."
+                    contentSchema:
+                      oneOf:
+                        - type: "object"
+                          properties:
+                            ok:
+                              const: true
+                            data:
+                              "$ref": "#/components/schemas/RsHeartbeatData"
+                          required:
+                            - "ok"
+                            - "data"
+                        - "$ref": "#/components/schemas/Err"
+                required:
+                  - "payload"
+        "401":
+          description: "Token de sesión ausente/expirado (error del gateway de Nakama)"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GatewayError"
 components:
   securitySchemes:
     ServerKeyBasic:
@@ -7940,3 +7993,70 @@ components:
         - "displayName"
         - "avatarUrl"
         - "progression"
+    RsHeartbeatRequest:
+      type: "object"
+      required:
+        - "serverKey"
+        - "serverId"
+        - "host"
+        - "port"
+        - "capacity"
+        - "activeSessionId"
+      properties:
+        serverKey:
+          type: "string"
+          description: "Shared secret, equal to RACE_SERVER_SECRET of the server `.env`"
+        serverId:
+          type: "string"
+          description: "Stable id of the process, 1-64 characters of [A-Za-z0-9._-]"
+          minLength: 1
+          maxLength: 64
+          pattern: "^[A-Za-z0-9._-]+$"
+        host:
+          type: "string"
+          description: "Address game clients connect to (non-empty)"
+        port:
+          type: "integer"
+          minimum: 1
+          maximum: 65535
+          description: "Port game clients connect to"
+        capacity:
+          type: "integer"
+          minimum: 1
+          maximum: 16
+          description: "Rooms the process declares (each process declares 1)"
+        activeSessionId:
+          type:
+            - "string"
+            - "null"
+          description: "Session the process is serving now, or null when free"
+        buildVersion:
+          type: "string"
+          maxLength: 64
+          description: "Build identifier of the server (stored)"
+    RsHeartbeatData:
+      type: "object"
+      required:
+        - "assignment"
+      properties:
+        assignment:
+          type:
+            - "object"
+            - "null"
+          description: "Session assigned to this server; always null until the assignment feature lands"
+          properties:
+            sessionId:
+              type: "string"
+            mode:
+              type: "string"
+            trackId:
+              type: "string"
+            laps:
+              type: "integer"
+            expectedUserIds:
+              type: "array"
+              items:
+                type: "string"
+            joinDeadlineMs:
+              type: "integer"
+              format: "int64"

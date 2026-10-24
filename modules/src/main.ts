@@ -64,6 +64,7 @@ import { iap_purchase } from './iap/rpcs';
 import { iap_subscription_status, iap_subscription_cancel } from './iap/subscription_rpcs';
 import { ad_watched } from './ads/rpcs';
 import { ads_levelplay_callback, ad_reward_status } from './ads/s2s_rpcs';
+import { rs_heartbeat } from './race_servers/rpcs';
 import {
   admin_iap_purchases_list,
   admin_iap_purchases_get,
@@ -303,6 +304,8 @@ function InitModule(
     // T-25: rewarded ads are paid by LevelPlay's signed S2S callback (http_key).
     initializer.registerRpc('ads_levelplay_callback', ads_levelplay_callback);
     initializer.registerRpc('ad_reward_status', ad_reward_status);
+    // Dedicated race servers (server-to-server, http_key + serverKey).
+    initializer.registerRpc('rs_heartbeat', rs_heartbeat);
     // Phase 9 Chunk 6: 6 admin IAP RPCs (assertAdminKey + maintenance-bypass).
     initializer.registerRpc('admin_iap_purchases_list', admin_iap_purchases_list);
     initializer.registerRpc('admin_iap_purchases_get', admin_iap_purchases_get);

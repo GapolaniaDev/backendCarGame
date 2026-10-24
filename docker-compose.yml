@@ -58,6 +58,8 @@ services:
             - "IAP_GOOGLE_PACKAGE_NAME=${IAP_GOOGLE_PACKAGE_NAME:-}"
             # LevelPlay S2S reward callback signing key (T-25); empty = every callback rejected.
             - "LEVELPLAY_S2S_PRIVATE_KEY=${LEVELPLAY_S2S_PRIVATE_KEY:-}"
+            # Shared secret of the dedicated race servers (rs_* RPCs); empty = every call rejected.
+            - "RACE_SERVER_SECRET=${RACE_SERVER_SECRET:-}"
         # Nakama's native purchase validation (the client's
         # NakamaReceiptValidator) uses the same store credentials (T-24).
         iap:
