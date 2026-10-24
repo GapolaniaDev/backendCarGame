@@ -4,6 +4,7 @@
 //   npm run smoke:live                      # 127.0.0.1:8081, full run
 //   npm run smoke:live -- --skip-docker     # HTTP checks only
 //   npm run smoke:live -- --skip-restart    # no Nakama restart at the end
+//   npm run smoke:live -- --skip-dedicated  # no dedicated race server block (needs RACE_SERVER_SECRET in .env)
 //   npm run smoke:live -- --host <h> --port <p>   # explicit remote target
 //
 // What it checks (one OK/FAIL row each; exit code 1 if any FAIL):
@@ -133,6 +134,7 @@ const PORT = Number(argValue('--port', '8081'));
 const SKIP_DOCKER = argv.includes('--skip-docker') || HOST !== '127.0.0.1';
 const SKIP_RACE = argv.includes('--skip-race');
 const SKIP_RESTART = argv.includes('--skip-restart');
+const SKIP_DEDICATED = argv.includes('--skip-dedicated');
 const BASE = `http://${HOST}:${PORT}`;
 const RUNTIME_READY_LOG = /^runtime state ready: .* in (\d+)ms \((boot|vm)\)$/;
 /** R-07 budget for loading the runtime state in one VM. */
@@ -1872,6 +1874,190 @@ async function waitHealthy() {
   return false;
 }
 
+// ── Dedicated race server (plan fishnet-nakama-server, T-07) ────────────────
+/** Lap time of the fake server's results: above the class-D floor (>= 48 000 ms/lap). */
+const DEDICATED_LAP_MS = 48_100;
+const DEDICATED_HEARTBEAT_MS = 3_000;
+const DEDICATED_MATCH_TIMEOUT_MS = 90_000;
+const DEDICATED_CHECK = 'dedicated server flow';
+
+/** A server-to-server call: runtime http_key in the URL, serverKey in the body, no player session. */
+const rsCall = (id, serverKey, payload) => rpc(null, id, { serverKey, ...payload }, { httpKey: ENV_HTTP_KEY });
+
+/** The matchmaker ticket of a dedicated race: the client's ticket with the 2..4 group from `output`. */
+function dedicatedTicket(params) {
+  const t = clientTicket(params);
+  t.min_count = params.output.minCount;
+  t.max_count = params.output.maxCount;
+  return t;
+}
+
+/**
+ * Simulates the headless server: heartbeat, two players matched with hosting=dedicated,
+ * join validation, start, official results, wallets paid and the server freed.
+ * Uses 127.0.0.1 as the server host (no port is ever opened).
+ */
+async function dedicatedScenario(serverKey, env, ct) {
+  const secret = env.RACE_SERVER_SECRET;
+  if (!secret) {
+    record(DEDICATED_CHECK, false,
+      'RACE_SERVER_SECRET is empty in .env: set it and recreate Nakama with the local override (human step, plan fishnet-nakama-server T-14); use --skip-dedicated to skip this block');
+    return;
+  }
+  if (!ENV_HTTP_KEY) {
+    record(DEDICATED_CHECK, false, 'NAKAMA_RUNTIME_HTTP_KEY not in .env');
+    return;
+  }
+  const serverId = `smoke-ds-${Date.now()}`;
+  const hb = (sessionId) => rsCall('rs_heartbeat', secret, {
+    serverId, host: '127.0.0.1', port: 7770, capacity: 1, activeSessionId: sessionId, buildVersion: 'smoke',
+  });
+  const sockets = [];
+  let timer = null;
+  let activeSessionId = null;
+  let assignment = null;
+  try {
+    const wrong = await rsCall('rs_heartbeat', `${secret}-wrong`, {
+      serverId, host: '127.0.0.1', port: 7770, capacity: 1, activeSessionId: null, buildVersion: 'smoke',
+    });
+    record('dedicated: heartbeat with a wrong serverKey → FORBIDDEN', errCode(wrong) === 'FORBIDDEN',
+      `${errCode(wrong)} reason=${wrong.envelope?.error?.details?.reason ?? '-'}`);
+    const first = await hb(null);
+    record('dedicated: the fake server registers with a heartbeat (no assignment yet)',
+      first.envelope?.ok === true && first.envelope.data?.assignment === null,
+      first.envelope?.ok ? 'assignment=null' : `${errCode(first)} reason=${first.envelope?.error?.details?.reason ?? '-'}`);
+    if (first.envelope?.ok !== true) return;
+    // Keep the server alive (alive = heartbeat within 10 s) and capture its assignment.
+    timer = setInterval(() => {
+      hb(activeSessionId).then((r) => {
+        if (r.envelope?.data?.assignment) assignment = r.envelope.data.assignment;
+      }).catch(() => {});
+    }, DEDICATED_HEARTBEAT_MS);
+
+    const players = await freshAccounts(serverKey, 'ds', ['D1', 'D2']);
+    const names = ['D1', 'D2'];
+    const before = {};
+    for (const n of names) before[n] = await walletOf(players[n]);
+
+    for (const n of names) {
+      const params = await rpc(players[n].token, 'mm_ticket_params', { mode: 'quick', size: 2, hosting: 'dedicated' });
+      const o = params.envelope?.data?.output;
+      if (n === 'D1') {
+        record('dedicated: mm_ticket_params(hosting=dedicated) → minCount 2, maxCount 4, size 4',
+          params.envelope?.ok === true && o?.hosting === 'dedicated' && o.minCount === 2 && o.maxCount === 4 && o.size === 4,
+          params.envelope?.ok ? JSON.stringify({ hosting: o?.hosting, min: o?.minCount, max: o?.maxCount, size: o?.size }) : errCode(params));
+      }
+      if (params.envelope?.ok !== true) return;
+      const sock = await openSocket(players[n].token);
+      sockets.push(sock);
+      sock.send({ matchmaker_add: dedicatedTicket(params.envelope.data) });
+    }
+    const matched = await Promise.all(sockets.map((s) => s.waitFor('matchmaker_matched', DEDICATED_MATCH_TIMEOUT_MS)));
+    if (matched.some((x) => x === null)) {
+      record('dedicated: both players are matched (2..4 group)', false, `no matchmaker_matched within ${DEDICATED_MATCH_TIMEOUT_MS / 1000} s`);
+      return;
+    }
+
+    const got = {};
+    for (const n of names) got[n] = await rpc(players[n].token, 'race_session_get', {});
+    const s1 = got.D1.envelope?.data;
+    const s2 = got.D2.envelope?.data;
+    const t1 = s1?.myJoinTicket;
+    const t2 = s2?.myJoinTicket;
+    const sessionId = s1?.session?.id;
+    record('dedicated: both read server{host,port} and their own myJoinTicket',
+      typeof sessionId === 'string' && sessionId === s2?.session?.id
+        && s1?.session?.serverHosted === true && s1?.server?.host === '127.0.0.1' && s1?.server?.port === 7770
+        && s2?.server?.port === 7770
+        && typeof t1 === 'string' && typeof t2 === 'string' && t1 !== t2
+        && !JSON.stringify(s1).includes(t2) && !JSON.stringify(s2).includes(t1),
+      `${errCode(got.D1)}/${errCode(got.D2)} sid=${String(sessionId).slice(0, 8)} server=${JSON.stringify(s1?.server)} laps=${s1?.session?.laps} ticketsDistinct=${t1 !== t2}`);
+    if (typeof sessionId !== 'string' || typeof t1 !== 'string' || typeof t2 !== 'string') return;
+
+    // The next heartbeat carries the assignment.
+    for (let i = 0; i < 6 && !assignment; i++) await sleep(DEDICATED_HEARTBEAT_MS);
+    const expected = assignment?.expectedUserIds ?? [];
+    record('dedicated: the heartbeat receives the assignment (session, laps, both humans, deadline)',
+      assignment?.sessionId === sessionId && Number.isInteger(assignment.laps) && assignment.laps > 0
+        && expected.length === 2 && expected.includes(players.D1.uid) && expected.includes(players.D2.uid)
+        && assignment.joinDeadlineMs > Date.now() - 60_000,
+      assignment ? `laps=${assignment.laps} mode=${assignment.mode} track=${assignment.trackId} expected=${expected.length}` : 'no assignment within 18 s');
+    if (!assignment || assignment.sessionId !== sessionId) return;
+    activeSessionId = sessionId;
+
+    const base = { serverId, sessionId };
+    const v1 = await rsCall('rs_join_validate', secret, { ...base, joinTicket: t1 });
+    const v2 = await rsCall('rs_join_validate', secret, { ...base, joinTicket: t2 });
+    const bad = await rsCall('rs_join_validate', secret, { ...base, joinTicket: 'f'.repeat(32) });
+    record('dedicated: rs_join_validate maps each ticket to its player; a forged one → FORBIDDEN/BAD_TICKET',
+      v1.envelope?.data?.userId === players.D1.uid && v2.envelope?.data?.userId === players.D2.uid
+        && errCode(bad) === 'FORBIDDEN' && bad.envelope?.error?.details?.reason === 'BAD_TICKET',
+      `${errCode(v1)}/${errCode(v2)} forged=${errCode(bad)} reason=${bad.envelope?.error?.details?.reason ?? '-'}`);
+
+    const started = await rsCall('rs_session_start', secret, base);
+    record('dedicated: rs_session_start → startedAt', started.envelope?.ok === true && typeof started.envelope.data?.startedAt === 'number',
+      started.envelope?.ok ? `startedAt=${started.envelope.data.startedAt}` : errCode(started));
+
+    const laps = (extraMs) => Array.from({ length: assignment.laps }, () => DEDICATED_LAP_MS + extraMs);
+    const total = (l) => l.reduce((x, y) => x + y, 0);
+    const lapsD1 = laps(0);
+    const lapsD2 = laps(500);
+    const payload = {
+      ...base,
+      requestId: `smoke-rs-${Date.now()}`,
+      results: [
+        { userId: players.D1.uid, isBot: false, displayName: 'smoke D1', totalMs: total(lapsD1), laps: lapsD1, dnf: false },
+        { userId: players.D2.uid, isBot: false, displayName: 'smoke D2', totalMs: total(lapsD2), laps: lapsD2, dnf: false },
+      ],
+    };
+    const sub = await rsCall('rs_submit_results', secret, payload);
+    const official = sub.envelope?.data?.officialResults ?? [];
+    const rewards = sub.envelope?.data?.rewards ?? {};
+    record('dedicated: rs_submit_results → official ranks 1..2 and rewards for both',
+      sub.envelope?.ok === true && official.length === 2 && official[0].userId === players.D1.uid && official[0].rank === 1
+        && official[1].userId === players.D2.uid && official[1].rank === 2
+        && rewards[players.D1.uid]?.coins > 0 && rewards[players.D2.uid]?.coins > 0,
+      sub.envelope?.ok
+        ? `ranks=${official.map((r) => `${r.rank}:${String(r.userId).slice(0, 4)}`).join(',')} coins=${names.map((n) => rewards[players[n].uid]?.coins).join('/')}`
+        : `${errCode(sub)} reason=${sub.envelope?.error?.details?.reason ?? '-'}`);
+    activeSessionId = null;
+
+    const after = {};
+    for (const n of names) after[n] = await walletOf(players[n]);
+    const delta = names.map((n) => (after[n]?.coins ?? 0) - (before[n]?.coins ?? 0));
+    record('dedicated: both wallets received the coins of the results',
+      names.every((n, i) => delta[i] > 0 && delta[i] >= (rewards[players[n].uid]?.coins ?? Infinity)),
+      `delta=${delta.join('/')} rewards=${names.map((n) => rewards[players[n].uid]?.coins).join('/')}`);
+
+    const retry = await rsCall('rs_submit_results', secret, payload);
+    const afterRetry = await walletOf(players.D1);
+    record('dedicated: retrying the same requestId replays the answer and pays nothing more',
+      retry.envelope?.ok === true && JSON.stringify(retry.envelope.data) === JSON.stringify(sub.envelope?.data)
+        && afterRetry?.coins === after.D1?.coins,
+      `${errCode(retry)} equal=${JSON.stringify(retry.envelope?.data) === JSON.stringify(sub.envelope?.data)} coins ${after.D1?.coins} → ${afterRetry?.coins}`);
+
+    const closed = await rpc(players.D1.token, 'race_session_get', { sessionId });
+    const freeBeat = await hb(null);
+    let registry = 'console unavailable';
+    let freed = freeBeat.envelope?.ok === true && freeBeat.envelope.data?.assignment === null;
+    if (ct) {
+      const row = await consoleGet(ct, objectPath('race_servers', serverId, SYSTEM_USER));
+      let value = null;
+      try { value = JSON.parse(row.body?.value ?? 'null'); } catch { value = null; }
+      registry = `race_servers.sessionId=${value ? (value.sessionId ?? 'null') : `HTTP ${row.status}`}`;
+      freed = freed && value !== null && value.sessionId === null;
+    }
+    record('dedicated: the session is closed and the server is free again',
+      closed.envelope?.data?.session?.state === 'closed' && freed,
+      `state=${closed.envelope?.data?.session?.state} heartbeat=${freeBeat.envelope?.data?.assignment === null ? 'no assignment' : errCode(freeBeat)} ${registry}`);
+  } catch (e) {
+    record(DEDICATED_CHECK, false, e instanceof Error ? e.message : String(e));
+  } finally {
+    if (timer) clearInterval(timer);
+    for (const s of sockets) s.close();
+  }
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`smoke-live → ${BASE}${SKIP_DOCKER ? ' (docker checks skipped)' : ''}`);
@@ -2020,6 +2206,9 @@ async function main() {
   await f7DefaultChecks(serverKey, 'defaults');
 
   if (f1) await matchmakerScenario(f1.m);
+  // Dedicated race server (T-07): a fake server drives the rs_* RPCs; a failure here does not stop the rest.
+  if (SKIP_DEDICATED) record(DEDICATED_CHECK, null, '--skip-dedicated');
+  else await dedicatedScenario(serverKey, env, ct4);
   if (race) await finishPrivateRace(fresh, race);
   else record('1-player private race closes', null, '--skip-race');
   // T-20: that race came before any missions_get / achievements_get of `fresh`.

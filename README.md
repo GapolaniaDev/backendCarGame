@@ -97,6 +97,7 @@ Variables de `.env` que el runtime lee por `runtime.env` (todas en
 | `IAP_APPLE_SHARED_SECRET` | verificación de recibos de Apple ([`docs/iap.md`](./docs/iap.md)) | vacía → compras de Apple rechazadas con `SERVICE_UNAVAILABLE` |
 | `IAP_GOOGLE_CLIENT_EMAIL`, `IAP_GOOGLE_PRIVATE_KEY`, `IAP_GOOGLE_PACKAGE_NAME` | cuenta de servicio de Google Play | vacías → compras de Google rechazadas |
 | `LEVELPLAY_S2S_PRIVATE_KEY` | firma del callback S2S de anuncios ([`docs/ads.md`](./docs/ads.md)) | vacía → todo callback rechazado |
+| `RACE_SERVER_SECRET` | secreto compartido de los servidores de carrera dedicados: lo envían como `serverKey` a las RPC `rs_*` | vacía → toda llamada `rs_*` rechazada (`SERVICE_UNAVAILABLE`) |
 
 #### Humo en vivo (`npm run smoke:live`)
 
@@ -118,7 +119,29 @@ npm run smoke:live                                   # todo
 npm run smoke:live -- --skip-race                    # sin las carreras (más rápido)
 npm run smoke:live -- --skip-restart                 # sin recrear Nakama
 npm run smoke:live -- --skip-docker                  # solo comprobaciones HTTP
+npm run smoke:live -- --skip-dedicated               # sin el bloque del servidor dedicado
 ```
+
+El bloque «dedicated» simula un servidor de carrera (latido, dos jugadores
+emparejados con `hosting: dedicated`, validación de tickets, inicio, resultados
+oficiales, monedas en las carteras y servidor libre). Necesita
+`RACE_SERVER_SECRET` en `.env` y Nakama recreado con el override local; sin el
+secreto el bloque falla con un mensaje claro (sin abortar el resto) o se omite
+con `--skip-dedicated`. Siempre usa `127.0.0.1` como host del servidor falso.
+
+#### RPC servidor a servidor (servidores de carrera dedicados)
+
+Se llaman con `http_key` en la URL (sin sesión de jugador) y `serverKey` en el
+cuerpo, igual a `RACE_SERVER_SECRET` (comparación en tiempo constante). Contrato
+completo en [`docs/unity-api.md`](./docs/unity-api.md) §23.
+
+| RPC | Entrada (además de `serverKey`) | Salida | Notas |
+|---|---|---|---|
+| `rs_heartbeat` | `serverId, host, port, capacity, activeSessionId\|null, buildVersion` | `{ assignment: null \| { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs } }` | cada 3 s; vivo si el último latido tiene ≤ 10 s |
+| `rs_join_validate` | `serverId, sessionId, joinTicket` | `{ userId, displayName, classId, bodyId }` | `FORBIDDEN` (`BAD_TICKET`, `NOT_ASSIGNED`, `BAD_STATE`) |
+| `rs_session_start` | `serverId, sessionId` | `{ startedAt }` | idempotente |
+| `rs_submit_results` | `serverId, sessionId, requestId, results[]` | `{ officialResults[], rewards{} }` | cierra con confianza `server`, paga a los humanos y libera el servidor; idempotente por `requestId` |
+| `rs_session_release` | `serverId, sessionId, reason?` | `{ released: true }` | cierra sin pagos y libera el servidor |
 
 Tras desplegar en otro servidor hay que ejecutar una vez
 `admin_migrate_permissions` ([`docs/admin.md`](./docs/admin.md) §7b).

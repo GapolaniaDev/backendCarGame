@@ -149,6 +149,22 @@ headless race server instead of the relay (plan `fishnet-nakama-server`; contrac
   `race_sessions/{sid}/reports/00000000-0000-0000-0000-000000000000` (owner: system)
   so a retry replays it.
 
+### Configuration: `RACE_SERVER_SECRET`
+
+The `rs_*` RPCs are enabled by the `RACE_SERVER_SECRET` variable of `.env` (read by
+the runtime through `runtime.env`; `docker-compose.yml` passes it to Nakama).
+
+- Empty (the default in `.env.example`): every `rs_*` call answers
+  `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`), so no dedicated server can act.
+- Set it to a long random value (for example `openssl rand -hex 32`), put the same
+  value in the race server's configuration, never commit it, then recreate Nakama
+  (`docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --force-recreate nakama`
+  on a development machine).
+- A wrong `serverKey` answers `FORBIDDEN` (`BAD_SERVER_KEY`).
+- `npm run smoke:live` exercises the whole flow with a fake server on `127.0.0.1`
+  (skip it with `--skip-dedicated`); without the secret that block fails with a
+  message pointing to the human step.
+
 ## 10. Smoke-test commands
 
 The HTTP gateway requires `Authorization: Basic base64(SERVER_KEY:)` and
