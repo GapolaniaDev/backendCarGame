@@ -3,8 +3,9 @@
 //   rs_heartbeat   server-to-server, `http_key` + `serverKey`: the server
 //     registers itself or refreshes its row every few seconds. If it
 //     declares no active session and the registry still holds one that is
-//     closed (or gone), the row is freed. The assignment is delivered by
-//     T-05; until then `assignment` is always null.
+//     closed (or gone), the row is freed. The reply carries the pending
+//     assignment (T-05, D-04): the `created` session of this server, that
+//     the matchmaker reserved for it.
 
 import type { IContext, ILogger, INakama } from '../nkruntime';
 import { err, ok } from '../core/response';
@@ -12,6 +13,7 @@ import { parseInput } from '../core/parse_input';
 import { serverNowMs } from '../core/time';
 import { withRuntime } from '../core/runtime_state';
 import { readSession } from '../race/session_repo';
+import type { RaceSession } from '../race/types';
 import { requireRaceServer } from './auth';
 import { readServer, writeServer } from './registry_repo';
 import { RACE_SERVER_CAPACITY_MAX, RACE_SERVER_PORT_MAX, type RaceServerRecord } from './types';
@@ -19,6 +21,8 @@ import { RACE_SERVER_CAPACITY_MAX, RACE_SERVER_PORT_MAX, type RaceServerRecord }
 export type RpcHandler = (ctx: IContext, logger: ILogger, nk: INakama, body: string) => string;
 
 const ATTEMPTS = 3;
+/** Players have this long, from the creation of the session, to join the race server (D-01). */
+export const JOIN_WINDOW_MS = 30_000;
 const BUILD_VERSION_MAX_LENGTH = 64;
 
 export interface RaceServerAssignment {
@@ -75,6 +79,24 @@ function parseHeartbeat(raw: Record<string, unknown>): { ok: true; value: Heartb
   };
 }
 
+/**
+ * The assignment of `serverId` (D-01, D-04): its held session while that is
+ * still `created`, hosted by this very server. The expected players are the
+ * humans of the roster; they must join before the window closes.
+ */
+function pendingAssignment(serverId: string, session: RaceSession | null): RaceServerAssignment | null {
+  if (session === null || session.state !== 'created') return null;
+  if (session.serverHosted !== true || session.server?.serverId !== serverId) return null;
+  return {
+    sessionId: session.id,
+    mode: session.mode,
+    trackId: session.trackId,
+    laps: session.laps ?? 0,
+    expectedUserIds: session.roster.filter((e) => !e.isBot).map((e) => e.userId),
+    joinDeadlineMs: (session.createdAt ?? 0) + JOIN_WINDOW_MS,
+  };
+}
+
 export const rs_heartbeat_impl: RpcHandler = (ctx, logger, nk, body) => {
   const parsed = parseInput(body);
   if (!parsed.ok) return parsed.error;
@@ -88,11 +110,12 @@ export const rs_heartbeat_impl: RpcHandler = (ctx, logger, nk, body) => {
     const nowMs = serverNowMs();
     const current = readServer(nk, auth.serverId);
     let sessionId = current?.record.sessionId ?? null;
+    let held = sessionId === null ? null : readSession(nk, sessionId);
     if (hb.activeSessionId === null && sessionId !== null) {
-      const held = readSession(nk, sessionId);
       if (held === null || held.session.state === 'closed') {
         logger.info('race server %s: session %s is %s, released', auth.serverId, sessionId, held === null ? 'gone' : 'closed');
         sessionId = null;
+        held = null;
       }
     }
     const record: RaceServerRecord = {
@@ -110,7 +133,7 @@ export const rs_heartbeat_impl: RpcHandler = (ctx, logger, nk, body) => {
     } catch {
       continue; // a concurrent writer won: re-read
     }
-    const out: RsHeartbeatOutput = { assignment: null };
+    const out: RsHeartbeatOutput = { assignment: pendingAssignment(auth.serverId, held?.session ?? null) };
     return JSON.stringify(ok(out));
   }
   return JSON.stringify(err('CONFLICT', 'concurrent update; please retry', { reason: 'VERSION_CONFLICT' }));

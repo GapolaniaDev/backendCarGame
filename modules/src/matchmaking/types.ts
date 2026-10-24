@@ -8,6 +8,16 @@ import type { RaceModeId } from '../race/types';
 
 export type MmPlatform = 'mobile' | 'console' | 'pc';
 
+/**
+ * Who hosts the race (plan fishnet-nakama-server, D-03). Only `dedicated`
+ * exists as a value: a ticket without `hosting` is a relayed-match ticket.
+ */
+export type MmHosting = 'dedicated';
+
+/** Dedicated tickets queue for a group of 2..4 players (D-03). */
+export const DEDICATED_MIN_COUNT = 2;
+export const DEDICATED_MAX_COUNT = 4;
+
 export interface MmTicketParamsInput {
   /** Mode to queue for. */
   mode: RaceModeId;
@@ -17,6 +27,11 @@ export interface MmTicketParamsInput {
   input?: Record<string, string>;
   /** Client platform tag — used by the region picker (D8). */
   platform?: MmPlatform;
+  /**
+   * `"dedicated"` queues for a race on a dedicated server (D-03): `quick`
+   * mode only, group of 2..4, `size` is stamped as 4 whatever is sent.
+   */
+  hosting?: MmHosting;
   /**
    * Server-only field used to authorize the RPC on the HTTP gateway path.
    * The socket path reads `ctx.userId` instead; here it lets the
@@ -41,6 +56,12 @@ export interface MmTicketParamsOutput {
   version: string;
   /** Server-stamped region. */
   region: string;
+  /** Echoed when the ticket asked for a dedicated server (D-03). */
+  hosting?: MmHosting;
+  /** Smallest group the matchmaker may form; present with `hosting` (D-03). */
+  minCount?: number;
+  /** Largest group the matchmaker may form; present with `hosting` (D-03). */
+  maxCount?: number;
   /** Resolved matchmaker segment ('none' by default; D8). */
   mm: { segmentBy: 'none' | 'rating' };
   /** Optional constraints the matchmaker should honour. */

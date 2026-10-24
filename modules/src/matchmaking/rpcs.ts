@@ -29,10 +29,16 @@ import {
   type BuiltTicket,
 } from './ticket_params';
 import type {
+  MmHosting,
   MmTicketParamsInput,
   MmTicketParamsOutput,
 } from './types';
-import { candidateFromMatches, createMatchedRaceSession, validateCandidate } from './matched_hook';
+import {
+  candidateFromMatches,
+  createMatchedRaceSession,
+  NoRaceServerError,
+  validateCandidate,
+} from './matched_hook';
 import { readParty } from '../parties/parties_repo';
 import type { PartyRecord } from '../parties/types';
 import { requireCaller } from '../core/caller';
@@ -246,6 +252,7 @@ function parseInput(body: string): ParseOk<MmTicketParamsInput> | ParseErr {
   if (r['platform'] === 'mobile' || r['platform'] === 'console' || r['platform'] === 'pc') {
     value.platform = r['platform'];
   }
+  if (r['hosting'] !== undefined) value.hosting = r['hosting'] as MmHosting; // validated by validateTicketInput
   if (typeof r['callerUserId'] === 'string') value.callerUserId = r['callerUserId'];
   if (typeof r['partyId'] === 'string') value.partyId = r['partyId'];
   return { ok: true, value };
@@ -289,6 +296,10 @@ export function matchmakerMatchedImpl(
   try {
     session = createMatchedRaceSession(nk, logger, candidate, Date.now());
   } catch (e) {
+    if (e instanceof NoRaceServerError) {
+      logger.warn('matchmaker: no free race server (session=%s players=%d)', candidate.sessionId, entries.length);
+      return;
+    }
     logger.error(
       'matchmakerMatched race session not created: %s',
       e instanceof Error ? e.message : String(e),

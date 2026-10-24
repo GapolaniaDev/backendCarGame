@@ -82,6 +82,21 @@ export interface RosterEntry {
    * entry. Server-managed (never accepted from the client directly).
    */
   tournamentId?: string;
+  /**
+   * Dedicated-server sessions (plan fishnet-nakama-server, D-04): single-use
+   * entry ticket of this player (32 hex chars), checked by `rs_join_validate`.
+   * Server-managed and secret: `race_session_get` never returns it in the
+   * roster; the owner only gets theirs as `myJoinTicket`.
+   */
+  joinTicket?: string;
+}
+
+/** Where the clients of a dedicated-server session connect (D-04). */
+export interface RaceSessionServer {
+  /** Registry id of the race server process (`race_servers/{serverId}`). */
+  serverId: string;
+  host: string;
+  port: number;
 }
 
 // ─── Reports (per-user submissions) ──────────────────────────────────────────
@@ -135,6 +150,15 @@ export interface RaceSession {
   /** Populated when state moves to 'closed'. Sorted by rank (DNFs last). */
   results: RaceResult[];
   flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
+  /**
+   * True when a dedicated race server runs this session (D-04). Absent on
+   * relay sessions. The clients then neither start nor report the race.
+   */
+  serverHosted?: boolean;
+  /** Race server assigned to the session. Present when `serverHosted`. */
+  server?: RaceSessionServer;
+  /** Laps of the race (the `quick` mode laps of the track). Present when `serverHosted`. */
+  laps?: number;
   /**
    * Monotonic counter incremented on every conditional write. Used as
    * the optimistic-concurrency token in `multiUpdate` at close-time.
@@ -263,6 +287,13 @@ export interface RaceSessionGetOutput {
   session: RaceSession;
   /** The most recent closed session the caller participated in (if any). */
   lastClosed?: RaceSession;
+  /**
+   * Dedicated-server sessions that are not closed (D-05, additive): where
+   * to connect.
+   */
+  server?: { host: string; port: number };
+  /** Dedicated-server sessions that are not closed (D-05): the CALLER's own join ticket only. */
+  myJoinTicket?: string;
 }
 
 export interface RaceSubmitResultInput {

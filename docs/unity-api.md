@@ -279,6 +279,23 @@ The `lastClosed` lookup is wired but returns `NOT_FOUND` until Chunk 9 (close +
 quorum + RaceCompleted emission) finishes — currently active sessions are returned
 without a `lastClosed` value.
 
+**Dedicated race server** (additive; plan fishnet-nakama-server, D-04/D-05). When the
+matchmaker assigned the session to a dedicated server, `session` carries
+`serverHosted: true`, `server: { serverId, host, port }` and `laps`, and — while the
+session is not `closed` — the response adds two top-level fields:
+
+```json
+{
+  "session": { "serverHosted": true, "server": { "serverId": "race-eu-1", "host": "203.0.113.7", "port": 7770 }, "laps": 3, "...": "..." },
+  "server": { "host": "203.0.113.7", "port": 7770 },
+  "myJoinTicket": "3f2b9c0d5e1a4b7c8d9e0f1a2b3c4d5e"
+}
+```
+
+`myJoinTicket` (32 hex characters) is the **caller's own** single-use ticket for the race
+server. The roster entries never expose `joinTicket`, neither the caller's nor anybody
+else's, in any response. Sessions without a server (and closed ones) have neither field.
+
 Errors: `NOT_FOUND`, `FORBIDDEN`.
 
 ### 6.6 `race_submit_result`
@@ -888,8 +905,30 @@ ranked pools never accidentally intersect.
 
 **Authz**: same as §16 — session user; an optional `callerUserId` must match it.
 
-Errors: `BAD_REQUEST` (unknown mode / size / platform; malformed
-JSON). Rate limit: 30/60s.
+**Dedicated race server** (additive; plan fishnet-nakama-server, D-03). Send
+`"hosting":"dedicated"` (mode `quick` only; any other mode is `BAD_REQUEST`) to queue for a
+race on a dedicated server. The response then adds `hosting`, `minCount` and `maxCount` to
+`output` and the same `hosting` to `ticket.query` and `ticket.metadata`; `size` is always
+`4` whatever was sent. Pass `minCount`/`maxCount` to the matchmaker (`AddMatchmakerAsync`
+min/max count): the group has 2 to 4 players.
+
+```json
+// response.data (hosting: "dedicated")
+{
+  "ticket": {
+    "query":    { "mode":"quick","size":4,"version":"1.0.0","region":"eu-west-1","segmentBy":"none","ratingBand":"unrated","hosting":"dedicated" },
+    "metadata": { "mode":"quick","size":"4","version":"1.0.0","region":"eu-west-1","segmentBy":"none","hosting":"dedicated" }
+  },
+  "output": { "mode":"quick","size":4,"hosting":"dedicated","minCount":2,"maxCount":4,"version":"1.0.0","region":"eu-west-1","mm":{"segmentBy":"none"},"constraints":{"excludeTrackIds":[]} }
+}
+```
+
+Dedicated tickets queue only with dedicated tickets. When no race server is free at match
+time, no session is created (§6.5 keeps answering `NOT_FOUND`): the client gives up after its
+wait for the session.
+
+Errors: `BAD_REQUEST` (unknown mode / size / platform / hosting; hosting with a mode other than
+`quick`; malformed JSON). Rate limit: 30/60s.
 
 ### 17.2 `race_session_quick_bots`
 
@@ -2292,7 +2331,7 @@ Response `data`:
 { "assignment": null }
 ```
 
-`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs }`; it is always `null` until session assignment is implemented.
+`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs }`. It is the session the matchmaker reserved for this server while that session is still `created`: `expectedUserIds` are the human players of the roster and `joinDeadlineMs` is the session's creation time plus 30 s. The same assignment is repeated on every heartbeat until the session starts.
 
 Rules:
 

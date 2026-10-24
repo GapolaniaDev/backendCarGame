@@ -14,9 +14,18 @@ import type { ILogger, IMatchmakerMatchedEnvelope, IMatchmakerResult, INakama } 
 import type { Loadout, RaceSession } from '../race/types';
 import { loadoutStatsFor } from '../race/stats_equalization';
 import { resolveServerLoadout } from '../race/loadout';
-import { createSession } from '../race/session_repo';
-import { getTracks } from '../core/catalog';
+import { activeIndexWrite, createSession } from '../race/session_repo';
+import { RACE_SESSIONS_COLLECTION, SYSTEM_USER_ID } from '../race/constants';
+import { getTrack, getTracks } from '../core/catalog';
+import {
+  CLAIM_ATTEMPTS,
+  listFreeServers,
+  readServer,
+  serverClaimWrite,
+  type ServerEntry,
+} from '../race_servers/registry_repo';
 import { pickTrack } from './track_picker';
+import { DEDICATED_MAX_COUNT, DEDICATED_MIN_COUNT } from './types';
 
 export interface MatchedCandidate {
   sessionId: string;
@@ -38,6 +47,7 @@ export type MatchDecision =
 
 const VALID_SIZES: ReadonlySet<2 | 4 | 6> = new Set([2, 4, 6]);
 const VALID_MODES = new Set(['quick', 'ranked', 'private', 'time_trial']);
+const HOSTING_DEDICATED = 'dedicated';
 
 /**
  * Pick the first candidate that has:
@@ -60,6 +70,11 @@ export function pickCandidate(envelope: IMatchmakerMatchedEnvelope): MatchDecisi
   return { matched: false, reason: 'no_qualified_candidate' };
 }
 
+/** `true` when the group asked for a dedicated race server (D-03). */
+export function isDedicatedCandidate(candidate: MatchedCandidate): boolean {
+  return candidate.tickets?.[0]?.metadata['hosting'] === HOSTING_DEDICATED;
+}
+
 export function validateCandidate(candidate: MatchedCandidate): string | null {
   const tickets = candidate.tickets ?? [];
   const matched = candidate.matched ?? [];
@@ -79,10 +94,22 @@ export function validateCandidate(candidate: MatchedCandidate): string | null {
     if (t.metadata['mode'] !== mode0) return `mode mismatch on ticket[${i}]`;
     if (t.metadata['version'] !== version0) return `version mismatch on ticket[${i}]`;
     if (t.metadata['region'] !== region0) return `region mismatch on ticket[${i}]`;
+    if (t.metadata['hosting'] !== tickets[0]?.metadata['hosting']) return `hosting mismatch on ticket[${i}]`;
   }
   // Now check size — ticket/length alignment first, then bounds.
   if (matched.length !== tickets.length) {
     return `tickets/matched length mismatch (${tickets.length} vs ${matched.length})`;
+  }
+  // D-03: dedicated-server groups are `quick` only and hold 2..4 players;
+  // the other modes keep the 2/4/6 rule below.
+  const hosting0 = tickets[0]?.metadata['hosting'];
+  if (hosting0 !== undefined) {
+    if (hosting0 !== HOSTING_DEDICATED) return `invalid hosting on ticket[0]: ${hosting0}`;
+    if (mode0 !== 'quick') return `hosting dedicated requires mode quick (got ${mode0})`;
+    if (matched.length < DEDICATED_MIN_COUNT || matched.length > DEDICATED_MAX_COUNT) {
+      return `dedicated size ${matched.length} not in [${DEDICATED_MIN_COUNT}, ${DEDICATED_MAX_COUNT}]`;
+    }
+    return validatePartyGrouping(candidate);
   }
   if (matched.length < 2 || matched.length > 6) {
     return `size ${matched.length} not in {2, 4, 6}`;
@@ -152,7 +179,11 @@ export function buildRaceSessionFromCandidate(candidate: MatchedCandidate): Race
     (a, b) => Number(a.vars?.['rtt'] ?? 9999) - Number(b.vars?.['rtt'] ?? 9999),
   );
   const host = sortedRoster[0]!.userId;
-  const size = sortedRoster.length as 2 | 4 | 6;
+  // Dedicated groups hold 2..4 players: a group of 3 is stored as size 4 so
+  // `size` stays one of the values the rewards tables know.
+  const size = (isDedicatedCandidate(candidate)
+    ? (sortedRoster.length === 2 ? 2 : 4)
+    : sortedRoster.length) as 2 | 4 | 6;
   return {
     schemaVersion: 1,
     id: candidate.sessionId,
@@ -234,8 +265,88 @@ export function createMatchedRaceSession(
     entry.loadout = resolveServerLoadout(nk, logger, entry.userId, null, statsMode, 'matchmakerMatched');
   }
   session.createdAt = nowMs;
-  createSession(nk, session, session.roster.map((e) => e.userId), nowMs);
+  const activeFor = session.roster.map((e) => e.userId);
+  if (!isDedicatedCandidate(candidate)) {
+    createSession(nk, session, activeFor, nowMs);
+    return session;
+  }
+  createDedicatedSession(nk, session, activeFor, nowMs);
   return session;
+}
+
+/** No live, free race server could be reserved for a dedicated group (D-06). */
+export class NoRaceServerError extends Error {
+  constructor(sessionId: string) {
+    super(`no free race server for session ${sessionId}`);
+    this.name = 'NoRaceServerError';
+  }
+}
+
+/**
+ * D-04: give the session a live, free race server, its `laps` and one join
+ * ticket per player, and persist it. The reservation of the server (CAS on
+ * its registry row) is committed in the same atomic update as the session
+ * and the players' active-session indexes, so a reserved server always has
+ * its session and a session never points at a server somebody else holds.
+ * When the CAS loses a race the free servers are listed again and the best
+ * one is tried, up to `CLAIM_ATTEMPTS` times. Without a free server nothing is written (D-06): the
+ * throw is a `NoRaceServerError`. Any other failure is rethrown.
+ */
+function createDedicatedSession(
+  nk: INakama,
+  session: RaceSession,
+  activeFor: readonly string[],
+  nowMs: number,
+): void {
+  const laps = getTrack(session.trackId, nk)?.modes[session.mode];
+  if (typeof laps !== 'number' || laps <= 0) {
+    throw new Error(`track ${session.trackId} has no laps for mode ${session.mode}`);
+  }
+  session.serverHosted = true;
+  session.laps = laps;
+  for (const entry of session.roster) entry.joinTicket = newJoinTicket(nk);
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
+    // Re-listed on every attempt: a server claimed (or retired) meanwhile is gone, one that
+    // only sent a heartbeat is still there with its new version.
+    const candidate = listFreeServers(nk, nowMs)[0];
+    if (candidate === undefined) break;
+    session.server = { serverId: candidate.serverId, host: candidate.record.host, port: candidate.record.port };
+    try {
+      nk.multiUpdate(
+        undefined,
+        [
+          {
+            collection: RACE_SESSIONS_COLLECTION,
+            key: session.id,
+            userId: SYSTEM_USER_ID,
+            value: session as unknown as Record<string, unknown>,
+            permissionRead: 0,
+            permissionWrite: 0,
+          },
+          ...activeFor.map((u) => activeIndexWrite(u, session.id, nowMs)),
+          serverClaimWrite(candidate, session.id, nowMs),
+        ],
+        undefined,
+        undefined,
+        undefined,
+      );
+      return;
+    } catch (e) {
+      if (!lostServerRace(nk, candidate)) throw e;
+    }
+  }
+  throw new NoRaceServerError(session.id);
+}
+
+/** `true` when the registry row changed since `entry` was read (someone else claimed it or it beat us). */
+function lostServerRace(nk: INakama, entry: ServerEntry): boolean {
+  const now = readServer(nk, entry.serverId);
+  return now === null || now.version !== entry.version;
+}
+
+/** 32 hex characters (a uuid without dashes), single use per player. */
+function newJoinTicket(nk: INakama): string {
+  return nk.uuidv4().replace(/-/g, '');
 }
 
 /**

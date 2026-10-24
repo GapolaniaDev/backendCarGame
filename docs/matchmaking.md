@@ -57,6 +57,7 @@ query + metadata the client then passes to the matchmaker.
   mode?: 'quick' | 'ranked' | 'private' | 'time_trial';  // default 'quick'
   size?: 2 | 4 | 6;                                     // default 4 (time_trial ignores)
   platform?: 'mobile' | 'console' | 'pc';
+  hosting?: 'dedicated';                                // dedicated race server; quick only (D-03)
   input?: Record<string, string>;                       // free-form, server doesn't read
   callerUserId?: string;                                // required on HTTP gateway
 }
@@ -77,9 +78,34 @@ query + metadata the client then passes to the matchmaker.
     region: string;    // server-stamped; client cannot influence
     mm: { segmentBy: 'none' | 'rating' };
     constraints: { excludeTrackIds: string[] };  // currently empty (D2 future)
+    // Only with hosting: 'dedicated' (D-03); size is then always 4:
+    hosting?: 'dedicated';
+    minCount?: 2;
+    maxCount?: 4;
   };
 }
 ```
+
+### Dedicated race server (plan fishnet-nakama-server, D-03 to D-06)
+
+A ticket with `hosting: 'dedicated'` (mode `quick` only) queues for a race run by a
+dedicated server. `query` and `metadata` gain `hosting: 'dedicated'`, so those tickets only
+match each other, and the client asks the matchmaker for `minCount 2` / `maxCount 4`.
+The hook accepts a dedicated group of 2 to 4 players (all tickets must agree on `hosting`);
+every other group keeps the 2/4/6 rule. For an accepted dedicated group the hook:
+
+1. Reserves the live (heartbeat within 10 s), free server with the most recent heartbeat.
+   The reservation is a CAS on the `race_servers/{serverId}` row committed in the same
+   atomic update as the session and the players' `race_active` indexes; when the CAS loses
+   a race the free servers are listed again, up to 3 attempts.
+2. Stores the session with `serverHosted: true`, `server: { serverId, host, port }`,
+   `laps` (the `quick` laps of the picked track) and one `joinTicket` per human
+   (32 hex characters) in the roster.
+3. The server's next `rs_heartbeat` returns the assignment (see `docs/unity-api.md` §23.1);
+   each player reads `server` and their own `myJoinTicket` with `race_session_get`.
+
+With no free server nothing is written: no session, no `race_active`, and the hook logs
+`matchmaker: no free race server`. A group of 3 that is not dedicated is rejected as before.
 
 ### Query keys
 
@@ -117,7 +143,9 @@ runtime calls it whenever a matchmaker suggestion is ready. The hook:
 
 - All tickets in a candidate must agree on `mode`, `version`, and
   `region`.
-- Matched count must be in `{2, 4, 6}` and equal to the metadata `size`.
+- Matched count must be in `{2, 4, 6}` and equal to the metadata `size`
+  (a dedicated-server group, `hosting: 'dedicated'`, is `quick` only and holds 2 to 4
+  players instead, and every ticket must carry the same `hosting`).
 - The metadata `mode` must be one of `quick | ranked | private |
   time_trial`.
 

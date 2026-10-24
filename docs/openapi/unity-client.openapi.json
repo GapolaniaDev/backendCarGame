@@ -6930,7 +6930,7 @@
         ],
         "summary": "Dedicated race server heartbeat (server-to-server)",
         "operationId": "rs_heartbeat",
-        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). Registers the server or refreshes its registry row (`race_servers/{serverId}`, `lastSeenMs` = server clock); a server is alive while its last heartbeat is at most 10 s old, so send one every 3 s. If `activeSessionId` is null and the registry still holds a session that is closed or gone, the server is freed. `capacity` is stored; each process declares 1. The assignment of a session is delivered in `assignment` (always null until the assignment feature lands). A server silent for 30 s loses its session (the service ticker frees it).\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session), `BAD_REQUEST` (invalid `serverId`, `host`, `port`, `capacity`, `activeSessionId` or `buildVersion`), `CONFLICT` (`VERSION_CONFLICT`).\n\nMaintenance: not gated.",
+        "description": "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). Registers the server or refreshes its registry row (`race_servers/{serverId}`, `lastSeenMs` = server clock); a server is alive while its last heartbeat is at most 10 s old, so send one every 3 s. If `activeSessionId` is null and the registry still holds a session that is closed or gone, the server is freed. `capacity` is stored; each process declares 1. The session the matchmaker reserved for this server is delivered in `assignment` (repeated on every heartbeat while the session is still `created`; `joinDeadlineMs` = session creation time + 30 s). A server silent for 30 s loses its session (the service ticker frees it).\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session), `BAD_REQUEST` (invalid `serverId`, `host`, `port`, `capacity`, `activeSessionId` or `buildVersion`), `CONFLICT` (`VERSION_CONFLICT`).\n\nMaintenance: not gated.",
         "security": [
           {
             "RuntimeHttpKey": []
@@ -7395,6 +7395,34 @@
           },
           "version": {
             "type": "integer"
+          },
+          "serverHosted": {
+            "type": "boolean",
+            "description": "True when a dedicated race server runs the session (D-04). Clients then neither start nor report the race. Absent on relayed sessions."
+          },
+          "server": {
+            "type": "object",
+            "description": "Race server assigned to the session; present when `serverHosted`.",
+            "properties": {
+              "serverId": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "serverId",
+              "host",
+              "port"
+            ]
+          },
+          "laps": {
+            "type": "integer",
+            "description": "Laps of the race; present when `serverHosted`."
           }
         },
         "required": [
@@ -9478,6 +9506,26 @@
           },
           "lastClosed": {
             "$ref": "#/components/schemas/RaceSession"
+          },
+          "server": {
+            "type": "object",
+            "description": "Where to connect (D-05, additive). Only for a `serverHosted` session that is not closed.",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "port"
+            ]
+          },
+          "myJoinTicket": {
+            "type": "string",
+            "description": "The CALLER's own single-use join ticket for the race server (32 hex characters; D-05, additive). Only for a `serverHosted` session that is not closed. The roster never exposes join tickets."
           }
         }
       },
@@ -9943,6 +9991,13 @@
           },
           "partyId": {
             "type": "string"
+          },
+          "hosting": {
+            "type": "string",
+            "enum": [
+              "dedicated"
+            ],
+            "description": "Queue for a race on a dedicated server (D-03). Only with mode `quick` (otherwise BAD_REQUEST). `size` is then stamped as 4 whatever is sent."
           }
         },
         "required": [
@@ -10004,6 +10059,21 @@
                     }
                   }
                 }
+              },
+              "hosting": {
+                "type": "string",
+                "enum": [
+                  "dedicated"
+                ],
+                "description": "Echoed when the ticket asked for a dedicated server."
+              },
+              "minCount": {
+                "type": "integer",
+                "description": "Smallest group the matchmaker may form (2); present with `hosting`. Pass it as the matchmaker min count."
+              },
+              "maxCount": {
+                "type": "integer",
+                "description": "Largest group the matchmaker may form (4); present with `hosting`. Pass it as the matchmaker max count."
               }
             }
           }
@@ -12486,7 +12556,7 @@
               "object",
               "null"
             ],
-            "description": "Session assigned to this server; always null until the assignment feature lands",
+            "description": "Session the matchmaker assigned to this server while it is still `created`; null when there is none. expectedUserIds are the human players of the roster.",
             "properties": {
               "sessionId": {
                 "type": "string"

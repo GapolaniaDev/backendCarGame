@@ -2,14 +2,21 @@
 // knows the layout of `race_servers`. Writes are conditional on the storage
 // version token (CAS); a null version is a create-only write.
 
-import type { ILogger, INakama } from '../nkruntime';
+import type { ILogger, INakama, IStorageObject } from '../nkruntime';
 import { listStorage, readJson, writeJson, SCHEMA_VERSION } from '../core/storage';
 import { SYSTEM_USER_ID } from '../race/constants';
-import { RACE_SERVERS_COLLECTION, RACE_SERVER_STALE_MS, type RaceServerRecord } from './types';
+import {
+  RACE_SERVERS_COLLECTION,
+  RACE_SERVER_ALIVE_MS,
+  RACE_SERVER_STALE_MS,
+  type RaceServerRecord,
+} from './types';
 
 const LIST_PAGE = 100;
 /** Nakama's create-only conditional write. */
 const CREATE_ONLY = '*';
+/** Free servers the matchmaker hook tries before giving up (a lost CAS moves on to the next, D-04). */
+export const CLAIM_ATTEMPTS = 3;
 
 export interface ServerEntry {
   serverId: string;
@@ -76,6 +83,39 @@ export function claimServer(nk: INakama, entry: ServerEntry, sessionId: string, 
   } catch {
     return false;
   }
+}
+
+/** `true` when the server's last heartbeat is recent enough (D-02). */
+export function isServerAlive(record: RaceServerRecord, nowMs: number): boolean {
+  return record.lastSeenMs >= nowMs - RACE_SERVER_ALIVE_MS;
+}
+
+/**
+ * Live servers without a session, the one with the most recent heartbeat
+ * first (D-04).
+ */
+export function listFreeServers(nk: INakama, nowMs: number): ServerEntry[] {
+  return listServers(nk)
+    .filter((e) => e.record.sessionId === null && isServerAlive(e.record, nowMs))
+    .sort((a, b) => b.record.lastSeenMs - a.record.lastSeenMs);
+}
+
+/**
+ * The storage write that reserves `entry` for `sessionId` (D-04): the row
+ * with `sessionId` and `assignedAtMs`, conditional on the version read in
+ * `entry` (CAS). The matchmaker hook commits it in the same atomic update
+ * as the session itself, so a reserved server always has its session.
+ */
+export function serverClaimWrite(entry: ServerEntry, sessionId: string, nowMs: number): IStorageObject {
+  return {
+    collection: RACE_SERVERS_COLLECTION,
+    key: entry.serverId,
+    userId: SYSTEM_USER_ID,
+    value: { ...entry.record, sessionId, assignedAtMs: nowMs, schemaVersion: SCHEMA_VERSION as 1 },
+    version: entry.version,
+    permissionRead: 0,
+    permissionWrite: 0,
+  };
 }
 
 /**

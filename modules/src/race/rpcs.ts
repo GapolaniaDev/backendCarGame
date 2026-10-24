@@ -56,6 +56,7 @@ import {
   submitReport,
   touchPresence,
 } from './session_repo';
+import { toPublicSessionOutput } from './session_view';
 import { CloseConflictError, closeIfDue, closeRace, type ClosedRace } from './close';
 import { validateHostClaim, validateSubmissionStep1, validateSubmissionStep2 } from './validation';
 import { resolveServerLoadout } from './loadout';
@@ -418,7 +419,7 @@ function race_session_get_impl(
       const out: RaceSessionGetOutput = current.session.state === 'closed'
         ? { session: current.session, lastClosed: current.session }
         : { session: withContact(nk, logger, current.session, callerId) };
-      return toJson(ok(out));
+      return toJson(ok(toPublicSessionOutput(out, callerId)));
     }
     const last = lookupLastClosed(nk, callerId);
     if (!last) {
@@ -433,7 +434,7 @@ function race_session_get_impl(
       lastClosed: result.session,
     };
     logger.debug('race_session_get caller=%s via lastClosed sid=%s', callerId, last.sessionId);
-    return toJson(ok(out));
+    return toJson(ok(toPublicSessionOutput(out, callerId)));
   }
 
   const found = readSession(nk, sessionId);
@@ -456,7 +457,7 @@ function race_session_get_impl(
   const result = closeIfDue(nk, logger, found, serverNowMs(), 'race_session_get').current;
   logger.debug('race_session_get sid=%s caller=%s', sessionId, callerId);
   const out: RaceSessionGetOutput = { session: withContact(nk, logger, result.session, callerId) };
-  return toJson(ok(out));
+  return toJson(ok(toPublicSessionOutput(out, callerId)));
 }
 
 /**

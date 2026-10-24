@@ -21,9 +21,12 @@
 
 import type { RaceModeId } from '../race/types';
 import { ratingWindowFor, type RankedConfig } from '../ranked/config';
-import type {
-  MmTicketParamsInput,
-  MmTicketParamsOutput,
+import {
+  DEDICATED_MAX_COUNT,
+  DEDICATED_MIN_COUNT,
+  type MmHosting,
+  type MmTicketParamsInput,
+  type MmTicketParamsOutput,
 } from './types';
 
 export type TicketSegment = 'none' | 'rating';
@@ -72,6 +75,8 @@ export interface BuiltTicket {
 }
 
 const VALID_SIZES: ReadonlySet<2 | 4 | 6> = new Set([2, 4, 6]);
+/** `size` stamped on dedicated-server tickets (D-03). */
+const DEDICATED_QUEUE_SIZE = 4;
 const VALID_MODES: ReadonlySet<RaceModeId> = new Set([
   'quick',
   'ranked',
@@ -86,7 +91,7 @@ const VALID_MODES: ReadonlySet<RaceModeId> = new Set([
  */
 export function validateTicketInput(
   input: MmTicketParamsInput,
-): { ok: true; mode: RaceModeId; size: 2 | 4 | 6 } | { ok: false; errors: string[] } {
+): { ok: true; mode: RaceModeId; size: 2 | 4 | 6; hosting?: MmHosting } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   const mode = input.mode;
   if (!VALID_MODES.has(mode)) {
@@ -109,7 +114,17 @@ export function validateTicketInput(
   if (input.input !== undefined && typeof input.input !== 'object') {
     errors.push(`input must be an object`);
   }
+  // D-03: a dedicated-server ticket is `quick` only and always queues with
+  // size 4 (the group is 2..4, so `size` no longer decides the roster).
+  if (input.hosting !== undefined) {
+    if (input.hosting !== 'dedicated') {
+      errors.push(`invalid hosting: ${String(input.hosting)} (only "dedicated" is supported)`);
+    } else if (mode !== 'quick') {
+      errors.push(`hosting "dedicated" is only available for mode quick (got ${String(mode)})`);
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
+  if (input.hosting === 'dedicated') return { ok: true, mode, size: DEDICATED_QUEUE_SIZE, hosting: 'dedicated' };
   return { ok: true, mode, size };
 }
 
@@ -121,7 +136,7 @@ export function validateTicketInput(
  * 1KB ticket limit even with 4 metadata entries.
  */
 export function buildTicket(
-  validated: { mode: RaceModeId; size: 2 | 4 | 6 },
+  validated: { mode: RaceModeId; size: 2 | 4 | 6; hosting?: MmHosting },
   options: TicketOptions,
   config: RankedConfig,
 ): BuiltTicket {
@@ -163,6 +178,12 @@ export function buildTicket(
   if (options.partySize !== undefined) {
     metadata['partySize'] = String(options.partySize);
   }
+  // D-03: only the dedicated-server tickets carry `hosting`, so they queue
+  // among themselves and never with relayed-match tickets.
+  if (validated.hosting !== undefined) {
+    query['hosting'] = validated.hosting;
+    metadata['hosting'] = validated.hosting;
+  }
 
   return {
     query,
@@ -176,11 +197,11 @@ export function buildTicket(
  * the unit tests don't need to reach into the RPC module.
  */
 export function buildOutput(
-  validated: { mode: RaceModeId; size: 2 | 4 | 6 },
+  validated: { mode: RaceModeId; size: 2 | 4 | 6; hosting?: MmHosting },
   ticket: BuiltTicket,
   options: TicketOptions,
 ): MmTicketParamsOutput {
-  return {
+  const output: MmTicketParamsOutput = {
     mode: validated.mode,
     size: validated.size,
     version: ticket.stamped.version,
@@ -192,6 +213,12 @@ export function buildOutput(
       excludeTrackIds: [],
     },
   };
+  if (validated.hosting !== undefined) {
+    output.hosting = validated.hosting;
+    output.minCount = DEDICATED_MIN_COUNT;
+    output.maxCount = DEDICATED_MAX_COUNT;
+  }
+  return output;
 }
 
 // (No additional module-level helpers — the imported `ratingWindowFor`
