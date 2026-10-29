@@ -52,6 +52,8 @@ export interface RaceServerAssignment {
   laps: number;
   expectedUserIds: string[];
   joinDeadlineMs: number;
+  /** Milliseconds left until joinDeadlineMs by the server clock, never negative. */
+  joinRemainingMs: number;
 }
 
 export interface RsHeartbeatOutput {
@@ -104,16 +106,18 @@ function parseHeartbeat(raw: Record<string, unknown>): { ok: true; value: Heartb
  * still `created`, hosted by this very server. The expected players are the
  * humans of the roster; they must join before the window closes.
  */
-function pendingAssignment(serverId: string, session: RaceSession | null): RaceServerAssignment | null {
+function pendingAssignment(serverId: string, session: RaceSession | null, nowMs: number): RaceServerAssignment | null {
   if (session === null || session.state !== 'created') return null;
   if (session.serverHosted !== true || session.server?.serverId !== serverId) return null;
+  const joinDeadlineMs = (session.createdAt ?? 0) + JOIN_WINDOW_MS;
   return {
     sessionId: session.id,
     mode: session.mode,
     trackId: session.trackId,
     laps: session.laps ?? 0,
     expectedUserIds: session.roster.filter((e) => !e.isBot).map((e) => e.userId),
-    joinDeadlineMs: (session.createdAt ?? 0) + JOIN_WINDOW_MS,
+    joinDeadlineMs,
+    joinRemainingMs: Math.max(0, joinDeadlineMs - nowMs),
   };
 }
 
@@ -153,7 +157,7 @@ export const rs_heartbeat_impl: RpcHandler = (ctx, logger, nk, body) => {
     } catch {
       continue; // a concurrent writer won: re-read
     }
-    const out: RsHeartbeatOutput = { assignment: pendingAssignment(auth.serverId, held?.session ?? null) };
+    const out: RsHeartbeatOutput = { assignment: pendingAssignment(auth.serverId, held?.session ?? null, serverNowMs()) };
     return JSON.stringify(ok(out));
   }
   return JSON.stringify(err('CONFLICT', 'concurrent update; please retry', { reason: 'VERSION_CONFLICT' }));

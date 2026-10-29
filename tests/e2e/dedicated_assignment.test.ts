@@ -87,9 +87,13 @@ describe('dedicated race server assignment (T-05)', () => {
     });
     expect([...assignment!.expectedUserIds].sort()).toEqual([...PLAYERS].sort());
     expect(assignment!.joinDeadlineMs).toBe(stored.createdAt! + 30_000);
+    expect(assignment!.joinRemainingMs).toBeGreaterThanOrEqual(0);
+    expect(assignment!.joinRemainingMs).toBeLessThanOrEqual(30_000);
 
     // The same assignment is repeated while the session waits in `created`.
-    expect(heartbeat(env, 'race-1', { port: 7788 }).assignment).toEqual(assignment);
+    // joinRemainingMs is the only field that follows the clock.
+    const repeated = heartbeat(env, 'race-1', { port: 7788 }).assignment;
+    expect({ ...repeated, joinRemainingMs: 0 }).toEqual({ ...assignment, joinRemainingMs: 0 });
 
     const ticketsByUser = new Map(stored.roster.map((e) => [e.userId, e.joinTicket!]));
     expect(new Set(ticketsByUser.values()).size).toBe(PLAYERS.length);

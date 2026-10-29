@@ -2331,7 +2331,7 @@ Response `data`:
 { "assignment": null }
 ```
 
-`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs }`. It is the session the matchmaker reserved for this server while that session is still `created`: `expectedUserIds` are the human players of the roster and `joinDeadlineMs` is the session's creation time plus 30 s. The same assignment is repeated on every heartbeat until the session starts.
+`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs, joinRemainingMs }`. It is the session the matchmaker reserved for this server while that session is still `created`: `expectedUserIds` are the human players of the roster and `joinDeadlineMs` is the session's creation time plus 30 s; joinRemainingMs is max(0, joinDeadlineMs - now) by the server clock (0 once the window has passed), so the race server does not need to compare joinDeadlineMs with its own clock. The same assignment is repeated on every heartbeat until the session starts.
 
 Rules:
 

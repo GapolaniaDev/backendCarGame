@@ -158,6 +158,28 @@ describe('rs_heartbeat (D-02)', () => {
     expect(readServer(nk, 'srv-1')!.record.sessionId).toBe('s-open');
   });
 
+  it('adds joinRemainingMs to the assignment: within 0..30000 inside the window, 0 after it', () => {
+    type Out = { data: { assignment: { joinDeadlineMs: number; joinRemainingMs: number } } };
+    const remainingFor = (ageMs: number): Out['data']['assignment'] => {
+      const localNk = new FakeNakama().nakama;
+      rs_heartbeat_impl(CTX, logger, localNk, heartbeatBody());
+      createSession(localNk, {
+        ...sessionIn('created', 's-hosted'),
+        createdAt: Date.now() - ageMs,
+        serverHosted: true,
+        server: { serverId: 'srv-1', host: '10.0.0.5', port: 7770 },
+      });
+      expect(claimServer(localNk, listServers(localNk)[0]!, 's-hosted', Date.now())).toBe(true);
+      return (JSON.parse(rs_heartbeat_impl(CTX, logger, localNk, heartbeatBody())) as Out).data.assignment;
+    };
+
+    const fresh = remainingFor(10_000);
+    expect(fresh.joinRemainingMs).toBeGreaterThan(0);
+    expect(fresh.joinRemainingMs).toBeLessThanOrEqual(20_000);
+    expect(remainingFor(0).joinRemainingMs).toBeLessThanOrEqual(30_000);
+    expect(remainingFor(40_000).joinRemainingMs).toBe(0);
+  });
+
   it('keeps the assignment when the server declares an active session', () => {
     rs_heartbeat_impl(CTX, logger, nk, heartbeatBody());
     assign('s-missing');

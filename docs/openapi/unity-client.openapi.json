@@ -12915,6 +12915,10 @@
               "joinDeadlineMs": {
                 "type": "integer",
                 "format": "int64"
+              },
+              "joinRemainingMs": {
+                "type": "integer",
+                "description": "Milliseconds left until `joinDeadlineMs` by the server clock (max(0, joinDeadlineMs - now)); 0 once the window has passed. Use it instead of comparing `joinDeadlineMs` with a local clock."
               }
             }
           }
