@@ -165,6 +165,8 @@ the runtime through `runtime.env`; `docker-compose.yml` passes it to Nakama).
   (skip it with `--skip-dedicated`); without the secret that block fails with a
   message pointing to the human step.
 
+Nakama healthcheck: the binary's `nakama healthcheck` probes default port 7350 and ignores flags, and the image has no curl/wget, so the compose healthcheck probes `/healthcheck` on 8081 with bash `/dev/tcp`.
+
 ## 10. Smoke-test commands
 
 The HTTP gateway requires `Authorization: Basic base64(SERVER_KEY:)` and
