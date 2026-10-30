@@ -25,6 +25,8 @@ import {
   type ServerEntry,
 } from '../race_servers/registry_repo';
 import { pickTrack } from './track_picker';
+import { averageRating, pickBotDifficulty, type HumanPlayer } from './quick_bots';
+import { readRankedRecord } from '../ranked/ranked_repo';
 import { DEDICATED_MAX_COUNT, DEDICATED_MIN_COUNT } from './types';
 
 export interface MatchedCandidate {
@@ -304,6 +306,7 @@ function createDedicatedSession(
   }
   session.serverHosted = true;
   session.laps = laps;
+  session.botDifficulty = dedicatedBotDifficulty(nk, session);
   for (const entry of session.roster) entry.joinTicket = newJoinTicket(nk);
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
     // Re-listed on every attempt: a server claimed (or retired) meanwhile is gone, one that
@@ -336,6 +339,31 @@ function createDedicatedSession(
     }
   }
   throw new NoRaceServerError(session.id);
+}
+
+/**
+ * D-03: bot difficulty 0..4 of a dedicated session. Same rule as `quick_bots`: `pickBotDifficulty`
+ * over `averageRating` of the human roster, where each human's rating is the `rating` of the ranked
+ * record in their profile. A human without a ranked record (or an unreadable one) has no rating and
+ * is ignored; when nobody has one the average falls back to 1000, i.e. difficulty 2.
+ */
+function dedicatedBotDifficulty(nk: INakama, session: RaceSession): number {
+  const humans: HumanPlayer[] = session.roster
+    .filter((e) => !e.isBot)
+    .map((e) => {
+      const rating = ratingOf(nk, e.userId);
+      return rating === undefined ? { userId: e.userId } : { userId: e.userId, rating };
+    });
+  return pickBotDifficulty(averageRating(humans));
+}
+
+function ratingOf(nk: INakama, userId: string): number | undefined {
+  try {
+    const rating = readRankedRecord(nk, userId)?.record.rating;
+    return typeof rating === 'number' && Number.isFinite(rating) ? rating : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `true` when the registry row changed since `entry` was read (someone else claimed it or it beat us). */

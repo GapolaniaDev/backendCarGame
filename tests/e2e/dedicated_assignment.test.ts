@@ -86,6 +86,9 @@ describe('dedicated race server assignment (T-05)', () => {
       laps: stored.laps,
     });
     expect([...assignment!.expectedUserIds].sort()).toEqual([...PLAYERS].sort());
+    // No ranked records -> the quick_bots default rating (1000) -> difficulty 2 (D-03).
+    expect(assignment!.botDifficulty).toBe(2);
+    expect(stored.botDifficulty).toBe(2);
     expect(assignment!.joinDeadlineMs).toBe(stored.createdAt! + 30_000);
     expect(assignment!.joinRemainingMs).toBeGreaterThanOrEqual(0);
     expect(assignment!.joinRemainingMs).toBeLessThanOrEqual(30_000);
@@ -111,6 +114,26 @@ describe('dedicated race server assignment (T-05)', () => {
         if (other !== userId) expect(raw).not.toContain(ticket);
       }
     }
+  });
+
+  it('the assignment carries the bot difficulty of the humans ratings; a session without it omits the field', () => {
+    for (const userId of PLAYERS) {
+      env.nak.storageWrite([{
+        collection: 'ranked', key: userId, userId, value: { schemaVersion: 1, userId, rating: 2100 }, permissionRead: 2, permissionWrite: 0,
+      }]);
+    }
+    heartbeat(env, 'race-1');
+    const { sessionId } = runMatchedHook(env, dedicatedEnvelope(PLAYERS));
+    const high = heartbeat(env, 'race-1').assignment!;
+    expect(high.botDifficulty).toBe(4);
+
+    // A session written before D-03 has no botDifficulty: the assignment leaves it out.
+    const row = env.nak.storageRead([{ collection: 'race_sessions', key: sessionId!, userId: SYSTEM_USER_ID }])[0]!;
+    const legacy = { ...(row.value as Record<string, unknown>) };
+    delete legacy['botDifficulty'];
+    env.nak.storageWrite([{ collection: 'race_sessions', key: sessionId!, userId: SYSTEM_USER_ID, value: legacy, version: row.version, permissionRead: 0, permissionWrite: 0 }]);
+    const old = heartbeat(env, 'race-1').assignment!;
+    expect(old).not.toHaveProperty('botDifficulty');
   });
 
   it('race_session_get with an explicit sessionId follows the same rules', () => {

@@ -2332,7 +2332,15 @@ Response `data`:
 { "assignment": null }
 ```
 
-`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs, joinRemainingMs }`. It is the session the matchmaker reserved for this server while that session is still `created`: `expectedUserIds` are the human players of the roster and `joinDeadlineMs` is the session's creation time plus 30 s; joinRemainingMs is max(0, joinDeadlineMs - now) by the server clock (0 once the window has passed), so the race server does not need to compare joinDeadlineMs with its own clock. The same assignment is repeated on every heartbeat until the session starts.
+Example with a pending assignment:
+
+```json
+{ "assignment": { "sessionId": "9f2c…", "mode": "quick", "trackId": "track_01", "laps": 3,
+  "expectedUserIds": ["u1", "u2"], "joinDeadlineMs": 1761724830000, "joinRemainingMs": 27500,
+  "botDifficulty": 2 } }
+```
+
+`assignment` is `null | { sessionId, mode, trackId, laps, expectedUserIds[], joinDeadlineMs, joinRemainingMs, botDifficulty? }`. It is the session the matchmaker reserved for this server while that session is still `created`: `expectedUserIds` are the human players of the roster and `joinDeadlineMs` is the session's creation time plus 30 s; joinRemainingMs is max(0, joinDeadlineMs - now) by the server clock (0 once the window has passed), so the race server does not need to compare joinDeadlineMs with its own clock. `botDifficulty` is an integer 0..4 (0 easiest, 4 hardest) for the bots the race server fills in. The matchmaker computes it when it creates the session, with the same rule as `quick_bots` (average ranked rating of the human players; a player without a ranked record is ignored, and when nobody has one the rating counts as 1000, difficulty 2). It is omitted for sessions created before the field existed. The same assignment is repeated on every heartbeat until the session starts.
 
 Rules:
 

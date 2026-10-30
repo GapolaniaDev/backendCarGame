@@ -165,6 +165,11 @@ export interface RaceSession {
   /** Laps of the race (the `quick` mode laps of the track). Present when `serverHosted`. */
   laps?: number;
   /**
+   * Bot difficulty 0..4 (same vocabulary as `quick_bots`) for the bots the race server fills in.
+   * Present on dedicated sessions created after plan fishnet-fixes D-03; absent on older ones.
+   */
+  botDifficulty?: number;
+  /**
    * Monotonic counter incremented on every conditional write. Used as
    * the optimistic-concurrency token in `multiUpdate` at close-time.
    */

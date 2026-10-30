@@ -8320,6 +8320,11 @@ components:
             joinRemainingMs:
               type: "integer"
               description: "Milliseconds left until `joinDeadlineMs` by the server clock (max(0, joinDeadlineMs - now)); 0 once the window has passed. Use it instead of comparing `joinDeadlineMs` with a local clock."
+            botDifficulty:
+              type: "integer"
+              minimum: 0
+              maximum: 4
+              description: "Difficulty of the bots the race server fills in (0 easiest, 4 hardest), computed by the matchmaker from the average ranked rating of the human players with the same rule as `quick_bots`. Omitted for sessions created before this field existed."
     RsJoinValidateRequest:
       type: "object"
       required:

@@ -261,3 +261,49 @@ describe('matchmakerMatched with a dedicated group (D-04, D-06)', () => {
     expect(readServer(nk, 'srv-1')!.record.sessionId).toBeNull();
   });
 });
+
+describe('matchmakerMatched bot difficulty of a dedicated group (fishnet-fixes D-03)', () => {
+  let fake: FakeNakama;
+  let nk: INakama;
+  let logger: ReturnType<typeof makeLogger>;
+
+  beforeEach(() => {
+    fake = new FakeNakama();
+    nk = fake.nakama;
+    logger = makeLogger();
+    ensureRuntimeState(nk, logger);
+    heartbeat(nk, logger, 'srv-1');
+  });
+
+  function setRating(userId: string, rating: number): void {
+    nk.storageWrite([{
+      collection: 'ranked', key: userId, userId, value: { schemaVersion: 1, userId, rating }, permissionRead: 2, permissionWrite: 0,
+    }]);
+  }
+
+  function difficultyFor(ratings: Array<number | null>): number | undefined {
+    ratings.forEach((r, i) => { if (r !== null) setRating(`user-${i}`, r); });
+    matchmakerMatchedImpl(FakeContext, logger, nk, entries(ratings.length, DEDICATED));
+    return sessionOf(nk, 'user-0')!.botDifficulty;
+  }
+
+  it('high ratings give the top difficulty (4)', () => {
+    expect(difficultyFor([2000, 2200])).toBe(4);
+  });
+
+  it('low ratings give difficulty 0', () => {
+    expect(difficultyFor([300, 500])).toBe(0);
+  });
+
+  it('uses the average of the humans: 800 and 1200 -> 1000 -> 2', () => {
+    expect(difficultyFor([800, 1200])).toBe(2);
+  });
+
+  it('players without a ranked record are ignored; the rest decide', () => {
+    expect(difficultyFor([null, 2000, null])).toBe(4);
+  });
+
+  it('nobody with a rating falls back to the quick_bots default (1000 -> 2)', () => {
+    expect(difficultyFor([null, null, null])).toBe(2);
+  });
+});

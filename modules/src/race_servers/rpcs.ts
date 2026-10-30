@@ -55,6 +55,8 @@ export interface RaceServerAssignment {
   joinDeadlineMs: number;
   /** Milliseconds left until joinDeadlineMs by the server clock, never negative. */
   joinRemainingMs: number;
+  /** Bot difficulty 0..4 (same as `quick_bots`). Omitted for sessions created before D-03. */
+  botDifficulty?: number;
 }
 
 export interface RsHeartbeatOutput {
@@ -119,6 +121,7 @@ function pendingAssignment(serverId: string, session: RaceSession | null, nowMs:
     expectedUserIds: session.roster.filter((e) => !e.isBot).map((e) => e.userId),
     joinDeadlineMs,
     joinRemainingMs: Math.max(0, joinDeadlineMs - nowMs),
+    ...(typeof session.botDifficulty === 'number' ? { botDifficulty: session.botDifficulty } : {}),
   };
 }
 
