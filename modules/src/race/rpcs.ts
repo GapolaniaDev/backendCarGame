@@ -1076,7 +1076,7 @@ function replayedSubmitResponse(nk: INakama, sessionId: string): string {
   }
   const out: RaceSubmitResultOutput = {
     accepted: true,
-    confidence: session.flags.needsReview ? 'client' : 'quorum',
+    confidence: session.confidence ?? (session.flags.needsReview ? 'client' : 'quorum'),
     officialResults: session.results,
     flags: {
       needsReview: session.flags.needsReview,

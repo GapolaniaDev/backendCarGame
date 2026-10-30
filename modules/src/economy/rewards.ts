@@ -138,6 +138,17 @@ export function sizeKeyForEvent(size: 1 | 2 | 4 | 6): '2' | '4' | '6' {
 }
 
 /**
+ * Payout size of a race with `rows` result rows (humans and bots, D-04): the
+ * smallest catalog key (2, 4 or 6) that holds them, so a human placed 3rd of
+ * 4 rows is paid from the `"4"` row.
+ */
+export function payoutSizeForRows(rows: number): 2 | 4 | 6 {
+  if (rows <= 2) return 2;
+  if (rows <= 4) return 4;
+  return 6;
+}
+
+/**
  * Decide whether a private race is eligible for a paid reward today.
  * Returns `false` when the per-day cap has been reached for this player.
  */

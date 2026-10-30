@@ -606,6 +606,8 @@ export interface CloseOverride {
   /** Final results, bots included (they are never paid). */
   results: RaceResult[];
   confidence: Confidence;
+  /** Size whose reward row pays the race when it differs from `session.size` (D-04). */
+  payoutSize?: 2 | 4 | 6;
   needsReview: boolean;
   reviewReason?: string;
 }
@@ -643,7 +645,7 @@ export function tryCloseAndPublish(
     const stored = session.results;
     return {
       results: stored,
-      confidence: stored.length > 0 && session.flags.needsReview ? 'client' : 'quorum',
+      confidence: session.confidence ?? (stored.length > 0 && session.flags.needsReview ? 'client' : 'quorum'),
       needsReview: session.flags.needsReview,
       ...(session.flags.reviewReason !== undefined
         ? { reviewReason: session.flags.reviewReason }
@@ -679,6 +681,7 @@ export function tryCloseAndPublish(
       : session.roster.map((e) => (e.reportedAt === undefined ? { ...e, abandoned: true } : e)),
     state: 'closed',
     results: agg.results,
+    confidence: agg.confidence,
     flags: {
       needsReview: agg.needsReview,
       ...(agg.reviewReason !== undefined ? { reviewReason: agg.reviewReason } : {}),
@@ -737,7 +740,7 @@ export function tryCloseAndPublish(
     sessionId: session.id,
     mode: session.mode,
     trackId: session.trackId,
-    size: session.size,
+    size: override?.payoutSize ?? session.size,
     results: agg.results,
     flags: closed.flags,
     confidence: agg.confidence,

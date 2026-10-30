@@ -149,6 +149,7 @@ interface RaceSession {
   startedAt: number | null; // server epoch-ms when 'started' was accepted
   results: RaceResult[];    // sorted by rank (DNFs last)
   flags: { needsReview: boolean; reviewReason?: string };
+  confidence?: Confidence;  // how the session was closed (`quorum` | `client` | `server`); absent while open
   version: number;          // monotonic CAS counter
 }
 ```
@@ -2377,9 +2378,9 @@ Request:
 ```json
 { "serverKey": "…", "serverId": "race-eu-1", "sessionId": "…", "requestId": "any-unique-id",
   "results": [
-    { "userId": "…", "isBot": false, "displayName": "Ana", "totalMs": 150000, "laps": [50000, 50000, 50000], "dnf": false },
-    { "userId": null, "isBot": true,  "displayName": "Bot 1", "totalMs": 152000, "laps": [51000, 50000, 51000], "dnf": false },
-    { "userId": "…", "isBot": false, "displayName": "Bruno", "totalMs": 0, "laps": [], "dnf": true }
+    { "userId": "…", "isBot": false, "displayName": "Ana", "totalMs": 150000, "laps": [50000, 50000, 50000], "dnf": false, "rank": 1 },
+    { "userId": null, "isBot": true,  "displayName": "Bot 1", "totalMs": 152000, "laps": [51000, 50000, 51000], "dnf": false, "rank": 2, "estimated": false },
+    { "userId": "…", "isBot": false, "displayName": "Bruno", "totalMs": 0, "laps": [], "dnf": true, "rank": 3 }
   ] }
 ```
 
@@ -2396,7 +2397,9 @@ Rules:
 - A human (`isBot: false`) must be a human of the roster, once (`INVALID_RESULT`: `NOT_IN_ROSTER`, `DUPLICATE_RESULT`). Humans that are not listed, or listed with `dnf: true`, are DNF (`abandoned: true`, `totalMs: 0`, no payout).
 - Bots (`isBot: true`) only appear in `results`/`officialResults` and are never paid. Their `userId` may be `null`: the response then names them `bot_ds_{index}`. A bot may not use the id of a player (`BOT_ID_CLASH`).
 - A human lap under the minimum of the car class on that track does not reject the results: the session closes with `flags.needsReview = true` and `reviewReason: lap_below_min`.
-- Ranks: finishers by `totalMs` (ties keep the sent order), then the DNFs.
+- Ranks: with the optional per-row `rank` (integer `1..rows`) the server's order rules and `officialResults` keep those ranks. `rank` goes on every row or on none (`INVALID_RESULT`: `RANK_INCOMPLETE`), never above the number of rows (`RANK_OUT_OF_RANGE`) and never repeated (`DUPLICATE_RANK`); a non-integer or non-positive `rank` is `BAD_REQUEST`. Humans that are not listed take the ranks after the last row. Without `rank`: finishers by `totalMs` (ties keep the sent order), then the DNFs.
+- `estimated: true` (bot only, with `dnf: false`) marks a bot that had not finished: it needs no `laps` or `totalMs` check, enters `officialResults` with `totalMs: 0` and `abandoned: false`, and keeps its `rank`; without `rank` it goes after every timed finisher and before the DNFs, in the sent order. On a human it is `INVALID_RESULT` (`ESTIMATED_NOT_BOT`); with `dnf: true` it is `INVALID_RESULT` (`ESTIMATED_WITH_DNF`).
+- Payout size: the reward row is chosen by the number of result rows (humans and bots), rounded up to the catalog key 2/4/6, so a human 3rd of 4 rows is paid from the `"4"` row even if only 2 humans were matched. The session keeps its matched `size`.
 - The session must be `created` or `started`; a `created` one is started implicitly (`startedAt` = now) in the same close, so a failed `rs_session_start` does not lose the results. A closed one is `CONFLICT` (`details.reason: BAD_STATE`).
 - Idempotent by `requestId` (1-128 characters): a retry returns the stored response and pays nothing more. Another `requestId` on an already closed session is `CONFLICT` (`BAD_STATE`).
 - `rewards` has an entry only for the humans that were paid, with the entries of `race_submit_result`.

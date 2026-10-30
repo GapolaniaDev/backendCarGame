@@ -13,6 +13,7 @@ import {
 import {
   computeRewardForResultWithContext,
   isPrivateRacePaid,
+  payoutSizeForRows,
   sizeKeyForEvent,
 } from '../../modules/src/economy/rewards';
 import type { ILogger } from '../../modules/src/nkruntime';
@@ -210,5 +211,21 @@ describe('economy/rewards — isPrivateRacePaid', () => {
   it('returns false when private counter equals or exceeds cap', () => {
     expect(isPrivateRacePaid(getRewardsCatalog(), 'private', 3)).toBe(false);
     expect(isPrivateRacePaid(getRewardsCatalog(), 'private', 4)).toBe(false);
+  });
+});
+
+describe('payoutSizeForRows (D-04)', () => {
+  it('rounds the number of result rows up to the catalog key 2/4/6', () => {
+    expect([1, 2, 3, 4, 5, 6, 8, 16].map(payoutSizeForRows)).toEqual([2, 2, 4, 4, 6, 6, 6, 6]);
+  });
+
+  it('a 3rd or 4th place of 4 rows is paid from the size-4 row, while a 2-player size would pay nothing', () => {
+    const catalog = getRewardsCatalog();
+    const ctx = { isFirstWinOfDay: false, dailyPrivateCount: 0, finished: true };
+    const result = (rank: number): RaceResult => ({ rank, userId: 'u', isBot: false, totalMs: 1, abandoned: false });
+    for (const rank of [3, 4]) {
+      expect(computeRewardForResultWithContext(result(rank), 'quick', ctx, false, catalog, payoutSizeForRows(4)).length).toBeGreaterThan(0);
+      expect(computeRewardForResultWithContext(result(rank), 'quick', ctx, false, catalog, 2)).toEqual([]);
+    }
   });
 });

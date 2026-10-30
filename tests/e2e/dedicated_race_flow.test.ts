@@ -185,4 +185,137 @@ describe('a race on a dedicated server (T-06)', () => {
     const next = matchOnServer(env, 'mm-release-2', [CAROL, DAVE]);
     expect(heartbeat(env).assignment?.sessionId).toBe(next);
   });
+
+  /** A started dedicated session of ALICE and BOB; returns its id and a helper that builds finisher rows. */
+  function startedPair(matchId: string): { sid: string; row: (userId: string | null, isBot: boolean, lapMs: number, extra?: Record<string, unknown>) => Record<string, unknown> } {
+    heartbeat(env);
+    const sid = matchOnServer(env, matchId, [ALICE, BOB]);
+    const { assignment } = heartbeat(env);
+    data(server<RsSessionStartOutput>(env, 'rs_session_start', { sessionId: sid }));
+    const laps = assignment!.laps;
+    const row = (userId: string | null, isBot: boolean, lapMs: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      userId, isBot, displayName: 'Racer', totalMs: lapMs * laps, laps: Array.from({ length: laps }, () => lapMs), dnf: false, ...extra,
+    });
+    return { sid, row };
+  }
+
+  it('a human 3rd and 4th of a race with 2 humans and 2 bots is paid from the size-4 row, and the server rank rules (P-12, D-04)', () => {
+    const { sid, row } = startedPair('mm-bots');
+    // The humans are the faster by time, but the server placed them 3rd and 4th.
+    const results = [
+      row(null, true, 70_000, { rank: 1, estimated: true }),
+      row(null, true, 71_000, { rank: 2, estimated: true }),
+      row(ALICE, false, 60_000, { rank: 3 }),
+      row(BOB, false, 61_000, { rank: 4 }),
+    ];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-bots', results }));
+    expect(submitted.officialResults.map((r) => [r.rank, r.isBot])).toEqual([[1, true], [2, true], [3, false], [4, false]]);
+    expect(submitted.officialResults.filter((r) => !r.isBot).map((r) => [r.rank, r.userId])).toEqual([[3, ALICE], [4, BOB]]);
+    expect(submitted.rewards[ALICE]?.coins).toBeGreaterThan(0);
+    expect(submitted.rewards[BOB]?.coins).toBeGreaterThan(0);
+    expect(submitted.rewards[ALICE]!.coins).toBeGreaterThan(submitted.rewards[BOB]!.coins);
+    // The session keeps its matched size; only the payout looks at the rows.
+    expect(stored(env, sid).size).toBe(2);
+  });
+
+  it('without rank the order stays by time', () => {
+    const { sid, row } = startedPair('mm-no-rank');
+    const results = [row(BOB, false, 62_000), row(ALICE, false, 60_000)];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-no-rank', results }));
+    expect(submitted.officialResults.map((r) => [r.rank, r.userId])).toEqual([[1, ALICE], [2, BOB]]);
+  });
+
+  it('rank out of range, repeated or on only some rows is INVALID_RESULT; a non-integer rank is BAD_REQUEST', () => {
+    const { sid, row } = startedPair('mm-bad-rank');
+    const submit = (results: unknown[]) => server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: `req-${Math.random()}`, results });
+    const reasonOf = (r: Resp<unknown>): string => (r.ok ? 'ok' : `${r.error.code}/${r.error.details?.reason ?? ''}`);
+    expect(reasonOf(submit([row(ALICE, false, 60_000, { rank: 1 }), row(BOB, false, 61_000, { rank: 3 })]))).toBe('INVALID_RESULT/RANK_OUT_OF_RANGE');
+    expect(reasonOf(submit([row(ALICE, false, 60_000, { rank: 1 }), row(BOB, false, 61_000, { rank: 1 })]))).toBe('INVALID_RESULT/DUPLICATE_RANK');
+    expect(reasonOf(submit([row(ALICE, false, 60_000, { rank: 1 }), row(BOB, false, 61_000)]))).toBe('INVALID_RESULT/RANK_INCOMPLETE');
+    expect(reasonOf(submit([row(ALICE, false, 60_000, { rank: 1.5 }), row(BOB, false, 61_000, { rank: 2 })]))).toBe('BAD_REQUEST/');
+    expect(reasonOf(submit([row(ALICE, false, 60_000, { rank: 0 }), row(BOB, false, 61_000, { rank: 1 })]))).toBe('BAD_REQUEST/');
+    expect(stored(env, sid).state).toBe('started');
+  });
+
+  it('race_session_get returns confidence "server" for a session closed by the server (P-13, D-06)', () => {
+    const { sid, row } = startedPair('mm-confidence');
+    data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-conf', results: [row(ALICE, false, 60_000), row(BOB, false, 61_000)] }));
+    expect(stored(env, sid).confidence).toBe('server');
+    const seen = data(rpc<{ session: RaceSession }>(env, 'race_session_get', { ...FakeContext, userId: ALICE }, { sessionId: sid }));
+    expect(seen.session.confidence).toBe('server');
+  });
+
+  it('a relay race closed by the players\' reports stores its quorum confidence (P-13, D-06)', () => {
+    const as = (userId: string): IContext => ({ ...FakeContext, userId });
+    const loadout = { classId: 'D', bodyId: 'starter_viper' };
+    const created = data(rpc<{ sessionId: string }>(env, 'race_session_create', as(ALICE), {
+      matchId: 'm-quorum', mode: 'private', trackId: 'neon_blvd', size: 2, hostLoadout: loadout, hostUserId: ALICE,
+    }));
+    data(rpc(env, 'race_session_join', as(BOB), { sessionId: created.sessionId, userId: BOB, loadout }));
+    data(rpc(env, 'race_session_start', as(ALICE), { sessionId: created.sessionId }));
+    stored(env, created.sessionId).startedAt = Date.now() - 200_000;
+    const laps = [48_100, 48_100, 48_100];
+    for (const userId of [ALICE, BOB]) {
+      data(rpc(env, 'race_submit_result', as(userId), {
+        sessionId: created.sessionId, requestId: `req-${userId}`,
+        report: { userId, totalMs: 144_300, laps, isBotReport: false },
+      }));
+    }
+    expect(stored(env, created.sessionId).state).toBe('closed');
+    expect(stored(env, created.sessionId).confidence).toBe('quorum');
+    const seen = data(rpc<{ session: RaceSession }>(env, 'race_session_get', as(ALICE), { sessionId: created.sessionId }));
+    expect(seen.session.confidence).toBe('quorum');
+  });
+
+  it('estimated bots (no laps) close the race: ranks 1..4, bots not abandoned, humans paid (D-01)', () => {
+    const { sid, row } = startedPair('mm-est-a');
+    const bot = (rank?: number): Record<string, unknown> => ({ userId: null, isBot: true, displayName: 'Bot', totalMs: 0, laps: [], dnf: false, estimated: true, ...(rank !== undefined ? { rank } : {}) });
+    const results = [row(ALICE, false, 60_000, { rank: 1 }), row(BOB, false, 61_000, { rank: 2 }), bot(3), bot(4)];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-est-a', results }));
+    expect(submitted.officialResults.map((r) => [r.rank, r.isBot, r.abandoned])).toEqual([[1, false, false], [2, false, false], [3, true, false], [4, true, false]]);
+    expect(submitted.rewards[ALICE]?.coins).toBeGreaterThan(0);
+    expect(submitted.rewards[BOB]?.coins).toBeGreaterThan(0);
+  });
+
+  it('human 1st, estimated bot 2nd, human 3rd: the 3rd is paid from the size-4 row', () => {
+    const { sid, row } = startedPair('mm-est-b');
+    const bot = { userId: null, isBot: true, displayName: 'Bot', totalMs: 0, laps: [], dnf: false, estimated: true, rank: 2 };
+    const results = [row(ALICE, false, 60_000, { rank: 1 }), bot, row(BOB, false, 61_000, { rank: 3 }), { ...bot, rank: 4 }];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-est-b', results }));
+    expect(submitted.officialResults.map((r) => r.rank)).toEqual([1, 2, 3, 4]);
+    const quick = submitted.rewards[ALICE]!.coins - submitted.rewards[BOB]!.coins;
+    expect(quick).toBeGreaterThan(0);
+    // Same bonuses for both, so the difference is the gap of the "4" row: 100 - 50, times the mode multiplier.
+    expect(submitted.rewards[BOB]!.coins).toBeGreaterThanOrEqual(50);
+  });
+
+  it('estimated on a human is INVALID_RESULT ESTIMATED_NOT_BOT', () => {
+    const { sid, row } = startedPair('mm-est-c');
+    const r = server<RsSubmitResultsOutput>(env, 'rs_submit_results', {
+      sessionId: sid, requestId: 'req-est-c', results: [row(ALICE, false, 60_000, { estimated: true }), row(BOB, false, 61_000)],
+    });
+    expect(r.ok ? 'ok' : `${r.error.code}/${r.error.details?.reason}`).toBe('INVALID_RESULT/ESTIMATED_NOT_BOT');
+  });
+
+  it('with rank, a human listed with dnf keeps the server rank (no gap)', () => {
+    const { sid, row } = startedPair('mm-dnf-rank');
+    const bot = { userId: null, isBot: true, displayName: 'Bot', totalMs: 0, laps: [], dnf: false, estimated: true };
+    const results = [
+      row(ALICE, false, 60_000, { rank: 1 }), { ...bot, rank: 2 }, { ...bot, rank: 3 },
+      { userId: BOB, isBot: false, displayName: 'Bob', totalMs: 0, laps: [], dnf: true, rank: 4 },
+    ];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-dnf-rank', results }));
+    expect(submitted.officialResults.map((r) => [r.rank, r.userId === BOB ? 'bob' : '', r.abandoned])).toEqual([[1, '', false], [2, '', false], [3, '', false], [4, 'bob', true]]);
+  });
+
+  it('without rank an estimated bot goes behind the timed finishers and before the DNFs', () => {
+    const { sid, row } = startedPair('mm-est-e');
+    const results = [
+      { userId: null, isBot: true, displayName: 'Bot', totalMs: 0, laps: [], dnf: false, estimated: true },
+      { userId: BOB, isBot: false, displayName: 'Bob', totalMs: 0, laps: [], dnf: true },
+      row(ALICE, false, 60_000),
+    ];
+    const submitted = data(server<RsSubmitResultsOutput>(env, 'rs_submit_results', { sessionId: sid, requestId: 'req-est-e', results }));
+    expect(submitted.officialResults.map((r) => [r.rank, r.isBot, r.abandoned])).toEqual([[1, false, false], [2, true, false], [3, false, true]]);
+  });
 });

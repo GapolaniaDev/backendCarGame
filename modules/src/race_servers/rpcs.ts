@@ -34,6 +34,7 @@ import {
   type ReadSessionResult,
 } from '../race/session_repo';
 import type { RaceResult, RaceSession, RaceSubmitResultRewardEntry, RosterEntry } from '../race/types';
+import { payoutSizeForRows } from '../economy/rewards';
 import { requireRaceServer, secretsMatch } from './auth';
 import { readServer, releaseServerOfSession, writeServer } from './registry_repo';
 import { RACE_SERVER_CAPACITY_MAX, RACE_SERVER_PORT_MAX, type RaceServerRecord } from './types';
@@ -331,6 +332,10 @@ interface ServerResultInput {
   totalMs: number;
   laps: number[];
   dnf: boolean;
+  /** Finishing position decided by the server (1..rows); when present it overrides the time order (D-04). */
+  rank?: number;
+  /** True when the row is a bot placed by progress rather than by a measured time (informational). */
+  estimated?: boolean;
 }
 
 export interface RsSubmitResultsOutput {
@@ -352,6 +357,14 @@ function parseResultEntry(raw: unknown, index: number): Parsed<ServerResultInput
   }
   if (typeof r['isBot'] !== 'boolean') return fail('BAD_REQUEST', `${at}.isBot must be a boolean`);
   if (typeof r['dnf'] !== 'boolean') return fail('BAD_REQUEST', `${at}.dnf must be a boolean`);
+  const rank = r['rank'];
+  if (rank !== undefined && (typeof rank !== 'number' || !Number.isInteger(rank) || rank < 1)) {
+    return fail('BAD_REQUEST', `${at}.rank must be an integer >= 1`);
+  }
+  const estimated = r['estimated'];
+  if (estimated !== undefined && typeof estimated !== 'boolean') {
+    return fail('BAD_REQUEST', `${at}.estimated must be a boolean`);
+  }
   const name = r['displayName'];
   if (name !== undefined && (typeof name !== 'string' || name.length > NAME_MAX_LENGTH)) {
     return fail('BAD_REQUEST', `${at}.displayName must be a string of at most ${NAME_MAX_LENGTH} characters`);
@@ -363,7 +376,15 @@ function parseResultEntry(raw: unknown, index: number): Parsed<ServerResultInput
   }
   return {
     ok: true,
-    value: { userId, isBot: r['isBot'], totalMs: r['totalMs'], laps: laps.slice(), dnf: r['dnf'] },
+    value: {
+      userId,
+      isBot: r['isBot'],
+      totalMs: r['totalMs'],
+      laps: laps.slice(),
+      dnf: r['dnf'],
+      ...(rank !== undefined ? { rank } : {}),
+      ...(estimated !== undefined ? { estimated } : {}),
+    },
   };
 }
 
@@ -378,6 +399,33 @@ function parseResults(raw: unknown): Parsed<ServerResultInput[]> {
     out.push(entry.value);
   }
   return { ok: true, value: out };
+}
+
+/**
+ * The `rank` of every row, when the server sends them (D-04): all rows or
+ * none, each an integer in 1..rows, none repeated. Without ranks the order
+ * is by time.
+ */
+function validateRanks(inputs: readonly ServerResultInput[]): Failure | null {
+  const ranked = inputs.filter((e) => e.rank !== undefined).length;
+  if (ranked === 0) return null;
+  if (ranked !== inputs.length) {
+    return invalidResult('RANK_INCOMPLETE', 'rank must be present on every row or on none', {
+      ranked, rows: inputs.length,
+    });
+  }
+  const seenRanks = new Set<number>();
+  for (let i = 0; i < inputs.length; i += 1) {
+    const rank = inputs[i]!.rank!;
+    if (rank > inputs.length) {
+      return invalidResult('RANK_OUT_OF_RANGE', `results[${i}].rank ${rank} is above the ${inputs.length} rows`, {
+        rank, rows: inputs.length,
+      });
+    }
+    if (seenRanks.has(rank)) return invalidResult('DUPLICATE_RANK', `results[${i}].rank ${rank} appears twice`, { rank });
+    seenRanks.add(rank);
+  }
+  return null;
 }
 
 function invalidResult(reason: string, message: string, details: Record<string, unknown> = {}): Failure {
@@ -410,6 +458,8 @@ interface Placement {
   laps: number[];
   /** Position in the submitted list, the tie-break of equal times. */
   order: number;
+  /** Rank given by the server; overrides the time order when present. */
+  rank?: number;
 }
 
 /**
@@ -430,11 +480,16 @@ function buildOutcome(
   const laps = session.laps ?? track?.modes[session.mode] ?? 0;
   if (laps <= 0) return fail('INTERNAL', `session ${session.id} has no lap count`);
 
+  const badRanks = validateRanks(inputs);
+  if (badRanks !== null) return badRanks;
+  const byServerRank = inputs[0]!.rank !== undefined;
+
   const humanById = new Map<string, RosterEntry>();
   for (const e of session.roster) if (!e.isBot) humanById.set(e.userId, e);
   const seen = new Set<string>();
   const finishers: Placement[] = [];
-  const botDnf: Placement[] = [];
+  const dnfRows: Placement[] = [];
+  const estimatedBots: Placement[] = [];
   let needsReview = false;
 
   for (let i = 0; i < inputs.length; i += 1) {
@@ -452,8 +507,15 @@ function buildOutcome(
     if (seen.has(userId)) return invalidResult('DUPLICATE_RESULT', `results[${i}]: ${userId} appears twice`);
     seen.add(userId);
 
+    if (entry.estimated === true) {
+      // A bot that had not finished when the race closed, placed by progress (D-01): no times to check.
+      if (!entry.isBot) return invalidResult('ESTIMATED_NOT_BOT', `results[${i}]: only a bot can be estimated`);
+      if (entry.dnf) return invalidResult('ESTIMATED_WITH_DNF', `results[${i}]: an estimated bot cannot be dnf`);
+      estimatedBots.push({ userId, isBot: true, totalMs: 0, laps: [], order: i, ...rankOf(entry) });
+      continue;
+    }
     if (entry.dnf) {
-      if (entry.isBot) botDnf.push({ userId, isBot: true, totalMs: 0, laps: [], order: i });
+      dnfRows.push({ userId, isBot: entry.isBot, totalMs: 0, laps: [], order: i, ...rankOf(entry) });
       continue;
     }
     const invalid = validateFinisher(entry, i, laps);
@@ -462,20 +524,37 @@ function buildOutcome(
       const minLap = track?.minTimeMsByClass[humanById.get(userId)!.loadout.classId];
       if (minLap !== undefined && entry.laps.some((lap) => lap < minLap)) needsReview = true;
     }
-    finishers.push({ userId, isBot: entry.isBot, totalMs: entry.totalMs, laps: entry.laps.slice(), order: i });
+    finishers.push({ userId, isBot: entry.isBot, totalMs: entry.totalMs, laps: entry.laps.slice(), order: i, ...rankOf(entry) });
   }
 
-  finishers.sort((a, b) => a.totalMs - b.totalMs || a.order - b.order);
+  // With `rank` the server's order rules (D-04); without it, the time order.
+  finishers.sort(byServerRank
+    ? (a, b) => a.rank! - b.rank!
+    : (a, b) => a.totalMs - b.totalMs || a.order - b.order);
   const results: RaceResult[] = finishers.map((f, i) => ({
-    rank: i + 1, userId: f.userId, isBot: f.isBot, totalMs: f.totalMs, abandoned: false, laps: f.laps,
+    rank: byServerRank ? f.rank! : i + 1, userId: f.userId, isBot: f.isBot, totalMs: f.totalMs, abandoned: false, laps: f.laps,
   }));
+  // Estimated bots: the server's rank, or after every timed finisher in the sent order.
+  for (const b of estimatedBots) {
+    results.push({ rank: byServerRank ? b.rank! : results.length + 1, userId: b.userId, isBot: true, totalMs: 0, abandoned: false });
+  }
   const finishedById = new Map(finishers.map((f) => [f.userId, f]));
   const dnfIds = [
     ...session.roster.filter((e) => !e.isBot && !finishedById.has(e.userId)).map((e) => ({ userId: e.userId, isBot: false })),
-    ...botDnf.map((b) => ({ userId: b.userId, isBot: true })),
+    ...dnfRows.filter((r) => r.isBot).map((b) => ({ userId: b.userId, isBot: true })),
   ];
-  for (const d of dnfIds) {
-    results.push({ rank: results.length + 1, userId: d.userId, isBot: d.isBot, totalMs: 0, abandoned: true });
+  if (byServerRank) {
+    // DNF rows (human or bot) keep the rank the server gave them; humans absent from the rows go after every row.
+    const rowRank = new Map(dnfRows.map((r) => [r.userId, r.rank!]));
+    let next = inputs.length;
+    for (const d of dnfIds) {
+      results.push({ rank: rowRank.get(d.userId) ?? ++next, userId: d.userId, isBot: d.isBot, totalMs: 0, abandoned: true });
+    }
+    results.sort((a, b) => a.rank - b.rank);
+  } else {
+    for (const d of dnfIds) {
+      results.push({ rank: results.length + 1, userId: d.userId, isBot: d.isBot, totalMs: 0, abandoned: true });
+    }
   }
 
   const roster: RosterEntry[] = session.roster.map((e) => {
@@ -489,10 +568,16 @@ function buildOutcome(
       roster,
       results,
       confidence: 'server',
+      payoutSize: payoutSizeForRows(inputs.length),
       needsReview,
       ...(needsReview ? { reviewReason: REVIEW_LAP_BELOW_MIN } : {}),
     },
   };
+}
+
+/** Optional `rank` of a row as a spread-able fragment. */
+function rankOf(entry: ServerResultInput): { rank?: number } {
+  return entry.rank !== undefined ? { rank: entry.rank } : {};
 }
 
 /** The stored answer to `requestId`: a report-shaped row owned by the system user. */

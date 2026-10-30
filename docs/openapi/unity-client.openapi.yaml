@@ -4359,7 +4359,7 @@ paths:
         - "server-to-server"
       summary: "Submit the official results of the race (server-to-server)"
       operationId: "rs_submit_results"
-      description: "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). The race server is the authority of a dedicated race: this call closes the session with confidence `server` (it feeds the time and wins leaderboards like `quorum`), pays the coins and XP of the humans and frees the server. Checks: every finisher (`dnf` false) has as many `laps` as the session and `sum(laps) == totalMs`; every human (`isBot` false) is a human of the roster, once; bots (`isBot` true, `userId` null or an id of the server) only appear in the results and are never paid. A human lap under the class minimum of the track does not reject the results: the session is closed with `flags.needsReview = true` (`reviewReason: lap_below_min`). Humans that are not listed, or listed with `dnf`, are DNF. Ranks: finishers by `totalMs` (ties keep the sent order), then the DNFs. A session still `created` is started implicitly (`startedAt` = now) in the same close, so a failed `rs_session_start` does not lose the results. Idempotent by `requestId`: a retry returns the same response and pays nothing more; another `requestId` on a closed session is `CONFLICT`.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server)), `NOT_FOUND`, `CONFLICT` (`BAD_STATE`: the session is closed; `VERSION_CONFLICT`), `INVALID_RESULT` (`details.reason`: `LAP_COUNT_MISMATCH`, `LAP_SUM_MISMATCH`, `LAP_NOT_POSITIVE`, `NOT_IN_ROSTER`, `DUPLICATE_RESULT`, `BOT_ID_CLASH`), `BAD_REQUEST` (invalid body).\n\nMaintenance: not gated."
+      description: "Called by a dedicated race server (headless build), never by the game client, with the runtime `http_key` in the URL and `serverKey` in the body (must equal `RACE_SERVER_SECRET` of the server `.env`, compared in constant time). The race server is the authority of a dedicated race: this call closes the session with confidence `server` (it feeds the time and wins leaderboards like `quorum`), pays the coins and XP of the humans and frees the server. Checks: every finisher (`dnf` false) has as many `laps` as the session and `sum(laps) == totalMs`; every human (`isBot` false) is a human of the roster, once; bots (`isBot` true, `userId` null or an id of the server) only appear in the results and are never paid. A human lap under the class minimum of the track does not reject the results: the session is closed with `flags.needsReview = true` (`reviewReason: lap_below_min`). Humans that are not listed, or listed with `dnf`, are DNF. Ranks: with the optional per-row `rank` (integer 1..rows, on every row or on none, no repeats) the server order rules; without it, finishers by `totalMs` (ties keep the sent order), then the DNFs. The reward row is chosen by the number of rows (humans and bots) rounded up to 2/4/6. A session still `created` is started implicitly (`startedAt` = now) in the same close, so a failed `rs_session_start` does not lose the results. Idempotent by `requestId`: a retry returns the same response and pays nothing more; another `requestId` on a closed session is `CONFLICT`.\n\nPossible errors (`error.code`): `SERVICE_UNAVAILABLE` (`NOT_CONFIGURED`: `RACE_SERVER_SECRET` is empty, every call is rejected), `FORBIDDEN` (`BAD_SERVER_KEY`, or called with a player session; `NOT_ASSIGNED`: the session is not assigned to this server)), `NOT_FOUND`, `CONFLICT` (`BAD_STATE`: the session is closed; `VERSION_CONFLICT`), `INVALID_RESULT` (`details.reason`: `LAP_COUNT_MISMATCH`, `LAP_SUM_MISMATCH`, `LAP_NOT_POSITIVE`, `NOT_IN_ROSTER`, `DUPLICATE_RESULT`, `BOT_ID_CLASH`, `RANK_INCOMPLETE`, `RANK_OUT_OF_RANGE`, `DUPLICATE_RANK`, `ESTIMATED_NOT_BOT`, `ESTIMATED_WITH_DNF`), `BAD_REQUEST` (invalid body).\n\nMaintenance: not gated."
       security:
         - RuntimeHttpKey: []
       requestBody:
@@ -4734,6 +4734,9 @@ components:
           "$ref": "#/components/schemas/RaceFlags"
         version:
           type: "integer"
+        confidence:
+          "$ref": "#/components/schemas/Confidence"
+          description: "How the session was closed. Absent while the session is open and on sessions closed before this field existed."
         serverHosted:
           type: "boolean"
           description: "True when a dedicated race server runs the session (D-04). Clients then neither start nor report the race. Absent on relayed sessions."
@@ -8451,6 +8454,13 @@ components:
               dnf:
                 type: "boolean"
                 description: "Did not finish (`totalMs` and `laps` are then ignored)"
+              rank:
+                type: "integer"
+                minimum: 1
+                description: "Finishing position decided by the server (1..number of rows, no repeats). Send it on every row or on none; when present it overrides the order by time"
+              estimated:
+                type: "boolean"
+                description: "True for a bot that had not finished, placed by progress (bots only, with `dnf` false): its laps and totalMs are not checked, it is listed with totalMs 0 and abandoned false. Without `rank` it goes after the timed finishers and before the DNFs"
     RsSubmitResultsData:
       type: "object"
       required:

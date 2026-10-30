@@ -118,7 +118,7 @@ export function closeRace(
     sessionId: session.id,
     mode: session.mode,
     trackId: session.trackId,
-    size: session.size,
+    size: override?.payoutSize ?? session.size,
     results: outcome.results,
     flags: {
       needsReview: outcome.needsReview,

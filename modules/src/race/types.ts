@@ -151,6 +151,11 @@ export interface RaceSession {
   results: RaceResult[];
   flags: { needsReview: boolean; reviewReason?: string; botSession?: boolean };
   /**
+   * Confidence the session was closed with (D-06). Absent on open sessions
+   * and on sessions closed before this field existed.
+   */
+  confidence?: Confidence;
+  /**
    * True when a dedicated race server runs this session (D-04). Absent on
    * relay sessions. The clients then neither start nor report the race.
    */
