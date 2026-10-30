@@ -27,6 +27,8 @@ import type {
   RosterEntry,
 } from './types';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Composite storage key for a per-user report inside a session. */
 export function reportKey(sessionId: string, userId: string): string {
   return `${sessionId}/reports/${userId}`;
@@ -460,7 +462,7 @@ export function saveReportResponse(
   nk.storageWrite([{
     collection: RACE_SESSIONS_COLLECTION,
     key: reportKey(sessionId, report.userId),
-    userId: report.userId,
+    userId: SYSTEM_USER_ID,
     value: { ...report, response },
     permissionRead: 0,
     permissionWrite: 0,
@@ -469,20 +471,30 @@ export function saveReportResponse(
 
 /**
  * Read a single report by `(sessionId, userId)`. Returns `null` if the
- * player hasn't submitted yet. Owner is the joiner (perms 0/0 so only
- * the runtime can read/write).
+ * player hasn't submitted yet. The owner is the system user, so a bot (whose id
+ * is not a user UUID) can have a report too (perms 0/0: only the runtime reads
+ * and writes). Reports written before that were owned by the reporter: when no
+ * system-owned row exists, that owner is tried next (only a UUID can own one).
  */
 export function readReport(
   nk: INakama,
   sessionId: string,
   userId: string,
 ): PersistedReport | null {
-  const r = readJson<PersistedReport>(nk, {
+  const key = reportKey(sessionId, userId);
+  const current = readJson<PersistedReport>(nk, {
     collection: RACE_SESSIONS_COLLECTION,
-    key: reportKey(sessionId, userId),
+    key,
+    ownerId: SYSTEM_USER_ID,
+  });
+  if (current !== null) return current.value;
+  if (userId === SYSTEM_USER_ID || !UUID_PATTERN.test(userId)) return null;
+  const legacy = readJson<PersistedReport>(nk, {
+    collection: RACE_SESSIONS_COLLECTION,
+    key,
     ownerId: userId,
   });
-  return r === null ? null : r.value;
+  return legacy === null ? null : legacy.value;
 }
 
 /**
@@ -554,7 +566,7 @@ export function submitReport(
     {
       collection: RACE_SESSIONS_COLLECTION,
       key: reportKey(session.id, reporterId),
-      userId: reporterId,
+      userId: SYSTEM_USER_ID,
       value: persisted as unknown as PersistedReport,
       permissionRead: 0,
       permissionWrite: 0,

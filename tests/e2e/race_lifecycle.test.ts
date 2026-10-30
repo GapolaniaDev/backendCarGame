@@ -672,7 +672,7 @@ describe('race_lifecycle (Chunk 5)', () => {
         null,
         submitPayload(sid, makeReport(PLAYER_A)),
       );
-      const reportKey = `race_sessions/${sid}/reports/${PLAYER_A}/${PLAYER_A}`;
+      const reportKey = `race_sessions/${sid}/reports/${PLAYER_A}/${SYSTEM_USER_ID}`;
       expect(env.fakeNakama.store.has(reportKey)).toBe(true);
     });
 
@@ -909,7 +909,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       // PLAYER_A is not the host. isBotReport=true requires the caller
       // to be the host.
       const submitEnv = call<unknown>(env, 'race_submit_result', null,
-        submitPayload(sid, { userId: 'bot-1', totalMs: 120_000, laps: [40_000, 40_000, 40_000], isBotReport: true }, PLAYER_A));
+        submitPayload(sid, { userId: 'bot_qb_d4_0', totalMs: 120_000, laps: [40_000, 40_000, 40_000], isBotReport: true }, PLAYER_A));
       expect(submitEnv.ok).toBe(false);
       if (submitEnv.ok) return;
       expect(submitEnv.error.code).toBe('FORBIDDEN');
@@ -1076,7 +1076,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       if (obj) {
         const v = obj.value as { roster: Array<{ userId: string; loadout: unknown; isBot: boolean }> };
         v.roster.push({
-          userId: 'bot-1',
+          userId: 'bot_qb_d4_0',
           loadout: { classId: 'B', bodyId: 'coupe' },
           isBot: true,
         });
@@ -1086,7 +1086,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       const humanSubmit = submitReport(sid, HOST_ID, 130_000);
       expect(humanSubmit.ok).toBe(true);
       // HOST submits the bot report on behalf of the bot.
-      const botSubmit = submitReport(sid, 'bot-1', 120_000, { isBot: true });
+      const botSubmit = submitReport(sid, 'bot_qb_d4_0', 120_000, { isBot: true });
 
       const last = botSubmit as {
         ok: true;
@@ -1101,7 +1101,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect(last.data.flags.needsReview).toBe(false);
       expect(last.data.officialResults).toBeDefined();
       // Bot wins (lower totalMs).
-      expect(last.data.officialResults?.[0]?.userId).toBe('bot-1');
+      expect(last.data.officialResults?.[0]?.userId).toBe('bot_qb_d4_0');
       expect(last.data.officialResults?.[0]?.isBot).toBe(true);
       expect(last.data.officialResults?.[1]?.userId).toBe(HOST_ID);
     });

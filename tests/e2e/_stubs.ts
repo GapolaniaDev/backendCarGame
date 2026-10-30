@@ -65,6 +65,26 @@ function assertServerOnlyWrite(obj: IStorageObject): void {
   }
 }
 
+/** Ids of server-made bots ("bot_qb_d4_0", "bot-1"): never valid storage owners. */
+const BOT_ID_PATTERN = /^bot[-_]/i;
+
+/** Nakama storage owners are user UUIDs (or the system user); anything else is rejected by the real server. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The real server rejects a storage owner that is not a UUID (a bot id such
+ * as `bot_qb_d4_0` fails with "invalid user ID"). Mirroring it here keeps a
+ * bot-owned object from passing the e2e suite and failing in production.
+ */
+function assertValidOwner(op: string, c: string, k: string, userId: string | undefined): void {
+  if (userId === undefined || userId === '') return;
+  if (userId === SYSTEM_USER_ID || UUID_PATTERN.test(userId)) return;
+  // Many legacy suites use short human ids ("u1"), so the strict UUID check covers the race
+  // collections plus any bot-looking owner in every collection.
+  if (!c.startsWith('race_') && !BOT_ID_PATTERN.test(userId)) return;
+  throw new Error(`invalid user ID: storage ${op} of ${c}/${k} with owner '${userId}' (must be a UUID or the system user)`);
+}
+
 // ─── FakeContext ─────────────────────────────────────────────────────────────
 
 /** Constant IContext value — the `_brand` is the only required discriminator. */
@@ -204,6 +224,7 @@ class FakeNakamaCore {
   storageRead(keys: IStorageKey[]): IStorageObject[] {
     const result: IStorageObject[] = [];
     for (const k of keys) {
+      assertValidOwner('read', k.collection, k.key, k.userId);
       const obj = this.store.get(storageKeyString(k));
       if (obj !== undefined) result.push(obj);
     }
@@ -214,6 +235,7 @@ class FakeNakamaCore {
     // Like v3.27.0: the batch is one transaction, a `version` must match
     // (`*` = must not exist), and nothing is written when one fails.
     for (const obj of objs) {
+      assertValidOwner('write', obj.collection, obj.key, obj.userId);
       assertServerOnlyWrite(obj);
       const cur = this.store.get(storageKeyString(obj));
       const v = obj.version;
