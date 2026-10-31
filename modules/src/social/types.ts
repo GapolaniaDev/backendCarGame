@@ -125,6 +125,8 @@ export interface InviteRespondOutput {
 
 export interface BlockAddOutput {
   created: boolean; // true = newly inserted, false = already existed
+  /** True when the two players were friends: both friend edges were deleted (plan B2, D-10). */
+  unfriended: boolean;
 }
 
 export interface BlockRemoveOutput {

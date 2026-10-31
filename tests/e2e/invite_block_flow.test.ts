@@ -22,6 +22,7 @@ import type { LoadedBundle } from './_stubs';
 import {
   INVITES_COLLECTION,
   BLOCKS_COLLECTION,
+  FRIENDS_EDGE_COLLECTION,
   INVITE_TTL_MS,
   type InviteRecord,
   type BlockRecord,
@@ -73,6 +74,12 @@ interface BlockCard {
 
 interface BlockAddOutput {
   created: boolean;
+  unfriended: boolean;
+}
+
+interface FriendListOutput {
+  friends: { friendId: string }[];
+  count: number;
 }
 
 interface BlockRemoveOutput {
@@ -217,6 +224,36 @@ function seedBlock(
     },
   );
   return rec;
+}
+
+function seedFriendEdge(env: LoadedBundle, ownerId: string, friendId: string): void {
+  env.fakeNakama.store.set(
+    `${FRIENDS_EDGE_COLLECTION}/${friendId}/${ownerId}`,
+    {
+      collection: FRIENDS_EDGE_COLLECTION,
+      key: friendId,
+      userId: ownerId,
+      value: { schemaVersion: 1, userId: ownerId, friendId, friendCode: 'CODE', since: Date.now() },
+      version: 'v00000001',
+      permissionRead: 1,
+      permissionWrite: 0,
+      createTime: new Date().toISOString(),
+      updateTime: new Date().toISOString(),
+      expiresAt: null,
+    },
+  );
+}
+
+function seedFriendship(env: LoadedBundle, a: string, b: string): void {
+  seedFriendEdge(env, a, b);
+  seedFriendEdge(env, b, a);
+}
+
+function callFriendListGet(env: LoadedBundle, caller: string): Resp<FriendListOutput> {
+  return call<Resp<FriendListOutput>>(
+    env, 'friend_list_get', caller,
+    { callerUserId: caller, clientVersion: '1.0.0', platform: 'ios' },
+  );
 }
 
 function setMaintenance(env: LoadedBundle): void {
@@ -398,6 +435,41 @@ describe('invite_block_flow e2e (Phase 7 Chunk 2)', () => {
     const second = callBlockAdd(env, USER_A, USER_B);
     expect(second.ok).toBe(true);
     if (second.ok) expect(second.data.created).toBe(false);
+  });
+
+  it('block_add on friends removes both friend edges (unfriended:true), repeat is unfriended:false', () => {
+    seedFriendship(env, USER_A, USER_B);
+    const first = callBlockAdd(env, USER_A, USER_B);
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.data).toEqual({ created: true, unfriended: true });
+
+    for (const user of [USER_A, USER_B]) {
+      const list = callFriendListGet(env, user);
+      expect(list.ok).toBe(true);
+      if (list.ok) expect(list.data.friends.map((f) => f.friendId)).toEqual([]);
+    }
+
+    const second = callBlockAdd(env, USER_A, USER_B);
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.data).toEqual({ created: false, unfriended: false });
+  });
+
+  it('block_add on a non-friend → unfriended:false', () => {
+    const res = callBlockAdd(env, USER_A, USER_B);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data).toEqual({ created: true, unfriended: false });
+  });
+
+  it('block_add with an existing block and a seeded friendship → created:false, unfriended:true, no edges', () => {
+    seedBlock(env, USER_A, USER_B);
+    seedFriendship(env, USER_A, USER_B);
+    const res = callBlockAdd(env, USER_A, USER_B);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data).toEqual({ created: false, unfriended: true });
+    for (const user of [USER_A, USER_B]) {
+      const list = callFriendListGet(env, user);
+      if (list.ok) expect(list.data.count).toBe(0);
+    }
   });
 
   it('block_add self → BAD_REQUEST', () => {

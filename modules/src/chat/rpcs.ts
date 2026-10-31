@@ -258,14 +258,8 @@ export function validateChatSend(
       message: 'cannot chat with yourself',
     };
   }
-  const edge = readFriendEdge(nk, callerId, peerId);
-  if (edge === null) {
-    return {
-      ok: false,
-      code: 'FORBIDDEN',
-      message: 'not friends with target user',
-    };
-  }
+  // The block goes first: blocking also removes the friendship (plan B2,
+  // D-10), and the client still needs `details.reason = 'BLOCKED'`.
   const block = checkChatSendBlock(nk, logger, callerId, peerId);
   if (!block.allowed) {
     return {
@@ -273,6 +267,14 @@ export function validateChatSend(
       code: 'FORBIDDEN',
       message: 'cannot message this player',
       details: { reason: 'BLOCKED' },
+    };
+  }
+  const edge = readFriendEdge(nk, callerId, peerId);
+  if (edge === null) {
+    return {
+      ok: false,
+      code: 'FORBIDDEN',
+      message: 'not friends with target user',
     };
   }
   return {

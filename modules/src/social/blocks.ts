@@ -22,6 +22,7 @@ import {
   readBlock,
   writeBlockCreate,
 } from './blocks_repo';
+import { deleteFriendEdge, readFriendEdge } from './friends_repo';
 import {
   BLOCK_LIST_PAGE_SIZE,
   type BlockAddOutput,
@@ -107,10 +108,29 @@ export function block_add_impl(
     return toJson(err('BAD_REQUEST', 'cannot block yourself'));
   }
 
+  // Blocking ends any friendship (D-10). Runs even when the block already
+  // exists, so a friendship seeded after the block is still removed.
+  const wasFriend =
+    readFriendEdge(nk, caller.id, targetUserId) !== null ||
+    readFriendEdge(nk, targetUserId, caller.id) !== null;
+  if (wasFriend) {
+    try {
+      deleteFriendEdge(nk, caller.id, targetUserId);
+      deleteFriendEdge(nk, targetUserId, caller.id);
+    } catch (e) {
+      logger.error(
+        'block_add: friendship delete failed: %s',
+        e instanceof Error ? e.message : String(e),
+      );
+      return toJson(err('INTERNAL', 'failed to remove friendship'));
+    }
+    emit(nk, logger, 'friend_removed', { friendId: targetUserId, reason: 'blocked' }, { userId: caller.id });
+  }
+
   // Idempotent insert-if-absent.
   const existing = readBlock(nk, caller.id, targetUserId);
   if (existing !== null) {
-    const out: BlockAddOutput = { created: false };
+    const out: BlockAddOutput = { created: false, unfriended: wasFriend };
     return toJson(ok(out));
   }
 
@@ -132,7 +152,7 @@ export function block_add_impl(
 
   emit(nk, logger, 'player_blocked', { targetUserId }, { userId: caller.id });
 
-  const out: BlockAddOutput = { created: true };
+  const out: BlockAddOutput = { created: true, unfriended: wasFriend };
   return toJson(ok(out));
 }
 
