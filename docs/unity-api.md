@@ -379,7 +379,7 @@ same response.
     "<uuid>": { "userId": "<uuid>", "displayName": "Hugo", "avatarUrl": "https://cdn/avatar.png" }
     // users without a profile fall back to { userId, displayName: <username>, avatarUrl: null }
   },
-  "nextCursor": "<opaque>",   // null on the last page
+  "clubs": {},                // club tables: { "<clubId>": { clubId, name, emblemId, memberCount } }
   "prevCursor": null          // null on the first page
 }
 ```
@@ -394,6 +394,18 @@ same response.
 
 `totalCount` counts the whole table. A malformed `cursor` → `BAD_REQUEST`. A
 season's ranked table that does not exist yet → an empty board.
+
+**Club tables** (`club_week`, `ownerKind: "club"`): `global` and `around_me` only; `friends` → `BAD_REQUEST`. `around_me` centers on `aroundClubId` (default the caller's club). A record's `username` is the club name; `clubs` maps the page's club ids and `ownerRecord` to `{clubId, name, emblemId, memberCount}`. `ownerRecord` is `null` when the caller has no club or the club has no points. A deleted club comes out as `username: ""` without a `clubs` entry. Example:
+
+```json
+{ "leaderboardId": "club_week", "view": "global", "ownerKind": "club", "totalCount": 2,
+  "records": [ { "ownerId": "c-1", "username": "Night Riders", "rank": 1, "score": 42, "subscore": 1761955200000, "metadata": {} } ],
+  "ownerRecord": { "ownerId": "c-2", "username": "Slow Pokes", "rank": 2, "score": 7, "subscore": 1761955200000, "metadata": {} },
+  "profiles": {},
+  "clubs": { "c-1": { "clubId": "c-1", "name": "Night Riders", "emblemId": "emblem_default", "memberCount": 5 },
+             "c-2": { "clubId": "c-2", "name": "Slow Pokes", "emblemId": "emblem_default", "memberCount": 2 } },
+  "nextCursor": null, "prevCursor": null }
+```
 
 **`limit`**: clamped to `[1, 100]`, default 20.
 
@@ -1813,7 +1825,7 @@ See `docs/missions.md`, `docs/pass.md`, `docs/economy.md`,
 `docs/garage.md`.
 ## 20. Phase 7 RPCs — Social, Parties, Moderation
 
-Phase 7 ships 26 RPCs + 1 fix across 8 chunks (friend codes,
+Phase 7 ships 27 RPCs + 1 fix across 8 chunks (friend codes,
 invites, blocks, clubs CRUD + membership, chat, moderation, parties,
 party_join fix). Server: storage-based + flat invitations + storage
 parties (Nakama 3.27 JS lacks `registerParty*` API).
@@ -1825,17 +1837,18 @@ All Phase 7 RPCs follow the standard `Resp<T> = Ok<T> | Err` envelope
 |---|---|---|---|
 | `friend_code_get` | owner | YES | `{code, userId, createdAt}` |
 | `friend_add_by_code` | owner | YES | `{friendId, friendCode, since, mutual}` |
-| `friend_list_get` | owner | YES | `{items, count}` |
-| `friend_remove` | owner | YES | `{removed: true}` |
-| `recent_rivals_get` | owner | YES | `{rivals, count}` |
+| `friend_list_get` | owner | YES | `{friends, count}` (cards with `displayName`) |
+| `friend_remove` | owner | YES | `{removed: true, friendId}` |
+| `recent_rivals_get` | owner | YES | `{rivals, count}` (cards with `displayName`) |
 | `invite_send` | owner | YES | `{inviteId, delivered, expiresAt}` |
 | `invite_list` | owner | YES | `{items, count}` |
 | `invite_respond` | owner | YES | `{status, inviteId, partyId?}` |
-| `block_add` | owner | YES | `{created: boolean}` |
+| `block_add` | owner | YES | `{created, unfriended}` |
 | `block_remove` | owner | YES | `{removed: boolean}` |
-| `block_list` | owner | YES | `{items, count}` |
+| `block_list` | owner | YES | `{blocks, count}` (cards with `displayName`) |
 | `club_create` | level ≥ 8, not in a club | YES | `{clubId, name, costPaid, newBalance}` |
-| `club_get` | any | YES | `{club, members, weeklyRank}` |
+| club_get | any | YES | {club, members, weeklyRank} |
+| club_mine | any | YES | {inClub, club, membership, weeklyRank} |
 | `club_search` | any | YES | `{clubs, nextCursor}` |
 | `club_join` | level ≥ 8, not in a club (T-21) | YES | `{clubId, userId, role, joinedAt}` |
 | `club_update` | leader / admin | YES | `{clubId, updatedAt}` |
@@ -1859,14 +1872,13 @@ All Phase 7 RPCs follow the standard `Resp<T> = Ok<T> | Err` envelope
 
 ### 20.1 Friend codes (Chunk 1)
 
-8-character codes over a 31-char alphabet (`0-9 A-Z minus I, O, U`
-case-folded). Salted by `FRIEND_CODE_SALT='cv-friend-code-v1'`.
-Generated deterministically via SHA-256(userId || salt) → first 8
-chars of the alphabet index. Friend codes are immutable once issued.
+8-character codes over a 31-symbol alphabet (A-Z without I, L, O, plus digits 2-9). Deterministic: derived from `sha256(userId + ':cv-friend-code-v1')` (`FRIEND_CODE_SALT`), each of the first 8 digest bytes reduced modulo 31. Friend codes are immutable once issued.
 
-Mutual friendships: both sides write a row to `friend_edges`. Caller
+Mutual friendships: both sides write a row to `friends_edge`. Caller
 side: `owner=caller, key=friendId`. Friend side: `owner=friendId,
 key=caller`. Either side may `friend_remove`.
+
+Names: friend, rival, block and club member cards carry `displayName` (profile name, else account username, else user id). Blocking a friend removes the friendship on both sides (`block_add` → `unfriended: true`); unblocking does not restore it.
 
 ### 20.2 Invites (Chunk 2 + Chunk 9 fix)
 
@@ -1889,6 +1901,8 @@ A club is a CLOSED Nakama group; the roster is the group joined with one
 membership row per player (`clubs_members/current/{userId}`), which holds
 the role and the weekly contribution (plan T-21).
 
+`club_create`'s `motto` is optional (absent or blank → `''`).
+
 `club_join { clubId }` is the only way in: one club per player, room
 left, level ≥ 8, the club's minimum division, no block with the leader
 or an admin. Refusals carry `details.reason`: `CONFLICT`
@@ -1896,10 +1910,22 @@ or an admin. Refusals carry `details.reason`: `CONFLICT`
 (`BLOCKED` | `MIN_LEVEL` | `MIN_DIVISION`). The native `JoinGroup` and the
 other client group calls answer 403. `club_promote` / `club_demote` accept
 `officer` as an alias of `admin`. `club_members_list` pages with an
-offset cursor over leader, admins, then members by join date. Weekly
-points live in the `club_week` leaderboard (lazy reset on the first
-`club_get` / `club_search` of the week); the winners' reward is a
-claimable inbox message.
+offset cursor over leader, admins, then members by join date. Weekly points (win 3, podium 2, finish 1) live in the `club_week` leaderboard (Monday 00:00 UTC reset) and in each club's `weeklyPoints` / member's `weeklyContribution`, which reset on the first read or race of the club in the new week. Within 5 minutes after Monday 00:00 UTC the service ticker rewards the top 3 contributors of last week's winning club (claimable inbox `club_week_reward`, 250 coins, once per week). `club_get.weeklyRank` / `club_mine.weeklyRank` is the club's rank this week, `null` without points. Read the table with `lb_get { leaderboardId: 'club_week', view: 'global' | 'around_me' }` (§6.7).
+
+`club_mine {}` (`callerUserId` optional) answers:
+
+```json
+// no club
+{ "inClub": false, "club": null, "membership": null, "weeklyRank": null }
+// in a club
+{ "inClub": true,
+  "club": { "clubId": "c-1", "name": "Night Riders", "motto": "", "emblemId": "emblem_default", "region": "us", "minDivision": "bronce",
+            "leaderId": "u-1", "memberCount": 5, "maxMembers": 30, "weeklyPoints": 42, "createdAt": 1761955200000, "open": false },
+  "membership": { "role": "member", "joinedAt": 1761955200000, "weeklyContribution": 12 },
+  "weeklyRank": 3 }
+```
+
+Errors: `UNAUTHENTICATED`, `RATE_LIMITED` (60/min), `SERVICE_UNAVAILABLE` (maintenance). A membership row whose club no longer exists answers `inClub: false`.
 
 ### 20.4 Chat (Chunk 6)
 
@@ -1913,7 +1939,7 @@ flow).
 
 `chat_list { channelType, targetId, limit?, cursor? }` returns the
 history newest first, 7-day retention; pass `nextCursor` back for the
-next (older) page (`''` = no more). `senderName` is the account username.
+next (older) page (`''` = no more). `senderName` is the account username at send time; `senderDisplayName` is the sender's current profile name.
 A club history hides the messages of senders with a block with the
 reader. `validateChatSend` runs inside the RPC (no native channel).
 

@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-91 tables, three classes (`wins_week`, `tt_*`, `lap_*`), plus one ranked rating table per season (`ranked_{seasonId}`, see `docs/ranked.md`). The server is the only writer. Clients read through `lb_get` (or Nakama's native `ListLeaderboardRecords`, which the Unity client uses for `wins_week`) and never write directly. Every server-written record carries a `__server_token__` metadata stamp, the session id of the race that produced it and the owner's account username.
+137 tables, four groups (`wins_week`, `club_week`, `tt_*`, `lap_*`), plus one ranked rating table per season (`ranked_{seasonId}`, see `docs/ranked.md`). The server is the only writer. Clients read through `lb_get` (or Nakama's native `ListLeaderboardRecords`, which the Unity client uses for `wins_week`) and never write directly. Every server-written record carries a `__server_token__` metadata stamp, the session id of the race that produced it and the owner's account username.
 
 ## Table order (plan T-13)
 
@@ -33,12 +33,22 @@ resetSchedule: 0 0 * * 1        # Monday 00:00 UTC
 | Modes that increment it | `quick`, `ranked` (no time_trial, no private, no bots) |
 | Subject | the rank-1 finisher of each closed session |
 
-### `_weekly` time / lap tables — `{track}_{class}_week`
+### `club_week` — weekly club points
+
+```
+id:           club_week
+operator:     incr
+sortOrder:    desc
+resetSchedule: 0 0 * * 1        # Monday 00:00 UTC
+ownerKind:    club              # owner is the club id
+```
+
+Points from finished races: win 3, podium 2, finish 1 (no bots, no abandons). Read it with `lb_get` (see Read pipeline).
+
+### `_weekly` time tables — `{track}_{class}_week`
 
 ```
 tt_{track}_{class}_week
-  operator: best, sortOrder: asc, resetSchedule: 0 0 * * 1
-lap_{track}_{class}_week
   operator: best, sortOrder: asc, resetSchedule: 0 0 * * 1
 ```
 
@@ -59,11 +69,13 @@ All-time best per (track, class). Never reset.
 
 | Axis | Values | Count |
 |---|---|---|
-| tracks | `neon_blvd`, `reef_run`, `mountain_pass`, `canyon_drift`, `harbor_sprint`, `factory_loop` | 6 |
+| tracks | `neon_blvd`, `reef_run`, `mountain_pass`, `canyon_drift`, `harbor_sprint`, `factory_loop`, `stadium_today`, `desert_circuit`, `arctic_circuit` | 9 |
 | classes | `D`, `C`, `B`, `A`, `S` | 5 |
 | patterns | `tt_all`, `tt_week`, `lap_all` (lap has no `_week` pattern) | 3 |
 
-Tables: `1 (wins_week) + 6 × 5 × 3 = 91`.
+Tables: `1 (wins_week) + 1 (club_week) + 9 × 5 × 2 (tt_*_all, tt_*_week) + 9 × 5 (lap_*_all) = 137`.
+
+`tt_*` tables only take time-trial runs; `lap_*` takes the best lap of any mode.
 
 ### Deprecated
 
@@ -103,7 +115,7 @@ Confidence is computed by `computeQuorum(reports)` in `race/ordering.ts`:
 | | `quorum` | `server` (all-bot) | `client` (review pending) |
 |---|---|---|---|
 | `tt_*_all` / `tt_*_week` | ✅ | ✅ | ✅ only when `mode === 'time_trial'` |
-| `lap_*_all` | ✅ | ✅ | ✅ only when `mode === 'time_trial'` |
+| `lap_*_all` | ✅ | ✅ | ✅ in every mode |
 | `wins_week` | ✅ +1 for rank-1 in `quick`/`ranked` | ❌ (bots don't win) | ❌ |
 
 `time_trial` mode bypasses the `client` gate because the soloist's run is self-evidenced — there's no second client to disagree with.
@@ -158,6 +170,8 @@ friends     → caller + friends_edge friends            → ownerRecord = aroun
 
 Input `cursor` (optional) is the `nextCursor` / `prevCursor` of a previous page of the same view; a malformed one is `BAD_REQUEST`. Output adds `nextCursor`, `prevCursor` (null at either end) and `records[].username`; `totalCount` is the number of ranked records in the whole table. A `ranked_{seasonId}` id is accepted; while that table does not exist the answer is an empty board.
 
+**Club tables** (`club_week`, `ownerKind: club`): `global` and `around_me` only; `friends` → `BAD_REQUEST`. `around_me` centers on `aroundClubId` (default the caller's club). Each record's `username` is the club name; `clubs` maps the page's club ids and `ownerRecord` to `{clubId, name, emblemId, memberCount}`. `ownerRecord` is `null` without club points. A deleted club comes out as `username: ""` without a `clubs` entry. Player tables answer as before, plus `"ownerKind": "user"` and `"clubs": {}`.
+
 ### Clamping
 
 - `limit` defaults to **20** and is clamped to `[1, 100]`. Out-of-range values return the default; `0`, `NaN`, negative → default 20.
@@ -193,7 +207,7 @@ Tests covering the reset behavior live in `tests/e2e/leaderboards-reset.test.ts`
 ## Operations checklist
 
 - [ ] Confirm `wins_week` reset schedule is `0 0 * * 1` (Monday 00:00 UTC) on production deploys.
-- [ ] Confirm 91 tables are registered on first boot (`tests/e2e/leaderboards-boot.test.ts` checks this).
+- [ ] Confirm 137 tables are registered on first boot (`tests/e2e/leaderboards-boot.test.ts` checks this).
 - [ ] Confirm `__server_token__ === 'phase2'` is present on every record written post-Phase 2.
 - [ ] Confirm `lb_get` `around_me` does not 404 when the caller has no record (it returns the leading slice).
 - [ ] Confirm the `catalogs/profiles.json` blocked-words list is reviewed on each release (the catalog is shipped in the bundle, not hot-reloaded).

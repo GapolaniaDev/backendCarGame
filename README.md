@@ -396,7 +396,7 @@ The event now carries an additional `sessionId` (already present) and the subscr
 
 | RPC | Inputs | Errors | Notes |
 |---|---|---|---|
-| `lb_get` | `{ leaderboardId, view, limit?, aroundUserId?, callerUserId }` | `BAD_REQUEST`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND` | `view ∈ {global, around_me, friends}`. `limit` clamped to `[1,100]` (default 20). Profiles enriched in the same response. `friends` currently returns just the caller (graph stub). |
+| `lb_get` | `{ leaderboardId, view, limit?, aroundUserId?, callerUserId }` | `BAD_REQUEST`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND` | `view ∈ {global, around_me, friends}`. `limit` clamped to `[1,100]` (default 20). Profiles enriched in the same response. `friends` lists the caller and their friends with global ranks; club tables (`club_week`) accept `global` / `around_me`. |
 | `profile_get` | `{ callerUserId }` | `UNAUTHENTICATED`, `FORBIDDEN` | Reads the caller's profile; auto-creates a default (`displayName='Racer'`, `avatarUrl=null`) on first read. |
 | `profile_update` | `{ displayName?, avatarUrl?, callerUserId }` | `BAD_REQUEST`, `FORBIDDEN`, `CONFLICT`, `RATE_LIMITED` | CAS update via storage `version`. Validation against `catalogs/profiles.json`: displayName 2-20 chars, pattern `^[A-Za-z0-9 _\-.]+$`, blocked-words list; avatarUrl ≤ 512 chars. Rejects payload `userId` that doesn't match the caller (spoof defense). |
 
@@ -867,10 +867,7 @@ clubs (with weekly leaderboards), chat (with multi-lang blocked words
 2. **`registerBeforeAddGroupUsers` missing** → `checkClubJoinGate` is a
    pure helper called inside the runtime hook path. Not enforced at
    the runtime layer today.
-3. **`registerLeaderboardReset` missing** → club weekly reset is lazy on
-   the first `club_get`/`club_search` after Monday. A
-   `clubs_week_reset` global marker prevents double-send across
-   multi-club fan-out.
+3. **`registerLeaderboardReset` missing** → club weekly points reset on Monday 00:00 UTC: the first read or race of each club in the new week resets its points, and the service ticker rewards the top 3 contributors of last week's winning club within 5 minutes (`club_week_reward`, once per week).
 4. **`registerBeforeSendChannelMessage` missing** → `validateChatSend`
    is called synchronously from the `chat_send` RPC. Blocked-word +
    rate + silence checks fire before the chat_history write.

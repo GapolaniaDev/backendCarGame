@@ -18,7 +18,7 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 | `clubs_metadata/{clubId}` | system | public | server | `{schemaVersion, clubId, leaderId, motto, emblemId, region, minDivision, weeklyPoints, createdAt}` | Chunk 3 |
 | `clubs_members/current/{userId}` | owner | owner | server | `{schemaVersion, clubId, userId, role, joinedAt, weeklyContribution}`: ONE row per player (create-only = one club per player) | Chunk 4, T-21 |
 | `clubs_created/{userId}` | owner | owner | server | lifetime counter (one club founded per player) | Chunk 3 |
-| `club_week` (leaderboard) | - | - | server | weekly per-club points, owner = club id | Chunk 5 |
+| `club_week` (leaderboard) | - | - | server | weekly per-club points, owner = club id; in the leaderboards catalog (`ownerKind: club`), readable with `lb_get` | Chunk 5 |
 | `clubs_week_meta/{clubId}` | system | owner | server | which ISO week the club is scored in | Chunk 5 |
 | `clubs_week_reset/{week}` | system | owner | server | global reset marker, claimed create-only before the weekly reward | Chunk 5 |
 | `chat_channels/{channelId}` | system | server | server | `{schemaVersion, channelId, lastSeq}` | T-22 |
@@ -37,9 +37,9 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 |---|---|---|
 | `friend_code_get` | owner | `{code, userId, createdAt}` |
 | `friend_add_by_code` | owner | `{friendId, friendCode, since, mutual}` |
-| `friend_list_get` | owner | `{items: [...], count}` |
-| `friend_remove` | owner | `{removed: true}` |
-| `recent_rivals_get` | owner | `{rivals: [...], count}` |
+| `friend_list_get` | owner | `{friends: [...] (cards with `displayName`), count}` |
+| `friend_remove` | owner | `{removed: true, friendId}` |
+| `recent_rivals_get` | owner | `{rivals: [...] (cards with `displayName`), count}` |
 
 ### Invites + blocks (Chunk 2)
 
@@ -48,16 +48,17 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 | `invite_send` | owner | `{inviteId, delivered: 'online'\|'offline', expiresAt}` |
 | `invite_list` | owner | `{items, count}` |
 | `invite_respond` | owner | `{status, inviteId, partyId?}` — `partyId` set on accept when `payload.partyId` is present (Chunk 9) |
-| `block_add` | owner | `{created: boolean}` |
+| `block_add` | owner | `{created, unfriended}` |
 | `block_remove` | owner | `{removed: boolean}` |
-| `block_list` | owner | `{items, count}` |
+| `block_list` | owner | `{blocks: [...] (cards with `displayName`), count}` |
 
 ### Clubs (Chunks 3-5)
 
 | RPC | Auth | Returns |
 |---|---|---|
 | `club_create` | level 8 + 5000 coins, not in a club | `{clubId, name, costPaid, newBalance}` |
-| `club_get` | any | `{club, members: [leader], weeklyRank}` |
+| club_get | any | `{club, members: [leader], weeklyRank}` |
+| club_mine | any | `{inClub, club, membership, weeklyRank}` |
 | `club_search` | any | `{clubs, nextCursor}` (name prefix, region filter) |
 | `club_join` | level 8, not in a club (T-21) | `{clubId, userId, role: 'member', joinedAt}` |
 | `club_update` | leader / admin | `{clubId, updatedAt}` |
@@ -114,7 +115,7 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
   one batched read of `limit` keys (default 50, max 100); `nextCursor` is
   the next number, `''` at the end; a malformed cursor is `BAD_REQUEST`.
 - `senderName` is the account username (`usersGetId`; 3.27 nests it under
-  `accountGetId(...).user`).
+  `accountGetId(...).user`). `senderDisplayName` is the sender's current profile name.
 
 #### Friend codes and blocks (plan T-22)
 
@@ -143,7 +144,7 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 | D3 | Either-side block → FORBIDDEN on invite + party_invite |
 | D4 | Status transitions: `pending → accepted/declined/expired` (lazy) |
 | D5 | Invite ID via `nk.uuidv4()` |
-| D6 | Friend code 8 chars, 31-char alphabet, salted (`cv-friend-code-v1`) |
+| D6 | Friend code 8 chars, 31-symbol alphabet (A-Z without I, L, O, plus digits 2-9), salted (`cv-friend-code-v1`) |
 | D7 | Friend edges mutual (both sides stored as separate rows) |
 | D8 | Per-reporter rate: 5 reports/hour |
 | D9 | Auto-silence = 3 distinct reporters in 24h → 1h silence (max-of extension) |
@@ -195,9 +196,7 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
    `groupCreate(userId, name, creatorId, langTag, description, avatarUrl,
    open, metadata, maxCount)`, `groupsList(name ILIKE, langTag, open,
    edgeCount, limit 1-100, cursor) -> {groups, cursor}`; groups carry `id`.
-3. **Club weekly reset is lazy** on the first `club_get`/`club_search` after
-   Monday. The `clubs_week_reset` marker is claimed create-only before the
-   weekly reward (a claimable `sendReward`, id `club_week:<week>:<userId>`).
+3. **Club weekly points reset on Monday 00:00 UTC.** Weekly points (win 3, podium 2, finish 1) live in the `club_week` leaderboard and in each club's `weeklyPoints` / member's `weeklyContribution`, which reset on the first read or race of the club in the new week. Within 5 minutes after Monday 00:00 UTC the service ticker rewards the top 3 contributors of last week's winning club (claimable `sendReward`, id `club_week:<week>:<userId>`, 250 coins, once per week). `club_get.weeklyRank` / `club_mine.weeklyRank` is the club's rank this week, `null` without points.
 4. **Chat is RPC-only**: `validateChatSend` runs inside `chat_send` before
    the history write (no native channel is used).
 
