@@ -242,7 +242,7 @@ describe('race_lifecycle (Chunk 5)', () => {
       const result = JSON.parse(cfg!(FakeContext, env.logger, env.nak, ''));
       expect(result.ok).toBe(true);
       expect((result.data as { catalogsHash: string }).catalogsHash).toMatch(/^[0-9a-f]{12}/);
-      expect((result.data as { tracks: unknown[] }).tracks).toHaveLength(6);
+      expect((result.data as { tracks: unknown[] }).tracks).toHaveLength(9);
       expect((result.data as { modes: unknown[] }).modes).toHaveLength(4);
       // T-01 (plan backend-metagame): the car catalog, localization keys and a hash that covers cars.
       const data = result.data as {

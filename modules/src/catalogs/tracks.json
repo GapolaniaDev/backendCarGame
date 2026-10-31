@@ -48,6 +48,30 @@
       "checkpoints": 14,
       "minTimeMsByClass": { "D": 60000, "C": 54000, "B": 49000, "A": 44000, "S": 39000 },
       "minSectionTimeMs": 3000
+    },
+    {
+      "id": "stadium_today",
+      "displayName": "City Stadium",
+      "modes": { "quick": 3, "ranked": 5, "private": 3, "time_trial": 1 },
+      "checkpoints": 7,
+      "minTimeMsByClass": { "D": 45000, "C": 41000, "B": 37000, "A": 33000, "S": 30000 },
+      "minSectionTimeMs": 1700
+    },
+    {
+      "id": "desert_circuit",
+      "displayName": "Desert Circuit",
+      "modes": { "quick": 3, "ranked": 5, "private": 3, "time_trial": 1 },
+      "checkpoints": 10,
+      "minTimeMsByClass": { "D": 54000, "C": 49000, "B": 44000, "A": 40000, "S": 36000 },
+      "minSectionTimeMs": 2500
+    },
+    {
+      "id": "arctic_circuit",
+      "displayName": "Arctic Circuit",
+      "modes": { "quick": 3, "ranked": 5, "private": 3, "time_trial": 1 },
+      "checkpoints": 11,
+      "minTimeMsByClass": { "D": 58000, "C": 52000, "B": 47000, "A": 42000, "S": 38000 },
+      "minSectionTimeMs": 2600
     }
   ]
 }
