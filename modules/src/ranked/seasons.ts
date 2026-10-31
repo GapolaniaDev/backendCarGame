@@ -181,6 +181,14 @@ export function validate(raw: unknown): asserts raw is RawSeasonsFile {
       prevMax = (dd['ratingMax'] as number);
     }
   }
+  // Seasons are ordered by start and never overlap (P-03): findActiveSeason returns the first match.
+  for (let i = 1; i < arrTyped.length; i += 1) {
+    const prev = arrTyped[i - 1] as Record<string, unknown>;
+    const cur = arrTyped[i] as Record<string, unknown>;
+    if ((cur['startsAt'] as number) < (prev['endsAt'] as number)) {
+      fail(`seasons[${i}] overlaps seasons[${i - 1}] (seasons must be ordered by startsAt and not overlap)`);
+    }
+  }
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

@@ -17,7 +17,7 @@
     {
       "id": "season_2",
       "displayName": "Season 2",
-      "startsAt": 1759276800000,
+      "startsAt": 1764547200000,
       "endsAt": 1861910400000,
       "divisions": [
         { "id": "bronce",   "displayName": "Bronce",   "ratingMin": 0,    "ratingMax": 999 },

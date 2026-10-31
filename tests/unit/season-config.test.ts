@@ -20,6 +20,7 @@ import {
 } from '../../modules/src/ranked/config';
 import { _resetSeasonsForTests } from '../../modules/src/ranked/seasons';
 import { _resetRankedConfigForTests } from '../../modules/src/ranked/config';
+import bundledSeasons from '../../modules/src/catalogs/seasons.json';
 
 const VALID_SEASONS: RawSeasonsFile = {
   version: 1,
@@ -126,6 +127,19 @@ describe('ranked/seasons (Phase 4 Chunk 1)', () => {
   it('validator rejects empty division list', () => {
     const bad = { ...VALID_SEASONS, seasons: [{ ...VALID_SEASONS.seasons[0]!, divisions: [] }] };
     expect(() => validateSeasonsFile(bad)).toThrow(/at least one/);
+  });
+
+  it('validator rejects overlapping seasons', () => {
+    const first = VALID_SEASONS.seasons[0]!;
+    const overlapping = { ...first, id: 'season_2', startsAt: first.endsAt - 1000, endsAt: first.endsAt + 1000 };
+    expect(() => validateSeasonsFile({ ...VALID_SEASONS, seasons: [first, overlapping] })).toThrow(/overlaps/);
+  });
+
+  it('bundled seasons.json loads and resolves the active season per date', () => {
+    loadSeasonsCatalog(console as never, bundledSeasons as RawSeasonsFile);
+    const cat = getSeasonsCatalog();
+    expect(findActiveSeason(cat, Date.UTC(2025, 10, 15))?.id).toBe('season_1');
+    expect(findActiveSeason(cat, Date.UTC(2026, 9, 30))?.id).toBe('season_2');
   });
 });
 

@@ -108,8 +108,8 @@ one win from promotion.
 ## Seasons (D7)
 
 The bundled `seasons.json` ships two seasons; `season_2` is the
-active one (Oct 2025 → Dec 2028) and `season_3` is the rollover
-target. The catalog is static across the close — the season's
+active one (Dec 2025 → Dec 2028) and `season_3` is the rollover
+target. Seasons must be ordered by `startsAt` and must not overlap; the loader rejects an overlap. The catalog is static across the close — the season's
 declared `endsAt` documents the planned window, but the meta is what
 drives the lazy close.
 

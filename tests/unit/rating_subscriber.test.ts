@@ -57,8 +57,8 @@ function event(
     closedAt?: number;
   },
 ): RaceCompletedEvent {
-  // Default closedAt sits in season_2's active window (Oct 2025..Dec 2028).
-  const closedAt = args.closedAt ?? 1_760_000_000_000;
+  // Default closedAt sits in season_2's active window (Dec 2025..Dec 2028).
+  const closedAt = args.closedAt ?? 1_770_000_000_000;
   return {
     schemaVersion: 1,
     sessionId: args.sessionId ?? 'sid-1',
