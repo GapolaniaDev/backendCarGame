@@ -87,6 +87,7 @@
 //     once (one close log line, ticks after it) and its prize is a
 //     claimable inbox reward; event_list is not empty and the liveops
 //     calendar is the events.json one;
+//     B2: club_mine, club_week in lb_get, displayName, block removes friendship, optional motto;
 //   - F7 IAP and ads (plan T-24, T-25), with fresh accounts: on the .env
 //     defaults (IAP_MOCK=false, no store credentials, empty LevelPlay
 //     secret) a forged Apple receipt, a forged Google receipt in both
@@ -1523,6 +1524,34 @@ async function clubChecks(ct, serverKey) {
   record('T-21 native JoinGroup / AddGroupUsers do not skip the rules (403, not a member)',
     nativeJoin.status === 403 && nativeAdd.status === 403 && !after.some((m) => m.userId === g.G3.uid) && !g3Edge,
     `join HTTP ${nativeJoin.status}, add HTTP ${nativeAdd.status}, edge=${g3Edge}`);
+
+  const mine1 = await rpc(g.G1.token, 'club_mine', {});
+  const mine2 = await rpc(g.G2.token, 'club_mine', {});
+  const mine4 = await rpc(g.G4.token, 'club_mine', {});
+  record('B2 club_mine: leader, member and no club',
+    mine1.envelope?.data?.inClub === true && mine1.envelope.data.club?.clubId === clubId && mine1.envelope.data.membership?.role === 'leader'
+      && mine2.envelope?.data?.membership?.role === 'member'
+      && mine4.envelope?.ok === true && mine4.envelope.data.inClub === false && mine4.envelope.data.club === null,
+    `${errCode(mine1)}/${errCode(mine2)}/${errCode(mine4)}`);
+  const view = await rpc(g.G2.token, 'club_get', { clubId });
+  const members = view.envelope?.data?.members ?? [];
+  const rank = view.envelope?.data?.weeklyRank;
+  record('B2 club_get: members carry displayName, weeklyRank is a rank or null',
+    view.envelope?.ok === true && members.length > 0 && members.every((m) => typeof m.displayName === 'string' && m.displayName.length > 0)
+      && (rank === null || (Number.isInteger(rank) && rank >= 1)),
+    `${errCode(view)} weeklyRank=${rank}`);
+  const week = await rpc(g.G2.token, 'lb_get', { leaderboardId: 'club_week', view: 'global', limit: 10 });
+  const weekFriends = await rpc(g.G2.token, 'lb_get', { leaderboardId: 'club_week', view: 'friends' });
+  record('B2 lb_get club_week answers (ownerKind club); friends view → BAD_REQUEST',
+    week.envelope?.ok === true && week.envelope.data.ownerKind === 'club' && typeof week.envelope.data.clubs === 'object'
+      && errCode(weekFriends) === 'BAD_REQUEST',
+    `${errCode(week)} records=${week.envelope?.data?.records?.length ?? '-'} friends=${errCode(weekFriends)}`);
+  await fund(ct, g.G3.uid, { coins: 10_000, gems: 0 });
+  const noMotto = await rpc(g.G3.token, 'club_create', { name: `Smoke NM ${Date.now() % 1_000_000}`, emblemId: 'emblem_default', region: 'us' });
+  const noMottoView = noMotto.envelope?.ok ? await rpc(g.G3.token, 'club_mine', {}) : null;
+  record('B2 club_create without motto → motto ""',
+    noMotto.envelope?.ok === true && noMottoView?.envelope?.data?.club?.motto === '',
+    `${errCode(noMotto)} motto=${JSON.stringify(noMottoView?.envelope?.data?.club?.motto)}`);
   return { g, clubId };
 }
 
@@ -1541,6 +1570,15 @@ async function socialChecks(ct, serverKey, club) {
   record('T-22 chat messages carry the account username (3.27 .user.username)',
     added.envelope?.ok === true && hello.envelope?.ok === true && sender === name1 && sender !== 'unknown',
     `add=${errCode(added)} send=${errCode(hello)} senderName ${sender === name1 ? '= account username' : `${sender} vs ${name1}`}`);
+  const flist = await rpc(s.S1.token, 'friend_list_get', {});
+  const f2 = (flist.envelope?.data?.friends ?? []).find((f) => f.friendId === s.S2.uid);
+  record('B2 friend_list_get cards carry displayName', typeof f2?.displayName === 'string' && f2.displayName.length > 0,
+    `${errCode(flist)} displayName=${f2?.displayName}`);
+  const senderDisplay = list.envelope?.data?.messages?.[0]?.senderDisplayName;
+  record('B2 chat_list messages carry senderDisplayName', typeof senderDisplay === 'string' && senderDisplay.length > 0, `${senderDisplay}`);
+  const wf = await rpc(s.S1.token, 'lb_get', { leaderboardId: 'wins_week', view: 'friends' });
+  record('B2 lb_get friends view answers on a player table (ownerKind user)',
+    wf.envelope?.ok === true && wf.envelope.data.ownerKind === 'user' && JSON.stringify(wf.envelope.data.clubs) === '{}', errCode(wf));
 
   await sleep(1_100);
   const word = await sendChat(s.S1, 'direct', s.S2.uid, 'eres un idiota');
@@ -1552,6 +1590,15 @@ async function socialChecks(ct, serverKey, club) {
   record('T-22 a blocked player cannot chat (FORBIDDEN BLOCKED)',
     block.envelope?.ok === true && errCode(blocked) === 'FORBIDDEN' && blocked.envelope?.error?.details?.reason === 'BLOCKED',
     `block=${errCode(block)} send=${errCode(blocked)} ${blocked.envelope?.error?.details?.reason ?? ''}`);
+
+  const fl1 = (await rpc(s.S1.token, 'friend_list_get', {})).envelope?.data?.friends ?? [];
+  const fl2 = (await rpc(s.S2.token, 'friend_list_get', {})).envelope?.data?.friends ?? [];
+  const blist = await rpc(s.S2.token, 'block_list', {});
+  const b1 = (blist.envelope?.data?.blocks ?? []).find((b) => b.targetUserId === s.S1.uid);
+  record('B2 block_add removes the friendship; block_list carries displayName',
+    block.envelope?.data?.unfriended === true && !fl1.some((f) => f.friendId === s.S2.uid) && !fl2.some((f) => f.friendId === s.S1.uid)
+      && typeof b1?.displayName === 'string' && b1.displayName.length > 0,
+    `unfriended=${block.envelope?.data?.unfriended} friends ${fl1.length}/${fl2.length} block=${b1?.displayName}`);
 
   const block4 = await rpc(s.S4.token, 'block_add', { targetUserId: s.S3.uid });
   const code4 = (await rpc(s.S4.token, 'friend_code_get', {})).envelope?.data?.code;
