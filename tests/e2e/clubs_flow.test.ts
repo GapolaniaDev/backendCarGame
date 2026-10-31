@@ -277,6 +277,46 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
       if (!res.ok) expect(res.error.code).toBe('BAD_REQUEST');
     });
 
+    it('motto absent → ok with empty motto (D-09)', () => {
+      const created = call<Resp<ClubCreateOutput>>(env, 'club_create', LEADER, {
+        callerUserId: LEADER,
+        name: 'Fast Lane',
+        emblemId: 'emblem_default',
+        region: 'us',
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      const got = callClubGet(env, LEADER, created.data.clubId);
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      expect(got.data.club.motto).toBe('');
+    });
+
+    it('blank motto → ok with empty motto (D-09)', () => {
+      const res = callClubCreate(env, LEADER, { motto: '   ' });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const got = callClubGet(env, LEADER, res.data.clubId);
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      expect(got.data.club.motto).toBe('');
+    });
+
+    it('valid motto is kept as given', () => {
+      const res = callClubCreate(env, LEADER, { motto: 'Fast cars' });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const got = callClubGet(env, LEADER, res.data.clubId);
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      expect(got.data.club.motto).toBe('Fast cars');
+    });
+
+    it('BAD_REQUEST on non-string motto', () => {
+      const res = callClubCreate(env, LEADER, { motto: 5 as unknown as string });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('BAD_REQUEST');
+    });
     it('SERVICE_UNAVAILABLE when liveops.maintenance=true', () => {
       setMaintenance(env);
       const res = callClubCreate(env, LEADER);

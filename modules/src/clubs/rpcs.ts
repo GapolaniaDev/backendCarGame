@@ -244,8 +244,15 @@ export function club_create_impl(
   // Body validation.
   const nameRes = validateClubName(parsed.data.name);
   if (!nameRes.ok) return toJson(err(nameRes.code as 'BAD_REQUEST', nameRes.message));
-  const mottoRes = validateClubMotto(parsed.data.motto);
-  if (!mottoRes.ok) return toJson(err(mottoRes.code as 'BAD_REQUEST', mottoRes.message));
+  // Motto is optional (plan B2, D-09): absent or blank → ''.
+  const rawMotto = parsed.data.motto;
+  const mottoAbsent = rawMotto === undefined || rawMotto === null || (typeof rawMotto === 'string' && rawMotto.trim().length === 0);
+  let motto = '';
+  if (!mottoAbsent) {
+    const mottoRes = validateClubMotto(rawMotto);
+    if (!mottoRes.ok) return toJson(err(mottoRes.code as 'BAD_REQUEST', mottoRes.message));
+    motto = mottoRes.value;
+  }
 
   const emblemId = parsed.data.emblemId;
   if (typeof emblemId !== 'string' || emblemId.length === 0) {
@@ -289,7 +296,7 @@ export function club_create_impl(
       nameRes.value,
       caller.id,
       'es',
-      mottoRes.value,
+      motto,
       '',
       false, // closed
       {
@@ -320,7 +327,7 @@ export function club_create_impl(
     schemaVersion: 1,
     clubId: group.id,
     leaderId: caller.id,
-    motto: mottoRes.value,
+    motto,
     emblemId,
     region,
     minDivision,
