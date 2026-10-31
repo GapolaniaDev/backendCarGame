@@ -158,7 +158,7 @@ describe('ranked full lifecycle (Phase 4 Chunk 10)', () => {
   });
 
   it('season roll: lazy-close fires, new season created, racesPlayed=0, rating carried', () => {
-    // The bundled `seasons.json` ships `season_2` active (Oct 2025 → Dec 2028).
+    // The bundled `seasons.json` ships `season_2` active (Dec 2025 → Dec 2028).
     // Patch the meta with an already-expired `endsAt` so the next
     // `ranked_get` sees a stale season and runs the lazy close.
     const now = Date.now();

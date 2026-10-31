@@ -41,7 +41,7 @@ describe('ranked_get (Phase 4 Chunk 6)', () => {
     env = loadBundleForTest();
     // The bundle's module-level moduleCatalog is isolated inside the
     // VM context; we can't reset it from this Node-side test. The
-    // bundled seasons.json has season_2 active (Oct 2025 → Dec 2028)
+    // bundled seasons.json has season_2 active (Dec 2025 → Dec 2028)
     // so the test always sees the same season. Tests that need to
     // exercise the "no active season" path poke the storage directly.
   });

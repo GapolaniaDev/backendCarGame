@@ -513,7 +513,7 @@ on each leaderboard record's metadata (see §6.7 `lb_get`).
 
 ## 8. Catalogs (from `config_get`)
 
-Every player-visible catalog text comes in English (the fallback) with a sibling key: `displayName` → `displayNameKey`, `title` → `titleKey`, `description` → `descriptionKey`. Keys are `<kind>.<id>.<field>` with kind `track`, `mode`, `car`, `cosmetic`, `store_section`, `store_offer`, `mission`, `achievement` or `division` and field `name`, `title` or `description` (e.g. `car.starter_viper.name`). A client uses its Unity Localization entry for the key when it has one and the English text otherwise. Keys are only added: clients that read `displayName` keep working.
+Every player-visible catalog text comes in English (the fallback) with a sibling key: `displayName` → `displayNameKey`, `title` → `titleKey`, `description` → `descriptionKey`. Keys are `<kind>.<id>.<field>` with kind `track`, `mode`, `car`, `cosmetic`, `store_section`, `store_offer`, `mission`, `achievement` or `division` and field `name`, `title` or `description` (e.g. `car.starter_viper.name`). A client uses its Unity Localization entry for the key when it has one and the English text otherwise. Keys are only added: clients that read `displayName` keep working. The `cosmetic` kind is reserved: no RPC serves a cosmetic key yet.
 
 ### `tracks[]`
 

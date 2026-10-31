@@ -135,6 +135,13 @@ describe('ranked/seasons (Phase 4 Chunk 1)', () => {
     expect(() => validateSeasonsFile({ ...VALID_SEASONS, seasons: [first, overlapping] })).toThrow(/overlaps/);
   });
 
+  it('rejects seasons out of start order', () => {
+    const first = VALID_SEASONS.seasons[0]!;
+    const a = { ...first, id: 'season_a', startsAt: 100, endsAt: 200 };
+    const b = { ...first, id: 'season_b', startsAt: 0, endsAt: 50 };
+    expect(() => validateSeasonsFile({ ...VALID_SEASONS, seasons: [a, b] })).toThrow(/overlaps/);
+  });
+
   it('bundled seasons.json loads and resolves the active season per date', () => {
     loadSeasonsCatalog(console as never, bundledSeasons as RawSeasonsFile);
     const cat = getSeasonsCatalog();

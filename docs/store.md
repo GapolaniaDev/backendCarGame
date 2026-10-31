@@ -92,10 +92,10 @@ client can render them with a "Solo hoy" badge.
 
 | Pack id | Display name | Coins | Gems | Price (coins) |
 |---|---|---|---|---|
-| `starter_pack` | Pack inicial | +5000 | +50 | 2500 |
-| `coin_sack` | Bolsa de monedas | +2500 | — | 2000 |
-| `coin_sack_small` | Bolsa monedas pequeña | +1000 | — | 800 |
-| `coin_sack_large` | Bolsa monedas grande | +5000 | — | 3500 |
+| `starter_pack` | Starter Pack | +5000 | +50 | 2500 |
+| `coin_sack` | Coin Sack | +2500 | — | 2000 |
+| `coin_sack_small` | Small Coin Sack | +1000 | — | 800 |
+| `coin_sack_large` | Large Coin Sack | +5000 | — | 3500 |
 
 Pack contents are a second move of the purchase's wallet transaction:
 if the garage CAS write fails, neither the price nor the contents move.
