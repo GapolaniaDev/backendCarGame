@@ -7,11 +7,11 @@
       "startsAt": 1761955200000,
       "endsAt": 1764547200000,
       "divisions": [
-        { "id": "bronce",   "displayName": "Bronce",   "ratingMin": 0,    "ratingMax": 999 },
-        { "id": "plata",    "displayName": "Plata",    "ratingMin": 1000, "ratingMax": 1199 },
-        { "id": "oro",      "displayName": "Oro",      "ratingMin": 1200, "ratingMax": 1399 },
-        { "id": "platino",  "displayName": "Platino",  "ratingMin": 1400, "ratingMax": 1599 },
-        { "id": "diamante", "displayName": "Diamante", "ratingMin": 1600, "ratingMax": 9999 }
+        { "id": "bronce",   "displayName": "Bronze",   "ratingMin": 0,    "ratingMax": 999 },
+        { "id": "plata",    "displayName": "Silver",   "ratingMin": 1000, "ratingMax": 1199 },
+        { "id": "oro",      "displayName": "Gold",     "ratingMin": 1200, "ratingMax": 1399 },
+        { "id": "platino",  "displayName": "Platinum", "ratingMin": 1400, "ratingMax": 1599 },
+        { "id": "diamante", "displayName": "Diamond",  "ratingMin": 1600, "ratingMax": 9999 }
       ]
     },
     {
@@ -20,11 +20,11 @@
       "startsAt": 1764547200000,
       "endsAt": 1861910400000,
       "divisions": [
-        { "id": "bronce",   "displayName": "Bronce",   "ratingMin": 0,    "ratingMax": 999 },
-        { "id": "plata",    "displayName": "Plata",    "ratingMin": 1000, "ratingMax": 1199 },
-        { "id": "oro",      "displayName": "Oro",      "ratingMin": 1200, "ratingMax": 1399 },
-        { "id": "platino",  "displayName": "Platino",  "ratingMin": 1400, "ratingMax": 1599 },
-        { "id": "diamante", "displayName": "Diamante", "ratingMin": 1600, "ratingMax": 9999 }
+        { "id": "bronce",   "displayName": "Bronze",   "ratingMin": 0,    "ratingMax": 999 },
+        { "id": "plata",    "displayName": "Silver",   "ratingMin": 1000, "ratingMax": 1199 },
+        { "id": "oro",      "displayName": "Gold",     "ratingMin": 1200, "ratingMax": 1399 },
+        { "id": "platino",  "displayName": "Platinum", "ratingMin": 1400, "ratingMax": 1599 },
+        { "id": "diamante", "displayName": "Diamond",  "ratingMin": 1600, "ratingMax": 9999 }
       ]
     }
   ]

@@ -82,11 +82,11 @@ Five bands in the bundled catalog:
 
 | Id | Display name | Range |
 |---|---|---|
-| `bronce` | Bronce | 0–999 |
-| `plata` | Plata | 1000–1199 |
-| `oro` | Oro | 1200–1399 |
-| `platino` | Platino | 1400–1599 |
-| `diamante` | Diamante | 1600+ |
+| `bronce` | Bronze | 0–999 |
+| `plata` | Silver | 1000–1199 |
+| `oro` | Gold | 1200–1399 |
+| `platino` | Platinum | 1400–1599 |
+| `diamante` | Diamond | 1600+ |
 
 > **Naming note:** The bundled config uses Spanish division ids
 > (`bronce`, `plata`, `oro`, `platino`, `diamante`). These are the
