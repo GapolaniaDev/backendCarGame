@@ -82,7 +82,7 @@ export interface CatalogState {
    *  non-JSON-serialisable; rebuilt lazily on first resolve. */
   tracksById?: ReadonlyMap<string, Readonly<TrackEntry>>;
   modesById?: ReadonlyMap<ModeId, Readonly<ModeEntry>>;
-  /** SHA-256 hash of the JSON source of both catalogs (client cache key). */
+  /** SHA-256 hash of the JSON source of the catalogs: tracks, modes and, when given, cars (client cache key). */
   hash: string;
 }
 
@@ -167,6 +167,8 @@ function resolveState(nk?: INakama): CatalogState {
 export interface CatalogSources {
   tracks: TracksCatalog;
   modes: ModesCatalog;
+  /** Raw cars.json, only hashed (the garage catalog validates and serves it). Absent: the hash covers tracks and modes only. */
+  cars?: unknown;
 }
 
 /**

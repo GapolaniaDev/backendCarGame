@@ -103,6 +103,7 @@ function loadRuntimeCatalogs(logger: ILogger, nk: INakama): void {
     {
       tracks: tracksJson as unknown as TracksCatalog,
       modes: modesJson as unknown as ModesCatalog,
+      cars: carsJson,
     },
     (s: string): string => nk.sha256Hash(s),
     nk,

@@ -36,6 +36,8 @@ import {
   getTracks,
 } from '../core/catalog';
 import { serverNowMs } from '../core/time';
+import { locKey } from '../core/loc_keys';
+import { getCarsCatalog, toCatalogCarViews } from '../garage/catalog';
 import type { EventBus } from '../core/event_bus';
 import { ensureRuntimeState, withRuntime } from '../core/runtime_state';
 import type { IContext, ILogger, INakama } from '../nkruntime';
@@ -187,8 +189,9 @@ function config_get_impl(
   const data: ConfigGetOutput = {
     serverTimeMs: serverNowMs(),
     catalogsHash: getCatalogsHash(_nk),
-    tracks: getTracks(_nk),
-    modes: getModes(_nk),
+    tracks: getTracks(_nk).map((t) => ({ ...t, displayNameKey: locKey('track', t.id, 'name') })),
+    modes: getModes(_nk).map((m) => ({ ...m, displayNameKey: locKey('mode', m.id, 'name') })),
+    cars: toCatalogCarViews(getCarsCatalog().cars),
     minClientVersion,
   };
   logger.debug('config_get served hash=%s', data.catalogsHash.slice(0, 12));

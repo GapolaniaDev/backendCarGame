@@ -4,11 +4,14 @@
 
 import type { ILogger, INakama } from '../nkruntime';
 import type { ClassId } from '../economy/types';
+import { locKey } from '../core/loc_keys';
 import type {
   CarsCatalog,
   CosmeticsCatalog,
   UpgradesCatalog,
   CarCatalogEntry,
+  CarStats,
+  CatalogCarView,
   CosmeticCatalogEntry,
   UpgradeLevelEntry,
   UpgradeLine,
@@ -56,6 +59,27 @@ export function getGarageCatalog(): GarageCatalog {
 export function getCarsCatalog(): CarsCatalog {
   return getGarageCatalog().cars;
 }
+
+function copyStats(s: Readonly<CarStats>): CarStats {
+  return { speed: s.speed, acceleration: s.acceleration, handling: s.handling, nitro: s.nitro };
+}
+
+/** Client projection of the cars catalog, in catalog order (fresh objects, stats copied). */
+export function toCatalogCarViews(cars: ReadonlyArray<Readonly<CarCatalogEntry>>): CatalogCarView[] {
+  return cars.map((c) => ({
+    id: c.id,
+    displayName: c.displayName,
+    classId: c.classId,
+    baseStats: copyStats(c.baseStats),
+    maxStats: copyStats(c.maxStats),
+    priceCoins: c.priceCoins,
+    priceGems: c.priceGems ?? 0,
+    requiredLevel: c.requiredLevel,
+    isStarter: c.isStarter,
+    displayNameKey: locKey('car', c.id, 'name'),
+  }));
+}
+
 export function getUpgradesCatalog(): UpgradesCatalog {
   return getGarageCatalog().upgrades;
 }

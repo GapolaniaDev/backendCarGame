@@ -5,6 +5,10 @@
 // RPC functions directly. Reused by Chunks 6-9 as we add join/start/submit.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import carsJson from '../../modules/src/catalogs/cars.json';
+import modesJson from '../../modules/src/catalogs/modes.json';
+import tracksJson from '../../modules/src/catalogs/tracks.json';
 import {
   loadBundleForTest,
   FakeContext,
@@ -240,6 +244,33 @@ describe('race_lifecycle (Chunk 5)', () => {
       expect((result.data as { catalogsHash: string }).catalogsHash).toMatch(/^[0-9a-f]{12}/);
       expect((result.data as { tracks: unknown[] }).tracks).toHaveLength(6);
       expect((result.data as { modes: unknown[] }).modes).toHaveLength(4);
+      // T-01 (plan backend-metagame): the car catalog, localization keys and a hash that covers cars.
+      const data = result.data as {
+        catalogsHash: string;
+        tracks: Array<{ id: string; displayNameKey: string }>;
+        modes: Array<{ id: string; displayNameKey: string }>;
+        cars: unknown[];
+      };
+      const expectedCars = (carsJson as unknown as { cars: Array<Record<string, any>> }).cars.map((c) => ({
+        id: c.id,
+        displayName: c.displayName,
+        classId: c.classId,
+        baseStats: { speed: c.baseStats.speed, acceleration: c.baseStats.acceleration, handling: c.baseStats.handling, nitro: c.baseStats.nitro },
+        maxStats: { speed: c.maxStats.speed, acceleration: c.maxStats.acceleration, handling: c.maxStats.handling, nitro: c.maxStats.nitro },
+        priceCoins: c.priceCoins,
+        priceGems: c.priceGems ?? 0,
+        requiredLevel: c.requiredLevel,
+        isStarter: c.isStarter,
+        displayNameKey: 'car.' + c.id + '.name',
+      }));
+      expect(data.cars).toEqual(expectedCars);
+      for (const t of data.tracks) expect(t.displayNameKey).toBe('track.' + t.id + '.name');
+      for (const m of data.modes) expect(m.displayNameKey).toBe('mode.' + m.id + '.name');
+      expect(data.catalogsHash).toBe(
+        createHash('sha256')
+          .update(JSON.stringify({ tracks: tracksJson, modes: modesJson, cars: carsJson }))
+          .digest('hex'),
+      );
       expect(typeof (result.data as { serverTimeMs: number }).serverTimeMs).toBe('number');
       // Plan T-14: the LiveOps minimum (bundled default 0.1.0), not a constant.
       expect((result.data as { minClientVersion: string }).minClientVersion).toBe('0.1.0');

@@ -30,6 +30,22 @@ export interface CarCatalogEntry {
   isStarter: boolean;
 }
 
+/** A catalog car as `config_get` serves it (P-13). Property order is the wire order. */
+export interface CatalogCarView {
+  id: string;
+  displayName: string;
+  classId: ClassId;
+  baseStats: CarStats;
+  maxStats: CarStats;
+  priceCoins: number;
+  /** `0` when the catalog entry omits it. */
+  priceGems: number;
+  requiredLevel: number;
+  isStarter: boolean;
+  /** Localization key of `displayName` (`car.<id>.name`). */
+  displayNameKey: string;
+}
+
 export interface CarsCatalog {
   version: number;
   cars: ReadonlyArray<Readonly<CarCatalogEntry>>;
