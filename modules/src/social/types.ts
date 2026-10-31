@@ -99,6 +99,8 @@ export interface BlockRecord {
 export interface BlockCard {
   targetUserId: string;
   createdAt: number;
+  /** Name the client shows (profile displayName, else username, else id). */
+  displayName: string;
 }
 
 /** RPC output envelopes. */
@@ -199,6 +201,8 @@ export interface FriendCard {
   friendId: string;
   friendCode: string;
   since: number;
+  /** Name the client shows (profile displayName, else username, else id). */
+  displayName: string;
 }
 
 /**
@@ -229,6 +233,8 @@ export interface RecentRivalCard {
   userId: string;
   lastRaceAt: number;
   raceCount: number;
+  /** Name the client shows (profile displayName, else username, else id). */
+  displayName: string;
 }
 
 /** Output envelopes for the RPCs. */

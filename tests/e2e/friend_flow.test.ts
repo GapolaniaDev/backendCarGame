@@ -53,6 +53,7 @@ interface FriendCard {
   friendId: string;
   friendCode: string;
   since: number;
+  displayName: string;
 }
 
 interface FriendListOutput {
@@ -69,6 +70,7 @@ interface RivalCard {
   userId: string;
   lastRaceAt: number;
   raceCount: number;
+  displayName: string;
 }
 
 interface RecentRivalsOutput {
@@ -206,6 +208,21 @@ function seedFriendCode(env: LoadedBundle, userId: string): FriendCodeRecord {
   return rec;
 }
 
+function seedProfile(env: LoadedBundle, userId: string, displayName: string): void {
+  env.fakeNakama.store.set(`profiles/${userId}/${userId}`, {
+    collection: 'profiles',
+    key: userId,
+    userId,
+    value: { displayName },
+    version: 'v00000001',
+    permissionRead: 2,
+    permissionWrite: 0,
+    createTime: new Date(0).toISOString(),
+    updateTime: new Date(0).toISOString(),
+    expiresAt: null,
+  });
+}
+
 function seedEdge(
   env: LoadedBundle,
   owner: string,
@@ -304,6 +321,14 @@ describe('friend_flow e2e (Phase 7 Chunk 1)', () => {
       expect(bList.data.count).toBe(1);
       expect(bList.data.friends[0]?.friendId).toBe(USER_A);
     }
+  });
+
+  it('friend_list_get carries the displayName of the friend profile', () => {
+    seedProfile(env, USER_B, 'Captain B');
+    seedEdge(env, USER_A, USER_B, expectedCode(USER_B));
+    const res = callList(env, USER_A);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data.friends[0]?.displayName).toBe('Captain B');
   });
 
   it('friend_add_by_code on already-friend → CONFLICT', () => {
@@ -406,9 +431,11 @@ describe('friend_flow e2e (Phase 7 Chunk 1)', () => {
         expiresAt: null,
       },
     );
+    seedProfile(env, USER_B, 'Captain B');
     const res = callRecentRivals(env, USER_A);
     expect(res.ok && res.data.count === 1).toBe(true);
     if (res.ok) {
+      expect(res.data.rivals[0]?.displayName).toBe('Captain B');
       expect(res.data.rivals[0]?.userId).toBe(USER_B);
       expect(res.data.rivals[0]?.raceCount).toBe(1);
     }

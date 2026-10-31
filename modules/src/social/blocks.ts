@@ -15,6 +15,7 @@ import { checkRateLimit } from '../core/rate_limit';
 import { parseInput } from '../core/parse_input';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
+import { displayNamesById } from '../profiles/display_names';
 import {
   deleteBlock,
   listBlocks,
@@ -205,10 +206,12 @@ export function block_list_impl(
   if (m !== null) return toJson(m);
 
   const records = listBlocks(nk, caller.id);
-  const blocks: BlockCard[] = records
+  const page = records
     .map((r) => ({ targetUserId: r.targetUserId, createdAt: r.createdAt }))
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, BLOCK_LIST_PAGE_SIZE);
+  const names = displayNamesById(logger, nk, page.map((b) => b.targetUserId));
+  const blocks: BlockCard[] = page.map((b) => ({ ...b, displayName: names.get(b.targetUserId)! }));
 
   const out: BlockListOutput = { blocks, count: blocks.length };
   return toJson(ok(out));

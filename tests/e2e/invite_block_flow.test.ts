@@ -68,6 +68,7 @@ interface InviteRespondOutput {
 interface BlockCard {
   targetUserId: string;
   createdAt: number;
+  displayName: string;
 }
 
 interface BlockAddOutput {
@@ -424,6 +425,25 @@ describe('invite_block_flow e2e (Phase 7 Chunk 2)', () => {
     const b = callBlockList(env, USER_B);
     expect(b.ok).toBe(true);
     if (b.ok) expect(b.data.count).toBe(0);
+  });
+
+  it('block_list carries the displayName of the blocked profile', () => {
+    env.fakeNakama.store.set(`profiles/${USER_B}/${USER_B}`, {
+      collection: 'profiles',
+      key: USER_B,
+      userId: USER_B,
+      value: { displayName: 'Captain B' },
+      version: 'v00000001',
+      permissionRead: 2,
+      permissionWrite: 0,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    });
+    callBlockAdd(env, USER_A, USER_B);
+    const res = callBlockList(env, USER_A);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data.blocks[0]?.displayName).toBe('Captain B');
   });
 
   it('block_remove deletes a real block', () => {

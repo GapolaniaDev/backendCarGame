@@ -21,6 +21,7 @@ import { checkRateLimit } from '../core/rate_limit';
 import { parseInput } from '../core/parse_input';
 import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
+import { displayNamesById } from '../profiles/display_names';
 import { generateFriendCode, isValidCodeFormat } from './friend_code';
 import { isBlockedEitherWay } from './blocks_repo';
 import {
@@ -311,11 +312,13 @@ export function friend_list_get_impl(
   if (m !== null) return toJson(m);
 
   const edges = listFriendEdges(nk, caller.id);
+  const names = displayNamesById(logger, nk, edges.map((e) => e.friendId));
   const friends: FriendCard[] = edges
     .map((e) => ({
       friendId: e.friendId,
       friendCode: e.friendCode,
       since: e.since,
+      displayName: names.get(e.friendId)!,
     }))
     .sort((a, b) => b.since - a.since);
 
@@ -396,10 +399,12 @@ export function recent_rivals_get_impl(
         .slice(0, RECENT_RIVALS_CAP)
     : [];
 
+  const names = displayNamesById(logger, nk, entries.map((e) => e.userId));
   const rivals: RecentRivalCard[] = entries.map((e) => ({
     userId: e.userId,
     lastRaceAt: e.lastRaceAt,
     raceCount: e.raceCount,
+    displayName: names.get(e.userId)!,
   }));
 
   const result: RecentRivalsGetOutput = {
