@@ -2113,7 +2113,7 @@
         ],
         "summary": "Lee un leaderboard (global / around_me / friends)",
         "operationId": "lb_get",
-        "description": "T-13: order and rank come from each table (wins_week and ranked_* descending). `global` and `around_me` page with Nakama cursors; `friends` lists the caller and their friends (friends_edge) with global ranks and pages with `friends:<n>` cursors. A season's ranked table that does not exist yet answers an empty board.\n\nEl cliente NUNCA escribe leaderboards: lo hace el servidor al cerrar la carrera.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"lb_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LbGetData>>(rpc.Payload)`.",
+        "description": "T-13: order and rank come from each table (wins_week and ranked_* descending). `global` and `around_me` page with Nakama cursors; `friends` lists the caller and their friends (friends_edge) with global ranks and pages with `friends:<n>` cursors. A season's ranked table that does not exist yet answers an empty board. `club_week` (ownerKind club, plan B2): `global` and `around_me` around the caller's club; `friends` answers BAD_REQUEST.\n\nEl cliente NUNCA escribe leaderboards: lo hace el servidor al cerrar la carrera.\n\nErrores posibles (`error.code`): `BAD_REQUEST` (payload inválido), `UNAUTHENTICATED` (sin identidad), `FORBIDDEN` (no permitido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"lb_get\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LbGetData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -8483,6 +8483,10 @@
           "username": {
             "type": "string"
           },
+          "displayName": {
+            "type": "string",
+            "description": "Profile name, else account username, else user id (plan B2)."
+          },
           "avatarUrl": {
             "oneOf": [
               {
@@ -8532,6 +8536,10 @@
           },
           "senderName": {
             "type": "string"
+          },
+          "senderDisplayName": {
+            "type": "string",
+            "description": "Sender's current profile name (resolved when listing)."
           },
           "content": {
             "type": "string"
@@ -10394,7 +10402,7 @@
           "leaderboardId": {
             "type": "string",
             "example": "tt_neon_blvd_B_all",
-            "description": "A catalog table (wins_week, tt_*, lap_*) or a season's ranked table, e.g. ranked_season_2 (T-13)."
+            "description": "A catalog table (wins_week, club_week, tt_*, lap_*) or a season's ranked table, e.g. ranked_season_2 (T-13)."
           },
           "view": {
             "type": "string",
@@ -10418,6 +10426,10 @@
           "cursor": {
             "type": "string",
             "description": "Additive (T-13): nextCursor / prevCursor of a previous page of the same view. Malformed -> BAD_REQUEST."
+          },
+          "aroundClubId": {
+            "type": "string",
+            "description": "Club tables only: club to center around_me on (default: the caller's club)."
           }
         },
         "required": [
@@ -10433,6 +10445,14 @@
           },
           "view": {
             "type": "string"
+          },
+          "ownerKind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "club"
+            ],
+            "description": "club for club_week: records are clubs, names in username and clubs."
           },
           "totalCount": {
             "type": "integer",
@@ -10478,6 +10498,27 @@
               }
             },
             "description": "Keyed by ownerId; without a profile, displayName falls back to the username."
+          },
+          "clubs": {
+            "type": "object",
+            "description": "Club tables: the clubs of the page and ownerRecord by club id ({} on player tables).",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "clubId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "emblemId": {
+                  "type": "string"
+                },
+                "memberCount": {
+                  "type": "integer"
+                }
+              }
+            }
           },
           "nextCursor": {
             "oneOf": [
@@ -11295,6 +11336,10 @@
                   "type": "integer",
                   "description": "Epoch en milisegundos (UTC)",
                   "format": "int64"
+                },
+                "displayName": {
+                  "type": "string",
+                  "description": "Profile name, else account username, else user id (plan B2)."
                 }
               }
             }
@@ -11359,6 +11404,10 @@
                 },
                 "raceCount": {
                   "type": "integer"
+                },
+                "displayName": {
+                  "type": "string",
+                  "description": "Profile name, else account username, else user id (plan B2)."
                 }
               }
             }
@@ -11505,6 +11554,10 @@
         "properties": {
           "created": {
             "type": "boolean"
+          },
+          "unfriended": {
+            "type": "boolean",
+            "description": "True when the two players were friends: the friendship was removed (plan B2)."
           }
         }
       },
@@ -11557,6 +11610,10 @@
                   "type": "integer",
                   "description": "Epoch en milisegundos (UTC)",
                   "format": "int64"
+                },
+                "displayName": {
+                  "type": "string",
+                  "description": "Profile name, else account username, else user id (plan B2)."
                 }
               }
             }
@@ -11578,7 +11635,8 @@
             "type": "string"
           },
           "motto": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional: absent or blank → ''. When present: 3-24 printable ASCII chars."
           },
           "emblemId": {
             "type": "string",
@@ -11650,6 +11708,10 @@
                 },
                 "username": {
                   "type": "string"
+                },
+                "displayName": {
+                  "type": "string",
+                  "description": "Profile name, else account username, else user id (plan B2)."
                 }
               }
             }
@@ -11662,7 +11724,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Rank of the club on club_week this week; null without points (plan B2)."
           }
         }
       },
