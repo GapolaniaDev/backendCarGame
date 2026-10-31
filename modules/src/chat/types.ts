@@ -138,6 +138,8 @@ export interface ChatMessageCard {
   messageId: string;
   senderUserId: string;
   senderName: string;
+  /** Profile name, then username, then id; resolved when listing, not stored (D-04). */
+  senderDisplayName: string;
   content: string;
   language: ChatLanguage;
   ts: number;

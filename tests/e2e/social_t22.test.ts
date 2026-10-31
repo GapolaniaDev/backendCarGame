@@ -12,13 +12,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeContext, loadBundleForTest } from './_stubs';
 import type { LoadedBundle } from './_stubs';
 import { CLUBS_MEMBERS_COLLECTION } from '../../modules/src/clubs/members_repo';
+import { PROFILES_COLLECTION } from '../../modules/src/profiles/storage';
 import { FRIENDS_CODE_COLLECTION, FRIENDS_CODE_INDEX_COLLECTION } from '../../modules/src/social/types';
 
 type Resp<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; details?: { reason?: string } } };
 
-interface ChatList { messages: Array<{ senderUserId: string; senderName: string; content: string }>; nextCursor: string }
+interface ChatList { messages: Array<{ senderUserId: string; senderName: string; senderDisplayName: string; content: string }>; nextCursor: string }
 
 const A = 'user-a';
 const B = 'user-b';
@@ -133,11 +134,20 @@ describe('blocks, searches and chat (plan T-22)', () => {
       userId: A, username: 'alice', createTime: new Date(0).toISOString(),
       updateTime: new Date(0).toISOString(), disableTime: null, metadata: {},
     } as never);
+    env.fakeNakama.store.set(`${PROFILES_COLLECTION}/${A}/${A}`, {
+      collection: PROFILES_COLLECTION, key: A, userId: A,
+      value: { displayName: 'Alice Pro' }, version: 'v1',
+      permissionRead: 0, permissionWrite: 0,
+      createTime: new Date(0).toISOString(), updateTime: new Date(0).toISOString(), expiresAt: null,
+    });
     befriend(env, A, B);
     expect(dm(env, A, B, 'hola').ok).toBe(true);
     const list = call<Resp<ChatList>>(env, 'chat_list', B, { channelType: 'direct', targetId: A });
     expect(list.ok).toBe(true);
-    if (list.ok) expect(list.data.messages[0]!.senderName).toBe('alice');
+    if (list.ok) {
+      expect(list.data.messages[0]!.senderName).toBe('alice');
+      expect(list.data.messages[0]!.senderDisplayName).toBe('Alice Pro');
+    }
   });
 
   it('a club history hides the messages of blocked senders', () => {

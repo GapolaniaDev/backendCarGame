@@ -213,6 +213,7 @@ export function buildClubView(
 export function buildMemberView(
   members: ReadonlyArray<{ userId: string }>,
   leaderId: string,
+  displayNames: ReadonlyMap<string, string>,
 ): ClubMemberView[] {
   const out: ClubMemberView[] = [];
   for (const m of members) {
@@ -220,6 +221,7 @@ export function buildMemberView(
       userId: m.userId,
       isLeader: m.userId === leaderId,
       username: 'unknown',
+      displayName: displayNames.get(m.userId) ?? m.userId,
     });
   }
   return out;

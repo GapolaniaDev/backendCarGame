@@ -254,6 +254,8 @@ describe('club membership e2e (Phase 7 Chunk 4)', () => {
       expect(res.data.members).toHaveLength(3);
       expect(res.data.members[0].userId).toBe(LEADER);
       expect(res.data.members[0].role).toBe('leader');
+      // Every member has a seeded profile whose displayName is the userId (seedProfile).
+      for (const m of res.data.members) expect(m.displayName).toBe(m.userId);
     });
 
     it('paginated via cursor', () => {

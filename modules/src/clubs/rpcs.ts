@@ -25,6 +25,7 @@ import { assertNotInMaintenance } from '../core/liveops';
 import { emit } from '../core/admin/analytics';
 import { spend } from '../economy/wallet';
 import { readProfile } from '../profiles/storage';
+import { displayNamesById } from '../profiles/display_names';
 import {
   buildClubView,
   checkClubJoinGate,
@@ -437,10 +438,12 @@ export function club_get_impl(
 
   // The leader preview, with the real username (audit 07 f14).
   const nameCache = new Map<string, string>();
+  const leaderNames = displayNamesById(logger, nk, [meta.record.leaderId]);
   const members: ClubMemberView[] = [{
     userId: meta.record.leaderId,
     isLeader: true,
     username: resolveUsername(nk, meta.record.leaderId, nameCache),
+    displayName: leaderNames.get(meta.record.leaderId) ?? meta.record.leaderId,
   }];
   const view = buildClubView(group, meta.record, group.edgeCount);
 
@@ -748,6 +751,7 @@ export function club_members_list_impl(
   const nextCursor = (startIdx + page.length < all.length) ? String(startIdx + page.length) : '';
 
   const nameCache = new Map<string, string>();
+  const names = displayNamesById(logger, nk, page.map((m) => m.record.userId));
   const members: ClubMemberViewV2[] = page.map((m) => {
     let level: number | null = null;
     let avatarUrl: string | null = null;
@@ -761,6 +765,7 @@ export function club_members_list_impl(
     return {
       userId: m.record.userId,
       username: resolveUsername(nk, m.record.userId, nameCache),
+      displayName: names.get(m.record.userId) ?? m.record.userId,
       avatarUrl,
       role: m.record.role,
       level,

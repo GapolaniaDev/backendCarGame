@@ -17,7 +17,8 @@
 // grow with time, so the first expired message ends the history. A purged
 // message (account deletion) leaves a gap the page just skips.
 
-import type { INakama } from '../nkruntime';
+import type { ILogger, INakama } from '../nkruntime';
+import { displayNamesById } from '../profiles/display_names';
 import {
   CHAT_CHANNELS_COLLECTION,
   CHAT_HISTORY_SYSTEM_USER,
@@ -143,6 +144,7 @@ export function listChatMessages(
   channelId: string,
   opts: ListChatMessagesOptions,
   nowMs: number,
+  logger: ILogger,
 ): ListChatMessagesResult {
   const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
   const empty: ListChatMessagesResult = { messages: [], nextCursor: '', expiredFiltered: 0 };
@@ -168,7 +170,7 @@ export function listChatMessages(
     if (rec !== null && rec.channelId === channelId) bySeq.set(rec.seq, rec);
   }
 
-  const cards: ChatMessageCard[] = [];
+  const raw: Array<Omit<ChatMessageCard, 'senderDisplayName'>> = [];
   let expiredFiltered = 0;
   let ended = false;
   for (let seq = start; seq >= low; seq--) {
@@ -181,7 +183,7 @@ export function listChatMessages(
       break;
     }
     if (opts.hideSenders?.has(m.senderUserId)) continue;
-    cards.push({
+    raw.push({
       messageId: m.messageId,
       senderUserId: m.senderUserId,
       senderName: m.senderName,
@@ -190,6 +192,17 @@ export function listChatMessages(
       ts: m.createdAt,
     });
   }
+
+  const names = displayNamesById(logger, nk, raw.map((c) => c.senderUserId));
+  const cards: ChatMessageCard[] = raw.map((c) => ({
+    messageId: c.messageId,
+    senderUserId: c.senderUserId,
+    senderName: c.senderName,
+    senderDisplayName: names.get(c.senderUserId) ?? c.senderUserId,
+    content: c.content,
+    language: c.language,
+    ts: c.ts,
+  }));
 
   return {
     messages: cards,

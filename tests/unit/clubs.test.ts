@@ -222,24 +222,27 @@ describe('clubs_repo (Phase 7 Chunk 3)', () => {
 
   describe('buildMemberView', () => {
     it('flags the leader and yields memberCount=1 for single-member input', () => {
-      const members = buildMemberView([{ userId: LEADER }], LEADER);
+      const members = buildMemberView([{ userId: LEADER }], LEADER, new Map([[LEADER, 'Leader name']]));
       expect(members).toHaveLength(1);
       expect(members[0].isLeader).toBe(true);
       expect(members[0].userId).toBe(LEADER);
+      expect(members[0].displayName).toBe('Leader name');
     });
 
     it('non-leader members have isLeader=false', () => {
       const members = buildMemberView(
         [{ userId: LEADER }, { userId: JOINER }],
         LEADER,
+        new Map([[LEADER, 'Leader name'], [JOINER, 'Joiner name']]),
       );
       expect(members).toHaveLength(2);
       expect(members[0].isLeader).toBe(true);
       expect(members[1].isLeader).toBe(false);
+      expect(members[1].displayName).toBe('Joiner name');
     });
 
     it('empty members yields empty array', () => {
-      expect(buildMemberView([], LEADER)).toEqual([]);
+      expect(buildMemberView([], LEADER, new Map())).toEqual([]);
     });
   });
 

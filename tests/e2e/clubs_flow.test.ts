@@ -306,6 +306,12 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
     it('round-trips a freshly-created club', () => {
       const created = callClubCreate(env, LEADER);
       expect(created.ok).toBe(true);
+      env.fakeNakama.store.set(`${PROFILES_COLLECTION}/${LEADER}/${LEADER}`, {
+        collection: PROFILES_COLLECTION, key: LEADER, userId: LEADER,
+        value: { displayName: 'Captain' }, version: 'v1',
+        permissionRead: 0, permissionWrite: 0,
+        createTime: new Date(0).toISOString(), updateTime: new Date(0).toISOString(), expiresAt: null,
+      });
       const res = callClubGet(env, LEADER, created.data!.clubId);
       expect(res.ok).toBe(true);
       if (!res.ok) return;
@@ -318,6 +324,8 @@ describe('clubs e2e (Phase 7 Chunk 3)', () => {
       expect(res.data.members).toHaveLength(1);
       expect(res.data.members[0].userId).toBe(LEADER);
       expect(res.data.members[0].isLeader).toBe(true);
+      // Profile name of the leader (D-03).
+      expect(res.data.members[0].displayName).toBe('Captain');
     });
 
     it('NOT_FOUND on missing clubId', () => {

@@ -463,7 +463,7 @@ export function chat_list_impl(
   const nowMs = Date.now();
   let result;
   try {
-    result = listChatMessages(nk, channelId, { limit: limitN, cursor, ...(hideSenders !== undefined ? { hideSenders } : {}) }, nowMs);
+    result = listChatMessages(nk, channelId, { limit: limitN, cursor, ...(hideSenders !== undefined ? { hideSenders } : {}) }, nowMs, logger);
   } catch (e) {
     if (e instanceof RangeError) return toJson(err('BAD_REQUEST', 'invalid cursor'));
     throw e;

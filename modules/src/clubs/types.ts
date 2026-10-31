@@ -128,6 +128,8 @@ export interface ClubMemberView {
   isLeader: boolean;
   /** Display name from the user account; 'unknown' when not found. */
   username: string;
+  /** Profile name, then username, then id (D-03). */
+  displayName: string;
 }
 
 export interface ClubGetOutput {
@@ -162,6 +164,8 @@ export interface ClubUpdateOutput {
 export interface ClubMemberViewV2 {
   userId: string;
   username: string;
+  /** Profile name, then username, then id (D-03). */
+  displayName: string;
   /** Avatar URL from the user account; null when unset. */
   avatarUrl: string | null;
   /** Authoritative role from storage (NOT from the Nakama group state). */
