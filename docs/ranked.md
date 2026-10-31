@@ -225,6 +225,8 @@ filter is a future task.
 
 ## `ranked_get` (D11, D7)
 
+`divisionName` is the English division name and `divisionNameKey` (`division.<id>.name`) its localization key (T-11, D-11).
+
 The only public ranked RPC. Returns the public ranked summary for
 `targetUserId` (defaults to caller). Cross-user reads always allowed
 — never `FORBIDDEN`.

@@ -43,6 +43,8 @@ interface StoreOffer {
 }
 ```
 
+Each section and offer also carries `displayNameKey` (`store_section.<id>.name` / `store_offer.<offerId>.name`), the Unity Localization key of its `displayName`, which stays the English fallback (T-11, D-11).
+
 The catalog is loaded at `InitModule` via `loadStoreCatalog(...)`
 which validates via `validateStoreCatalog` and freezes the result
 with `Object.freeze`. Catalog failures panic with `CATALOG_INVALID`.

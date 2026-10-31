@@ -817,6 +817,8 @@ the active car's choices.
 
 ### 16.7 `store_get`
 
+`sections[].section.displayNameKey` and `sections[].offers[].offer.displayNameKey` are the localization keys of the English `displayName` fields (T-11, D-11).
+
 Returns the catalog sections after applying the player's filters
 (level, ownership, packs-purchased) plus the daily rotation. Rotation
 is deterministic per UTC day (FNV-1a hash of `${offerId}:${dayIndex}`
@@ -1037,6 +1039,8 @@ Idempotent re-claim by the same caller returns the same `claimedAt`
 without a CAS write.
 
 ### 17.4 `ranked_get`
+
+`divisionName` (English) and `divisionNameKey` (`division.<id>.name`) are added to the output (T-11, D-11).
 
 Public ranked summary for `targetUserId` (defaults to caller). Always
 allows cross-user reads (D11). Lazily closes the active season when
@@ -1429,6 +1433,8 @@ deep-dive on the modules and decision matrix.
 
 ### 19.1 `missions_get`
 
+Each mission carries `titleKey` and `descriptionKey` next to its English `title` and `description` (T-11, D-11).
+
 Returns the player's daily + weekly mission assignments plus progress
 and reward metadata. Lazy-creates the assignment rows on first access;
 the assignment is **deterministic** per `(userId, dateUtc)` via
@@ -1546,6 +1552,8 @@ the new mission definition.
 | `RATE_LIMITED` | 10 / 60s per caller |
 
 ### 19.4 `achievements_get`
+
+Each achievement carries `titleKey` and `descriptionKey` next to its English `title` and `description` (T-11, D-11).
 
 Returns all 22 achievements with progress + locked flag (locked)
 to `progression.level`. Lazy-creates the achievements storage row on

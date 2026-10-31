@@ -2180,6 +2180,12 @@ async function main() {
   const pg = prof.envelope?.data?.profile?.progression;
   record('profile_get progression has levelStartXp (P-04)',
     typeof pg?.levelStartXp === 'number' && pg.levelStartXp <= pg.xp && typeof pg.xpToNextLevel === 'number', errCode(prof));
+  const store = await rpc(a.token, 'store_get', { callerUserId: a.uid });
+  const sec = store.envelope?.data?.sections?.[0];
+  record('store_get sends localization keys with the English texts (P-17)',
+    typeof sec?.section?.displayNameKey === 'string' && sec.section.displayNameKey === `store_section.${sec.section.id}.name`
+      && (sec.offers ?? []).every((o) => o.offer.displayNameKey === `store_offer.${o.offer.offerId}.name`),
+    errCode(store));
   const lbw = await http('POST', '/v2/leaderboard/wins_week', {
     body: { score: '999' },
     headers: { Authorization: `Bearer ${a.token}` },

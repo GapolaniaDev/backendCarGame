@@ -212,6 +212,8 @@ before the first `*_get` of a period is kept.
 
 ## 6. RPCs
 
+Mission and achievement entries carry `titleKey` and `descriptionKey` (`mission.<id>.title`, `mission.<id>.description`, `achievement.<id>.title`, `achievement.<id>.description`), the localization keys of their English `title` and `description` (T-11, D-11).
+
 | RPC | Purpose | Gated by | Idempotent? |
 |---|---|---|---|
 | `missions_get` | Materialise today's daily + weekly assignments + progress | `assertNotInMaintenance` | yes (re-materialise is no-op when row exists) |

@@ -4930,6 +4930,9 @@ components:
           type: "string"
         displayName:
           type: "string"
+        displayNameKey:
+          type: "string"
+          description: "Localization key of displayName (store_offer.<offerId>.name / store_section.<id>.name); displayName is the English fallback."
         priceCoins:
           type: "integer"
         priceGems:
@@ -4975,8 +4978,14 @@ components:
           type: "string"
         title:
           type: "string"
+        titleKey:
+          type: "string"
+          description: "Localization key of title (mission.<id>.title / achievement.<id>.title)."
         description:
           type: "string"
+        descriptionKey:
+          type: "string"
+          description: "Localization key of description (mission.<id>.description / achievement.<id>.description)."
         kind:
           type: "string"
         filters:
@@ -5016,8 +5025,14 @@ components:
           type: "string"
         title:
           type: "string"
+        titleKey:
+          type: "string"
+          description: "Localization key of title (mission.<id>.title / achievement.<id>.title)."
         description:
           type: "string"
+        descriptionKey:
+          type: "string"
+          description: "Localization key of description (mission.<id>.description / achievement.<id>.description)."
         kind:
           type: "string"
         target:
@@ -6085,6 +6100,9 @@ components:
                       - "level_gated"
                   displayName:
                     type: "string"
+                  displayNameKey:
+                    type: "string"
+                    description: "Localization key of displayName (store_offer.<offerId>.name / store_section.<id>.name); displayName is the English fallback."
               offers:
                 type: "array"
                 items:
@@ -6693,6 +6711,12 @@ components:
           type: "integer"
         division:
           type: "string"
+        divisionName:
+          type: "string"
+          description: "English name of the division (fallback)."
+        divisionNameKey:
+          type: "string"
+          description: "Localization key of the division name (division.<id>.name)."
         divisionProgress:
           type: "number"
         racesPlayed:
