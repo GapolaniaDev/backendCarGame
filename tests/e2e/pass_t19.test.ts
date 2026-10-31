@@ -124,22 +124,21 @@ describe('T-19 pass_claim', () => {
     expect(coins(env, U1)).toBe(200);
   });
 
-  it('a reward item missing from the catalogs is reported in undelivered, never invented', () => {
+  it('a pass cosmetic reward is delivered into the garage', () => {
     env.fakeNakama.wallets.set(U1, { coins: 0, gems: 5000 });
     expect(call(env, 'pass_buy_premium', U1).ok).toBe(true);
-    patchPass(env, U1, { xp: 200 }); // level 2: premium reward paint_winter01 (not in cosmetics.json)
-    const r = call<{ undelivered?: string[]; granted: { skippedCosmetics: string[] } }>(
-      env, 'pass_claim', U1, { level: 2, track: 'premium' },
-    );
+    patchPass(env, U1, { xp: 200 }); // level 2: premium reward paint_winter01 (in cosmetics.json)
+    const r = call<{ undelivered?: string[] }>(env, 'pass_claim', U1, { level: 2, track: 'premium' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.data.undelivered).toEqual(['cosmetic:paint_winter01']);
-    expect(r.data.granted.skippedCosmetics).toEqual(['paint_winter01']);
+    expect(r.data.undelivered ?? []).toEqual([]);
     expect(passRecord(env, U1)['claimedPremium']).toEqual([2]);
-    expect(env.fakeLogger.lines.some((l) => /reward item not in catalog: cosmetic:paint_winter01/.test(l))).toBe(true);
+    const garage = call<{ garage: { cosmeticsBag: string[] } }>(env, 'garage_get', U1);
+    expect(garage.ok).toBe(true);
+    if (!garage.ok) return;
+    expect(garage.data.garage.cosmeticsBag).toContain('paint_winter01');
   });
 });
-
 describe('T-19 pass_buy_premium', () => {
   it('without enough gems changes nothing', () => {
     const env = loadBundleForTest();

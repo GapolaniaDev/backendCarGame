@@ -34,6 +34,27 @@
     { "id": "horn_air_raid",        "displayName": "Alarma aérea",      "type": "horn",   "rarity": "rare",      "priceCoins": 1200,  "compatibleClasses": ["C","B","A","S"] },
     { "id": "horn_pedro_scream",    "displayName": "Grito de Pedro",    "type": "horn",   "rarity": "epic",      "priceGems": 25,      "compatibleClasses": ["D","C","B","A","S"] },
     { "id": "horn_orchestra_hit",   "displayName": "Orquesta fanfarria","type": "horn",   "rarity": "legendary", "priceGems": 75,      "compatibleClasses": ["B","A","S"] },
-    { "id": "horn_8bit_jingle",     "displayName": "Chicharra 8-bit",   "type": "horn",   "rarity": "rare",      "priceCoins": 1500,  "compatibleClasses": ["D","C","B","A"] }
+    { "id": "horn_8bit_jingle",     "displayName": "Chicharra 8-bit",   "type": "horn",   "rarity": "rare",      "priceCoins": 1500,  "compatibleClasses": ["D","C","B","A"] },
+    { "id": "paint_winter01",       "displayName": "Winter Paint",      "type": "paint", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_frost",          "displayName": "Frost Decal",       "type": "decal", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_arctic",         "displayName": "Arctic Trail",      "type": "trail", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_icicle",         "displayName": "Icicle Decal",      "type": "decal", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_polar",          "displayName": "Polar Paint",       "type": "paint", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_blizzard",       "displayName": "Blizzard Trail",    "type": "trail", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_snowflake",      "displayName": "Snowflake Decal",   "type": "decal", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_glacial",        "displayName": "Glacial Paint",     "type": "paint", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_frostwave",      "displayName": "Frostwave Trail",   "type": "trail", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_holiday",        "displayName": "Holiday Decal",     "type": "decal", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_aurora",         "displayName": "Aurora Paint",      "type": "paint", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_aurora",         "displayName": "Aurora Trail",      "type": "trail", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_aurora",         "displayName": "Aurora Decal",      "type": "decal", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_aurora02",       "displayName": "Aurora Paint II",   "type": "paint", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_celestial",      "displayName": "Celestial Trail",   "type": "trail", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_celestial",      "displayName": "Celestial Decal",   "type": "decal", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "paint_celestial",      "displayName": "Celestial Paint",   "type": "paint", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "trail_celestial02",    "displayName": "Celestial Trail II","type": "trail", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "decal_celestial02",    "displayName": "Celestial Decal II","type": "decal", "rarity": "epic",      "priceGems": 40, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "legendary_aether_chassis","displayName": "Aether Chassis",    "type": "paint", "rarity": "legendary", "priceGems": 80, "compatibleClasses": ["D","C","B","A","S"] },
+    { "id": "rare_aether_stripe",   "displayName": "Aether Stripe",     "type": "decal", "rarity": "rare",      "priceGems": 20, "compatibleClasses": ["D","C","B","A","S"] }
   ]
 }

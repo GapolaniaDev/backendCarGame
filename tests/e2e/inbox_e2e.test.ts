@@ -304,13 +304,13 @@ describe('inbox (plan T-17) — season rewards, notices and the legacy migration
     const now = Date.now();
     adminWriteInbox(env, {
       schemaVersion: 1, id: 'items', userId: USER, kind: 'reward', title: 't', body: 'b',
-      reward: { cosmeticId: 'paint_red_flame', cosmeticIds: ['paint_red_flame', 'legendary_aether_chassis'] },
+      reward: { cosmeticId: 'paint_red_flame', cosmeticIds: ['paint_red_flame', 'cosmetic_not_in_catalog'] },
       createdAt: now, expiresAt: now + 86_400_000,
     });
     const r = call<Resp<{ delivered?: { cosmeticId?: string }; undelivered?: string[] }>>(
       env, 'inbox_claim', USER, { messageId: 'items' },
     );
-    expect(r).toMatchObject({ ok: true, data: { delivered: { cosmeticId: 'paint_red_flame' }, undelivered: ['cosmetic:legendary_aether_chassis'] } });
+    expect(r).toMatchObject({ ok: true, data: { delivered: { cosmeticId: 'paint_red_flame' }, undelivered: ['cosmetic:cosmetic_not_in_catalog'] } });
     const garage = env.fakeNakama.store.get(`garage/${USER}/${USER}`)?.value as { cosmeticsBag: string[] };
     expect(garage.cosmeticsBag).toContain('paint_red_flame');
   });

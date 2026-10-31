@@ -44,7 +44,7 @@
     { "level": 37, "xpRequired": 34600, "freeReward": { "gems": 200 },           "premiumReward": { "coins": 7000 } },
     { "level": 38, "xpRequired": 34800, "freeReward": { "coins": 2000 },         "premiumReward": { "cosmeticId": "decal_celestial02" } },
     { "level": 39, "xpRequired": 34900, "freeReward": { "gems": 250 },           "premiumReward": { "gems": 400 } },
-    { "level": 40, "xpRequired": 35000, "freeReward": { "carId": "titan_s1_x" },  "premiumReward": { "carId": "aurora_aero_x" } }
+    { "level": 40, "xpRequired": 35000, "freeReward": { "carId": "titan_s1" },  "premiumReward": { "carId": "aurora_aero" } }
   ],
   "premiumPriceGems": 800
 }
