@@ -200,7 +200,7 @@ describe('ticker release of silent servers (D-02)', () => {
     nk = fake.nakama;
     logger = makeLogger();
     ensureRuntimeState(nk, logger);
-    state = { lastTournamentMs: NOW, lastEventMs: NOW, lastSubscriptionMs: NOW, lastRaceCloseMs: 0, lastPassSeasonMs: NOW, runs: 0, nextAttemptMs: 0 };
+    state = { lastTournamentMs: NOW, lastEventMs: NOW, lastSubscriptionMs: NOW, lastRaceCloseMs: 0, lastPassSeasonMs: NOW, lastClubWeekMs: NOW, runs: 0, nextAttemptMs: 0 };
   });
 
   function seed(serverId: string, lastSeenMs: number, sessionId: string | null): void {

@@ -15,6 +15,7 @@
 //     without heartbeat for 30 s                   every 15 s (with races)
 //   - pass season: settle every player once the
 //     battle pass season has ended                 every 5 min (plan T-19)
+//   - club week: reward last week's winning club  every 5 min (plan B2)
 // A storage lease (`tick_lock.ts`) makes sure only one tick runs at a
 // time even with several matches or nodes.
 //
@@ -32,6 +33,7 @@ import { runEventScannerTick } from '../events/scanner';
 import { scanOnce as runSubscriptionTick } from '../iap/subscription_scanner';
 import { runRaceCloseTick } from '../race/close';
 import { runPassSeasonTick } from '../pass/season';
+import { runClubWeekTick } from '../clubs/club_week_reset';
 import { releaseStaleServers } from '../race_servers/registry_repo';
 import { tryAcquireTickLock, releaseTickLock } from './tick_lock';
 
@@ -44,6 +46,7 @@ export const SUBSCRIPTION_TICK_MS = 5 * 60_000;
 /** Race sessions past their grace (`CLOSE_GRACE_MS`, 30 s) close within this. */
 export const RACE_CLOSE_TICK_MS = 15_000;
 export const PASS_SEASON_TICK_MS = 5 * 60_000;
+export const CLUB_WEEK_TICK_MS = 5 * 60_000;
 /** Lease length: shorter than the fastest job interval. */
 export const SERVICE_TICK_LOCK_TTL_MS = 55_000;
 export const SERVICE_TICK_LOCK_NAME = 'service_tick';
@@ -57,6 +60,7 @@ export interface ServiceTickerState {
   lastSubscriptionMs: number;
   lastRaceCloseMs: number;
   lastPassSeasonMs: number;
+  lastClubWeekMs: number;
   /** Number of loops that ran at least one job. */
   runs: number;
   /** After a lost lease race, no attempt before this epoch ms. */
@@ -71,6 +75,7 @@ export interface ServiceTickResult {
   races: string;
   raceServers: string;
   passSeason: string;
+  clubWeek: string;
 }
 
 function runJob(logger: ILogger, name: string, job: () => string): string {
@@ -98,13 +103,14 @@ export function runServiceTick(
   const dueSubscription = nowMs - state.lastSubscriptionMs >= SUBSCRIPTION_TICK_MS;
   const dueRaces = nowMs - (state.lastRaceCloseMs ?? 0) >= RACE_CLOSE_TICK_MS;
   const duePassSeason = nowMs - (state.lastPassSeasonMs ?? 0) >= PASS_SEASON_TICK_MS;
-  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-', races: '-', raceServers: '-', passSeason: '-' };
-  if (!dueTournament && !dueEvent && !dueSubscription && !dueRaces && !duePassSeason) return idle;
+  const dueClubWeek = nowMs - (state.lastClubWeekMs ?? 0) >= CLUB_WEEK_TICK_MS;
+  const idle: ServiceTickResult = { ran: false, tournaments: '-', events: '-', subscriptions: '-', races: '-', raceServers: '-', passSeason: '-', clubWeek: '-' };
+  if (!dueTournament && !dueEvent && !dueSubscription && !dueRaces && !duePassSeason && !dueClubWeek) return idle;
   if (nowMs < state.nextAttemptMs) return idle;
   if (!tryAcquireTickLock(nk, SERVICE_TICK_LOCK_NAME, holder, nowMs, SERVICE_TICK_LOCK_TTL_MS)) {
     // Another ticker holds the lease; back off instead of retrying every loop.
     state.nextAttemptMs = nowMs + LOCK_RETRY_MS;
-    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked', races: 'locked', raceServers: 'locked', passSeason: 'locked' };
+    return { ...idle, tournaments: 'locked', events: 'locked', subscriptions: 'locked', races: 'locked', raceServers: 'locked', passSeason: 'locked', clubWeek: 'locked' };
   }
   const result: ServiceTickResult = { ...idle, ran: true };
   try {
@@ -141,16 +147,20 @@ export function runServiceTick(
       state.lastPassSeasonMs = nowMs;
       result.passSeason = runJob(logger, 'pass season', () => runPassSeasonTick(nk, logger, nowMs));
     }
+    if (dueClubWeek) {
+      state.lastClubWeekMs = nowMs;
+      result.clubWeek = runJob(logger, 'club week', () => runClubWeekTick(nk, logger, nowMs));
+    }
   } finally {
     releaseTickLock(nk, SERVICE_TICK_LOCK_NAME, holder);
   }
   state.runs += 1;
   // A races-only pass (every 15 s) logs at debug unless it closed something.
-  const racesOnly = !dueTournament && !dueEvent && !dueSubscription && !duePassSeason;
+  const racesOnly = !dueTournament && !dueEvent && !dueSubscription && !duePassSeason && !dueClubWeek;
   if (!racesOnly || !/\/closed=0$/.test(result.races)) {
     logger.info(
-      'service ticker tick n=%d tournaments=%s events=%s subscriptions=%s races=%s passSeason=%s',
-      state.runs, result.tournaments, result.events, result.subscriptions, result.races, result.passSeason,
+      'service ticker tick n=%d tournaments=%s events=%s subscriptions=%s races=%s passSeason=%s clubWeek=%s',
+      state.runs, result.tournaments, result.events, result.subscriptions, result.races, result.passSeason, result.clubWeek,
     );
   } else {
     logger.debug('service ticker races n=%d %s', state.runs, result.races);
@@ -194,6 +204,7 @@ export function serviceTickerInit(
     lastSubscriptionMs: 0,
     lastRaceCloseMs: 0,
     lastPassSeasonMs: 0,
+    lastClubWeekMs: 0,
     runs: 0,
     nextAttemptMs: 0,
   };

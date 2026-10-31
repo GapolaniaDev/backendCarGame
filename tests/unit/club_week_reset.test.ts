@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import type { INakama, ILogger } from '../../modules/src/nkruntime';
 import { FakeNakama, FakeLogger, type FakeNakama as FakeNakamaType } from '../e2e/_stubs';
-import { ensureWeekBoundary } from '../../modules/src/clubs/club_week_reset';
+import { ensureWeekBoundary, runClubWeekTick } from '../../modules/src/clubs/club_week_reset';
 import {
   CLUBS_WEEK_META_COLLECTION,
   CLUBS_WEEK_RESET_COLLECTION,
@@ -25,6 +25,7 @@ import { CLUBS_MEMBERS_COLLECTION } from '../../modules/src/clubs/members_repo';
 import { CLUBS_METADATA_COLLECTION, type ClubMetadata, type MemberRecord } from '../../modules/src/clubs/types';
 import { CLUB_WEEK_LEADERBOARD_ID } from '../../modules/src/clubs/leaderboard_init';
 import { INBOX_COLLECTION } from '../../modules/src/liveops/messages';
+import { utcWeek } from '../../modules/src/core/time';
 
 const NOW = 1_700_000_000_000;
 const SYSTEM = '00000000-0000-0000-0000-000000000000';
@@ -389,5 +390,67 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     expect(out.rewardedUserIds).toEqual(['user-L1', 'user-A', 'user-B']);
     expect(readInboxCount(fake, 'user-C')).toBe(0);
     expect(readInboxCount(fake, 'user-D')).toBe(0);
+  });
+});
+
+describe('runClubWeekTick (plan B2, D-07)', () => {
+  const TICK_NOW = Date.UTC(2026, 10, 2, 0, 3);
+  const LAST_WEEK = utcWeek(Date.UTC(2026, 9, 26));
+  let fake: FakeNakamaType;
+  let logger: ILogger;
+
+  beforeEach(() => {
+    fake = new FakeNakama();
+    logger = new FakeLogger();
+    ensureLeaderboard(fake);
+    seedLbRecord(fake, 'club-1', 30);
+    seedClubMeta(fake, 'club-1', 'user-L1', 30);
+    seedMember(fake, 'club-1', 'user-L1', 10, 100, 'leader');
+    seedMember(fake, 'club-1', 'user-M1', 8, 200);
+  });
+
+  it('rewards last week once: creates the marker, then reports already', () => {
+    const first = runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW);
+    expect(first).toBe('winner=club-1/rewarded=2');
+    expect(readResetMarker(fake, LAST_WEEK)!.winnerClubId).toBe('club-1');
+    expect(readInboxCount(fake, 'user-L1')).toBe(1);
+    expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW + 1_000)).toBe('already');
+    expect(readInboxCount(fake, 'user-L1')).toBe(1);
+  });
+
+  it('reports winner=none when the finished week has no records', () => {
+    fake.leaderboardRecords.delete(CLUB_WEEK_LEADERBOARD_ID);
+    expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW)).toBe('winner=none/rewarded=0');
+  });
+
+  it('is already when a club_get boundary crossing wrote the marker first (no new inbox)', () => {
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
+      collection: CLUBS_WEEK_META_COLLECTION,
+      key: 'club-1',
+      userId: SYSTEM,
+      value: {
+        schemaVersion: 1, clubId: 'club-1', currentWeek: LAST_WEEK, lastResetAt: Date.UTC(2026, 9, 26),
+      } as unknown as Record<string, unknown>,
+      version: 'v00000001',
+      permissionRead: 1, permissionWrite: 1,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    });
+    // `ensureWeekBoundary` reads the real clock: pin it to the week after `LAST_WEEK`.
+    vi.useFakeTimers();
+    vi.setSystemTime(TICK_NOW);
+    let out: ReturnType<typeof ensureWeekBoundary>;
+    try {
+      out = ensureWeekBoundary(fake.nakama as INakama, logger, 'club-1');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(out.reset).toBe(true);
+    expect(readResetMarker(fake, LAST_WEEK)).not.toBeNull();
+    expect(readInboxCount(fake, 'user-L1')).toBe(1);
+
+    expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW)).toBe('already');
+    expect(readInboxCount(fake, 'user-L1')).toBe(1);
   });
 });

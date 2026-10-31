@@ -19,6 +19,7 @@ import {
   serviceTickerLoop,
   type ServiceTickerState,
   RACE_CLOSE_TICK_MS,
+  CLUB_WEEK_TICK_MS,
 } from '../../modules/src/scheduler/service_ticker';
 import { ensureRuntimeState } from '../../modules/src/core/runtime_state';
 import { createSession, readSession } from '../../modules/src/race/session_repo';
@@ -129,7 +130,9 @@ describe('service ticker scheduling', () => {
     nk = fake.nakama;
     logger = makeLogger();
     ensureRuntimeState(nk, logger);
-    state = { lastTournamentMs: 0, lastEventMs: 0, lastSubscriptionMs: 0, lastRaceCloseMs: 0, runs: 0, nextAttemptMs: 0 };
+    // The club week job reads this board; the live runtime creates it in InitModule.
+    fake.leaderboards.set('club_week', { id: 'club_week', authoritative: true, sortOrder: 'desc', operator: 'incr', resetSchedule: '0 0 * * 1', metadata: {} } as never);
+    state = { lastTournamentMs: 0, lastEventMs: 0, lastSubscriptionMs: 0, lastRaceCloseMs: 0, lastPassSeasonMs: 0, lastClubWeekMs: 0, runs: 0, nextAttemptMs: 0 };
   });
 
   it('runs every job on the first loop and logs one tick line', () => {
@@ -155,11 +158,24 @@ describe('service ticker scheduling', () => {
     expect(state.runs).toBe(3);
   });
 
+  it('club week job runs on the first loop, not again before 5 min, and is idle (-) otherwise', () => {
+    const first = runServiceTick(nk, logger, state, NOW, 'match:t');
+    expect(first.clubWeek).toMatch(/^(already|winner=)/);
+    expect(state.lastClubWeekMs).toBe(NOW);
+    const soon = runServiceTick(nk, logger, state, NOW + TOURNAMENT_TICK_MS, 'match:t');
+    expect(soon.ran).toBe(true);
+    expect(soon.clubWeek).toBe('-');
+    const later = runServiceTick(nk, logger, state, NOW + CLUB_WEEK_TICK_MS, 'match:t');
+    expect(later.clubWeek).toBe('already');
+    expect(logger.infos.some((l) => l.includes('clubWeek=already'))).toBe(true);
+  });
+
   it('skips and backs off while another ticker holds the lease', () => {
     tryAcquireTickLock(nk, SERVICE_TICK_LOCK_NAME, 'match:other', NOW, 55_000);
     const r = runServiceTick(nk, logger, state, NOW + 1, 'match:t');
     expect(r.ran).toBe(false);
     expect(r.tournaments).toBe('locked');
+    expect(r.clubWeek).toBe('locked');
     expect(state.nextAttemptMs).toBe(NOW + 1 + LOCK_RETRY_MS);
     expect(runServiceTick(nk, logger, state, NOW + 2, 'match:t').tournaments).toBe('-');
     expect(state.runs).toBe(0);

@@ -42,7 +42,7 @@
 
 import type { ILogger, INakama } from '../nkruntime';
 import { sendReward } from '../liveops/inbox';
-import { serverNowMs, utcWeekStartMs, WEEK_MS } from '../core/time';
+import { serverNowMs, utcWeek, utcWeekStartMs, WEEK_MS } from '../core/time';
 import { readClubMembers, writeMemberUpdate } from './members_repo';
 import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
 import { CLUB_WEEK_LEADERBOARD_ID } from './leaderboard_init';
@@ -307,6 +307,20 @@ export function awardWeeklyReward(
   }
 
   return { winnerClubId, rewardedUserIds };
+}
+
+/**
+ * Service-ticker job (plan B2, D-07): reward last week's winning club once, even when no
+ * club is opened. Returns a short summary for the tick log line.
+ *
+ * @returns `'already'` when the marker of last week exists, else `winner=<clubId|none>/rewarded=<n>`.
+ */
+export function runClubWeekTick(nk: INakama, logger: ILogger, nowMs: number): string {
+  const weekStartMs = utcWeekStartMs(nowMs) - WEEK_MS;
+  const week = utcWeek(weekStartMs);
+  if (readClubWeekResetMarker(nk, week) !== null) return 'already';
+  const r = awardWeeklyReward(nk, logger, week, weekStartMs, nowMs);
+  return `winner=${r.winnerClubId ?? 'none'}/rewarded=${r.rewardedUserIds.length}`;
 }
 
 /**
