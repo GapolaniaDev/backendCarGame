@@ -22,9 +22,12 @@
 // warn so a storage hiccup never breaks the rest of the bus.
 //
 // Wired from `main.ts` AFTER `subscribeRecentRivals` so the race
-// fan-out order stays stable. `clubs_week_meta` and per-member
-// `weeklyContribution` are read+written here but the week-boundary
-// reset lives in `club_week_reset.ts` (lazy, on `club_get`).
+// fan-out order stays stable. The week-boundary reset lives in
+// `club_week_reset.ts` (lazy). Before crediting any points this handler
+// calls `ensureWeekBoundary` for every club involved, so a race that
+// closes after Monday 00:00 UTC lands on a zeroed week instead of piling
+// onto last week's `weeklyContribution` / `weeklyPoints` (which the next
+// RPC reset would then wipe, dropping the new points).
 
 import type { ILogger, INakama, IStorageObject } from '../nkruntime';
 import type { EventBus } from '../core/event_bus';
@@ -38,6 +41,7 @@ import {
 } from './members_repo';
 import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
 import { CLUB_WEEK_LEADERBOARD_ID } from './leaderboard_init';
+import { ensureWeekBoundary } from './club_week_reset';
 import {
   pointsForRace,
   pointsForRaceResult,
@@ -126,7 +130,10 @@ export function handleRaceCompletedForClubWeek(
     return { ...SKIP, reason: 'no_clubs' };
   }
 
-  // 4. Per-human write loop.
+  // 4. Roll every involved club into the current week BEFORE crediting.
+  for (const clubId of new Set(clubByUser.values())) ensureWeekBoundary(nk, logger, clubId);
+
+  // 5. Per-human write loop.
   const outcomes: ClubWeekOutcome['humans'] = [];
 
   for (const r of humans) {

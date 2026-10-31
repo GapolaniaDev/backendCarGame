@@ -12,7 +12,7 @@
 //   - empty leaderboard → no winner, no inbox
 //   - meta cache CAS failure → write_failed outcome (does not throw)
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import type { INakama, ILogger } from '../../modules/src/nkruntime';
 import { FakeNakama, FakeLogger, type FakeNakama as FakeNakamaType } from '../e2e/_stubs';
@@ -311,6 +311,53 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     expect(readInboxCount(fake, 'user-L1')).toBe(0);
     // Marker is still written so future resets don't repeat.
     expect(readResetMarker(fake, '2026-W01')).not.toBeNull();
+  });
+
+  it('cross-week reads the FINISHED week by its exact expiry and rewards that winner', () => {
+    // The stub table says club-1 leads; the spy answers like Nakama does for the
+    // finished week (club-2), so the winner can only come from the override read.
+    seedLbRecord(fake, 'club-1', 30);
+    seedClubMeta(fake, 'club-1', 'user-L1', 30);
+    seedClubMeta(fake, 'club-2', 'user-L2', 40);
+    seedMember(fake, 'club-1', 'user-L1', 10, 100, 'leader');
+    seedMember(fake, 'club-2', 'user-L2', 7, 100, 'leader');
+    seedMember(fake, 'club-2', 'user-N1', 4, 200);
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
+      collection: CLUBS_WEEK_META_COLLECTION,
+      key: 'club-1',
+      userId: 'club-1',
+      value: {
+        schemaVersion: 1, clubId: 'club-1',
+        currentWeek: '2026-W01', lastResetAt: Date.UTC(2026, 9, 28),
+      } as unknown as Record<string, unknown>,
+      version: 'v00000001',
+      permissionRead: 1, permissionWrite: 1,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    });
+    const nk = fake.nakama as INakama;
+    const spy = vi.spyOn(nk, 'leaderboardRecordsList').mockReturnValue({
+      records: [{
+        leaderboardId: CLUB_WEEK_LEADERBOARD_ID, ownerId: 'club-2', username: '', score: 40, subscore: 0,
+        numScore: 1, metadata: {}, createTime: '', updateTime: '', expiryTime: null, rank: 1, maxNumScore: 1,
+      }],
+      ownerRecords: [], nextCursor: null, prevCursor: null, rankCount: 1,
+    } as never);
+
+    const out = ensureWeekBoundary(nk, logger, 'club-1');
+
+    // Week of 2026-10-28 starts Mon 2026-10-26; its records expire Mon 2026-11-02 00:00 UTC.
+    expect(spy).toHaveBeenCalledWith(
+      CLUB_WEEK_LEADERBOARD_ID, [], 3, '', Date.UTC(2026, 10, 2) / 1000,
+    );
+    expect(out.reset).toBe(true);
+    expect(out.winnerClubId).toBe('club-2');
+    expect(out.rewardedUserIds).toEqual(['user-L2', 'user-N1']);
+    expect(readResetMarker(fake, '2026-W01')!.winnerClubId).toBe('club-2');
+    expect(readInboxCount(fake, 'user-L2')).toBe(1);
+    expect(readInboxCount(fake, 'user-N1')).toBe(1);
+    expect(readInboxCount(fake, 'user-L1')).toBe(0);
   });
 
   it('only top-3 by weeklyContribution receive the inbox', () => {

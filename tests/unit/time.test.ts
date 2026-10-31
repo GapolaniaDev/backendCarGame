@@ -6,6 +6,8 @@ import {
   utcWeek,
   utcNextResetMs,
   utcNextWeekResetMs,
+  utcWeekStartMs,
+  WEEK_MS,
 } from '../../modules/src/core/time';
 
 describe('time (Phase 6 Chunk 1)', () => {
@@ -47,6 +49,34 @@ describe('time (Phase 6 Chunk 1)', () => {
       // 2025-12-31 is the Wednesday in the week of 2025-12-29..2026-01-04.
       // The Thursday is 2026-01-01 → ISO week 1 of 2026.
       expect(utcWeek(Date.UTC(2025, 11, 31))).toBe('2026-W01');
+    });
+  });
+
+  describe('utcWeekStartMs', () => {
+    it('Monday 00:00 UTC → itself', () => {
+      expect(utcWeekStartMs(Date.UTC(2026, 10, 2, 0, 0))).toBe(Date.UTC(2026, 10, 2));
+    });
+    it('Monday 10:00 UTC → that Monday 00:00', () => {
+      expect(utcWeekStartMs(Date.UTC(2026, 10, 2, 10, 0))).toBe(Date.UTC(2026, 10, 2));
+    });
+    it('Sunday 23:59 UTC → the Monday before (month boundary)', () => {
+      expect(utcWeekStartMs(Date.UTC(2026, 10, 1, 23, 59))).toBe(Date.UTC(2026, 9, 26));
+    });
+    it('Saturday noon UTC → the Monday before', () => {
+      expect(utcWeekStartMs(Date.UTC(2026, 9, 31, 12, 0))).toBe(Date.UTC(2026, 9, 26));
+    });
+    it('names the same ISO week as utcWeek', () => {
+      for (const t of [
+        Date.UTC(2026, 10, 2, 0, 0),
+        Date.UTC(2026, 10, 2, 10, 0),
+        Date.UTC(2026, 10, 1, 23, 59),
+        Date.UTC(2026, 9, 31, 12, 0),
+      ]) {
+        expect(utcWeek(utcWeekStartMs(t))).toBe(utcWeek(t));
+      }
+    });
+    it('WEEK_MS from a week start lands on the next Monday 00:00 UTC', () => {
+      expect(utcWeekStartMs(Date.UTC(2026, 9, 28)) + WEEK_MS).toBe(Date.UTC(2026, 10, 2));
     });
   });
 

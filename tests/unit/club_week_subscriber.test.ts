@@ -19,6 +19,8 @@ import { FakeNakama, FakeLogger, type FakeNakama as FakeNakamaType } from '../e2
 import { handleRaceCompletedForClubWeek } from '../../modules/src/clubs/club_week_subscriber';
 import { CLUB_WEEK_LEADERBOARD_ID } from '../../modules/src/clubs/leaderboard_init';
 import { CLUBS_MEMBERS_COLLECTION } from '../../modules/src/clubs/members_repo';
+import { CLUBS_WEEK_META_COLLECTION } from '../../modules/src/clubs/week_repo';
+import { utcWeek } from '../../modules/src/core/time';
 import { CLUBS_METADATA_COLLECTION, type ClubMetadata, type MemberRecord } from '../../modules/src/clubs/types';
 
 const NOW = 1_700_000_000_000;
@@ -264,6 +266,47 @@ describe('club_week subscriber (Phase 7 Chunk 5)', () => {
     // Metadata weeklyPoints.
     expect(readMeta(fake, 'club-1')!.weeklyPoints).toBe(5);
     expect(readMeta(fake, 'club-2')!.weeklyPoints).toBe(2);
+  });
+
+  it('rolls a club on last week into the current week before crediting (no lost points)', () => {
+    const SYSTEM = '00000000-0000-0000-0000-000000000000';
+    const staleContribution = 9;
+    seedClubMeta(fake, 'club-1', 'user-L', staleContribution);
+    seedMember(fake, 'club-1', 'user-A', staleContribution);
+    // The roster lives on the group edges; the reset zeroes the rows it finds there.
+    fake.groups.set('club-1', {
+      id: 'club-1', creatorId: 'user-L', name: 'club-1', description: '', avatarUrl: '', langTag: 'es',
+      metadata: {}, open: false, edgeCount: 0, maxCount: 30, createTime: 0, updateTime: 0,
+    });
+    fake.groupMembers.set('club-1', new Set(['user-A']));
+    fake.groupStates.set('club-1', new Map([['user-A', 2]]));
+    // The club's week meta is still on a previous week.
+    fake.store.set(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`, {
+      collection: CLUBS_WEEK_META_COLLECTION,
+      key: 'club-1',
+      userId: 'club-1',
+      value: {
+        schemaVersion: 1, clubId: 'club-1',
+        currentWeek: '2026-W01', lastResetAt: NOW - 7 * 86_400_000,
+      } as unknown as Record<string, unknown>,
+      version: 'v00000001',
+      permissionRead: 1, permissionWrite: 1,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    });
+
+    const event = makeEvent([
+      { rank: 1, userId: 'user-A', isBot: false, totalMs: 60_000, abandoned: false },
+    ]);
+    const out = handleRaceCompletedForClubWeek(makeDeps(fake), event);
+
+    expect(out.processed).toBe(true);
+    // Only this race's 3 points remain; before the fix they were 9 + 3 = 12.
+    expect(readMemberRow(fake, 'club-1', 'user-A')!.weeklyContribution).toBe(3);
+    expect(readMeta(fake, 'club-1')!.weeklyPoints).toBe(3);
+    const weekMeta = fake.store.get(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`);
+    expect((weekMeta!.value as { currentWeek: string }).currentWeek).toBe(utcWeek(Date.now()));
   });
 
   it('does not throw when leaderboard table is missing', () => {

@@ -783,6 +783,10 @@ export function club_members_list_impl(
     return toJson(err('NOT_FOUND', 'no club with that id'));
   }
 
+  // Roll the club into the current week first so the roster never shows
+  // last week's contributions.
+  ensureWeekBoundary(nk, logger, clubId);
+
   const limitRaw = parsed.data.limit;
   const limitN = typeof limitRaw === 'number'
     ? Math.min(100, Math.max(1, Math.floor(limitRaw)))

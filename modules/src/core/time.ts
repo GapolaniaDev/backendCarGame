@@ -51,6 +51,16 @@ export function utcWeek(dateMs: number): string {
   return `${year}-W${String(weekNum).padStart(2, '0')}`;
 }
 
+/** One week in milliseconds. */
+export const WEEK_MS = 7 * 86_400_000;
+
+/** Monday 00:00 UTC of the ISO week that contains `dateMs` (the week `utcWeek` names). */
+export function utcWeekStartMs(dateMs: number): number {
+  const d = new Date(dateMs);
+  const day = (d.getUTCDay() + 6) % 7; // Mon = 0 … Sun = 6
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
+}
+
 /** Returns the UTC ms timestamp of the next UTC midnight after `dateMs`. */
 export function utcNextResetMs(dateMs: number): number {
   const d = new Date(dateMs);

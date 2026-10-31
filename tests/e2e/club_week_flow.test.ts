@@ -278,6 +278,20 @@ describe('club_week flow e2e (Phase 7 Chunk 5)', () => {
     expect(entry!.weeklyPoints).toBe(0);
   });
 
+  it('cross-week club_members_list shows weeklyContribution 0 (rolls the week first)', () => {
+    setMemberContribution(env, clubId, LEADER, 12);
+    seedMeta(env, clubId, '2026-W01');
+
+    const res = call<Resp<{ members: Array<{ userId: string; weeklyContribution: number }> }>>(
+      env, 'club_members_list', LEADER, { callerUserId: LEADER, clubId },
+    );
+    expect(res.ok).toBe(true);
+    const leader = res.ok ? res.data.members.find((m) => m.userId === LEADER) : undefined;
+    expect(leader).toBeDefined();
+    expect(leader!.weeklyContribution).toBe(0);
+    expect(readMeta(env, clubId)!.currentWeek).not.toBe('2026-W01');
+  });
+
   it('club_get.weeklyRank is null before points and 1 once the club has them (plan B2)', () => {
     expect(callGet(env, LEADER, clubId).data!.weeklyRank).toBeNull();
     seedLb(env, clubId, 5);

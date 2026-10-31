@@ -8,7 +8,9 @@
 //
 // Strategy:
 //
-//   On every `club_get` (and `club_search`) call, the RPC checks the
+//   The RPCs that show a club (`club_get`, `club_search`,
+//   `club_members_list`, `club_mine`) and the race-completed subscriber
+//   (before it credits points) call `ensureWeekBoundary`, which checks the
 //   club's `clubs_week_meta/{clubId}.currentWeek` vs the current
 //   `utcWeek(now)`. If they differ:
 //
@@ -16,11 +18,14 @@
 //     b. Look up the global `clubs_week_reset/{oldWeek}` marker.
 //
 //        - Absent → we may be the FIRST lazy reset this week: read the
-//          top row of the `club_week` leaderboard (desc), read the
-//          winning club's members and pick the top-3 contributors by
-//          `weeklyContribution`; then CLAIM the global marker
-//          (create-only) and only the claimer sends each a claimable
-//          reward to the single inbox (`sendReward`, id
+//          top rows of the `club_week` leaderboard (desc) for the FINISHED
+//          week (Nakama keeps past weeks under their expiry, the Monday
+//          00:00 UTC after the week, so the read passes it as
+//          `overrideExpiry`: the default read would only see the new,
+//          still empty, week), read the winning club's members and pick
+//          the top-3 contributors by `weeklyContribution`; then CLAIM the
+//          global marker (create-only) and only the claimer sends each a
+//          claimable reward to the single inbox (`sendReward`, id
 //          `club_week:<week>:<userId>`, so a re-run never duplicates).
 //
 //        - Present → rewards already sent (or no winner). Nothing to
@@ -37,7 +42,7 @@
 
 import type { ILogger, INakama } from '../nkruntime';
 import { sendReward } from '../liveops/inbox';
-import { serverNowMs } from '../core/time';
+import { serverNowMs, utcWeekStartMs, WEEK_MS } from '../core/time';
 import { readClubMembers, writeMemberUpdate } from './members_repo';
 import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
 import { CLUB_WEEK_LEADERBOARD_ID } from './leaderboard_init';
@@ -140,7 +145,9 @@ export function ensureWeekBoundary(
   const marker = readClubWeekResetMarker(nk, oldWeek);
   if (marker === null) {
     try {
-      const reward = awardWeeklyReward(nk, logger, oldWeek, now);
+      const reward = awardWeeklyReward(
+        nk, logger, oldWeek, utcWeekStartMs(existing.record.lastResetAt), now,
+      );
       winnerClubId = reward.winnerClubId;
       rewardedUserIds = reward.rewardedUserIds;
     } catch (e) {
@@ -208,30 +215,39 @@ export function ensureWeekBoundary(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-interface WeeklyRewardResult {
+export interface WeeklyRewardResult {
   winnerClubId: string | null;
   rewardedUserIds: string[];
 }
 
 /**
- * Pick the winner club (top row on `club_week`) and send an inbox
- * reward to its top-3 contributors. Writes the global reset marker so
- * subsequent lazy resets don't double-send.
+ * Pick the winner of `week` (the top `club_week` record of THAT week: Nakama keeps past
+ * weeks under their expiry, Monday 00:00 UTC after the week, in seconds) and reward its
+ * top-3 contributors once (create-only marker). Exported for the service ticker (T-07).
+ *
+ * @param week ISO week being closed (`utcWeek` format); names the marker and the inbox ids.
+ * @param weekStartMs Monday 00:00 UTC of that week (`utcWeekStartMs`).
+ * @param nowMs Current server time, stamped on the marker and the rewards.
  */
-function awardWeeklyReward(
+export function awardWeeklyReward(
   nk: INakama,
   logger: ILogger,
-  oldWeek: string,
+  week: string,
+  weekStartMs: number,
   nowMs: number,
 ): WeeklyRewardResult {
-  // 1. Read the leaderboard top-N (the table is `desc`, so the first
-  //    record is the winner); we'll re-read members below. 3.27 takes
-  //    `overrideExpiry` as the 5th argument, not a sort order: the old
-  //    'desc' there made the call throw.
+  // 1. Read the leaderboard top-N of the FINISHED week (the table is `desc`,
+  //    so the first record is the winner); we'll re-read members below. 3.27
+  //    takes `overrideExpiry` as the 5th argument, not a sort order, and a
+  //    non-zero value must equal the records' `expiry_time` exactly: the
+  //    Monday 00:00 UTC that closes the week, in seconds. Without it the
+  //    call reads the current (new) week, which is empty at the boundary.
   const top = nk.leaderboardRecordsList(
     CLUB_WEEK_LEADERBOARD_ID,
     /* ownerIds */ [],
     /* limit */ WEEKLY_REWARD_MAX_RECIPIENTS,
+    /* cursor */ '',
+    /* overrideExpiry */ Math.floor((weekStartMs + WEEK_MS) / 1000),
   );
   const top1 = top.records[0];
   const winnerClubId = top1 !== undefined ? top1.ownerId : null;
@@ -249,7 +265,7 @@ function awardWeeklyReward(
   //    the reward; we report what it recorded.
   const marker: ClubWeekResetMarker = {
     schemaVersion: 1,
-    weekUtc: oldWeek,
+    weekUtc: week,
     resetAt: nowMs,
     winnerClubId,
     rewardedUserIds: top3.map((m) => m.userId),
@@ -257,13 +273,13 @@ function awardWeeklyReward(
   try {
     writeClubWeekResetMarker(nk, marker);
   } catch (e) {
-    const theirs = readClubWeekResetMarker(nk, oldWeek);
+    const theirs = readClubWeekResetMarker(nk, week);
     if (theirs !== null) {
       return { winnerClubId: theirs.record.winnerClubId, rewardedUserIds: theirs.record.rewardedUserIds };
     }
     logger.warn(
       'club_week_reset marker write failed week=%s: %s',
-      oldWeek, e instanceof Error ? e.message : String(e),
+      week, e instanceof Error ? e.message : String(e),
     );
     return { winnerClubId, rewardedUserIds: [] };
   }
@@ -277,7 +293,7 @@ function awardWeeklyReward(
         m.userId,
         'club_week_reward',
         { coins: WEEKLY_REWARD_COINS, note: 'Your club won the week — top contributor reward inside.' },
-        `club_week:${oldWeek}:${m.userId}`,
+        `club_week:${week}:${m.userId}`,
         nowMs,
         nowMs + WEEKLY_REWARD_TTL_MS,
       );
