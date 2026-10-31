@@ -558,7 +558,7 @@ server rejects reports faster than this as `INVALID_RESULT`.
 ```json
 {
   "id":           "starter_viper",
-  "displayName":  "Viper inicial",
+  "displayName":  "Starter Viper",
   "classId":      "D",
   "baseStats":    { "speed": 50, "acceleration": 50, "handling": 50, "nitro": 50 },
   "maxStats":     { "speed": 70, "acceleration": 70, "handling": 70, "nitro": 70 },

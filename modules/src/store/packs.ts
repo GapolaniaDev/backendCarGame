@@ -19,19 +19,19 @@ export interface PackDelivery {
 
 const PACK_TABLE: Record<string, PackDelivery> = {
   starter_pack: {
-    displayName: 'Pack inicial',
+    displayName: 'Starter Pack',
     changeset: { coins: 5000, gems: 50 },
   },
   coin_sack: {
-    displayName: 'Bolsa de monedas',
+    displayName: 'Coin Sack',
     changeset: { coins: 2500 },
   },
   coin_sack_small: {
-    displayName: 'Bolsa monedas pequeña',
+    displayName: 'Small Coin Sack',
     changeset: { coins: 1000 },
   },
   coin_sack_large: {
-    displayName: 'Bolsa monedas grande',
+    displayName: 'Large Coin Sack',
     changeset: { coins: 5000 },
   },
 };

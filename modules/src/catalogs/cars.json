@@ -3,7 +3,7 @@
   "cars": [
     {
       "id": "starter_viper",
-      "displayName": "Viper inicial",
+      "displayName": "Starter Viper",
       "classId": "D",
       "baseStats": { "speed": 50, "acceleration": 50, "handling": 50, "nitro": 50 },
       "maxStats":  { "speed": 70, "acceleration": 70, "handling": 70, "nitro": 70 },
@@ -24,7 +24,7 @@
     },
     {
       "id": "coupe_gt",
-      "displayName": "Coupé GT",
+      "displayName": "Coupe GT",
       "classId": "C",
       "baseStats": { "speed": 60, "acceleration": 58, "handling": 60, "nitro": 55 },
       "maxStats":  { "speed": 82, "acceleration": 80, "handling": 82, "nitro": 78 },

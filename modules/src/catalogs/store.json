@@ -3,13 +3,13 @@
   "sections": [
     {
       "id": "permanent",
-      "displayName": "Tienda permanente",
+      "displayName": "Shop",
       "offers": [
         {
           "offerId": "perm_starter_pack",
           "kind": "pack",
           "refId": "starter_pack",
-          "displayName": "Pack inicial",
+          "displayName": "Starter Pack",
           "priceCoins": 2500,
           "expiresAt": null
         },
@@ -17,7 +17,7 @@
           "offerId": "perm_coin_sack",
           "kind": "pack",
           "refId": "coin_sack",
-          "displayName": "Bolsa de monedas",
+          "displayName": "Coin Sack",
           "priceGems": 10,
           "expiresAt": null
         },
@@ -25,7 +25,7 @@
           "offerId": "perm_paint_matte_black",
           "kind": "cosmetic",
           "refId": "paint_matte_black",
-          "displayName": "Pintura negro mate",
+          "displayName": "Matte Black Paint",
           "priceCoins": 1500,
           "expiresAt": null
         },
@@ -33,7 +33,7 @@
           "offerId": "perm_wheels_neon_rim",
           "kind": "cosmetic",
           "refId": "wheels_neon_rim",
-          "displayName": "Llantas neón",
+          "displayName": "Neon Rims",
           "priceCoins": 5000,
           "expiresAt": null
         }
@@ -41,13 +41,13 @@
     },
     {
       "id": "daily",
-      "displayName": "Oferta del día",
+      "displayName": "Daily Deals",
       "offers": [
         {
           "offerId": "daily_pool_paint_red_flame",
           "kind": "cosmetic",
           "refId": "paint_red_flame",
-          "displayName": "Llama roja (oferta)",
+          "displayName": "Red Flame (deal)",
           "priceCoins": 250,
           "expiresAt": null
         },
@@ -55,7 +55,7 @@
           "offerId": "daily_pool_paint_neon_green",
           "kind": "cosmetic",
           "refId": "paint_neon_green",
-          "displayName": "Verde neón (oferta)",
+          "displayName": "Neon Green (deal)",
           "priceCoins": 750,
           "expiresAt": null
         },
@@ -63,7 +63,7 @@
           "offerId": "daily_pool_wheels_chrome_spoke",
           "kind": "cosmetic",
           "refId": "wheels_chrome_spoke",
-          "displayName": "Radios cromados (oferta)",
+          "displayName": "Chrome Spokes (deal)",
           "priceCoins": 400,
           "expiresAt": null
         },
@@ -71,7 +71,7 @@
           "offerId": "daily_pool_decal_thunder_skull",
           "kind": "cosmetic",
           "refId": "decal_thunder_skull",
-          "displayName": "Trueno craneo (oferta)",
+          "displayName": "Thunder Skull (deal)",
           "priceCoins": 350,
           "expiresAt": null
         },
@@ -79,7 +79,7 @@
           "offerId": "daily_pool_trail_red_fire",
           "kind": "cosmetic",
           "refId": "trail_red_fire",
-          "displayName": "Fuego rojo (oferta)",
+          "displayName": "Red Fire (deal)",
           "priceCoins": 300,
           "expiresAt": null
         },
@@ -87,7 +87,7 @@
           "offerId": "daily_pool_trail_neon_pink",
           "kind": "cosmetic",
           "refId": "trail_neon_pink",
-          "displayName": "Rosa neón (oferta)",
+          "displayName": "Neon Pink (deal)",
           "priceCoins": 1000,
           "expiresAt": null
         },
@@ -95,7 +95,7 @@
           "offerId": "daily_pool_horn_8bit_jingle",
           "kind": "cosmetic",
           "refId": "horn_8bit_jingle",
-          "displayName": "Chicharra 8-bit (oferta)",
+          "displayName": "8-Bit Jingle (deal)",
           "priceCoins": 750,
           "expiresAt": null
         },
@@ -103,7 +103,7 @@
           "offerId": "daily_pool_horn_air_raid",
           "kind": "cosmetic",
           "refId": "horn_air_raid",
-          "displayName": "Alarma aérea (oferta)",
+          "displayName": "Air Raid (deal)",
           "priceCoins": 600,
           "expiresAt": null
         },
@@ -111,7 +111,7 @@
           "offerId": "daily_pool_coin_sack_small",
           "kind": "pack",
           "refId": "coin_sack_small",
-          "displayName": "Bolsa monedas pequeña",
+          "displayName": "Small Coin Sack",
           "priceCoins": 500,
           "expiresAt": null
         },
@@ -119,7 +119,7 @@
           "offerId": "daily_pool_coin_sack_large",
           "kind": "pack",
           "refId": "coin_sack_large",
-          "displayName": "Bolsa monedas grande",
+          "displayName": "Large Coin Sack",
           "priceGems": 25,
           "expiresAt": null
         }
@@ -127,7 +127,7 @@
     },
     {
       "id": "level_gated",
-      "displayName": "Por nivel",
+      "displayName": "Level Unlocks",
       "offers": [
         {
           "offerId": "lg_civic_r",
@@ -142,7 +142,7 @@
           "offerId": "lg_coupe_gt",
           "kind": "car",
           "refId": "coupe_gt",
-          "displayName": "Coupé GT",
+          "displayName": "Coupe GT",
           "priceCoins": 18000,
           "requiredLevel": 12,
           "expiresAt": null
@@ -178,7 +178,7 @@
           "offerId": "lg_trail_gold_sparks",
           "kind": "cosmetic",
           "refId": "trail_gold_sparks",
-          "displayName": "Chispas doradas",
+          "displayName": "Gold Sparks",
           "priceCoins": 4500,
           "requiredLevel": 8,
           "expiresAt": null
@@ -187,7 +187,7 @@
           "offerId": "lg_decal_champion_ribbon",
           "kind": "cosmetic",
           "refId": "decal_champion_ribbon",
-          "displayName": "Cinta campeón",
+          "displayName": "Champion Ribbon",
           "priceGems": 30,
           "requiredLevel": 15,
           "expiresAt": null
@@ -196,7 +196,7 @@
           "offerId": "lg_horn_orchestra_hit",
           "kind": "cosmetic",
           "refId": "horn_orchestra_hit",
-          "displayName": "Orquesta fanfarria",
+          "displayName": "Orchestra Hit",
           "priceGems": 75,
           "requiredLevel": 25,
           "expiresAt": null
