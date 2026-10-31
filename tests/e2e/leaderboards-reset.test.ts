@@ -117,10 +117,45 @@ describe('leaderboards weekly reset (Phase 2 §2.5)', () => {
     if (!r.ok) throw new Error(`submit failed: ${JSON.stringify(r)}`);
   }
 
+  let timeTrialCount = 0;
+
+  /**
+   * Solo time trial for `userId` on neon_blvd, class B: the only mode that
+   * feeds the tt_* tables (plan B2, D-08). Its size is always 1.
+   */
+  function runTimeTrial(userId: string, totalMs: number): void {
+    timeTrialCount += 1;
+    const createEnv = call<RaceSessionCreateOutput>(env, 'race_session_create', null, {
+      matchId: `match-reset-tt-${timeTrialCount}`,
+      mode: 'time_trial',
+      trackId: 'neon_blvd',
+      size: 1,
+      hostLoadout: { classId: 'B', bodyId: 'coupe' },
+      hostUserId: userId,
+    });
+    if (!createEnv.ok) throw new Error(`create failed: ${JSON.stringify(createEnv)}`);
+    const sid = createEnv.data.sessionId;
+    const startEnv = call<{ startedAt: number }>(env, 'race_session_start', userId, {
+      sessionId: sid,
+      callerUserId: userId,
+    });
+    if (!startEnv.ok) throw new Error('start failed');
+    const obj = env.fakeNakama.store.get(`race_sessions/${sid}/${SYSTEM_USER_ID}`);
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
+    const r = call<RaceSubmitResultOutput>(env, 'race_submit_result', userId, {
+      sessionId: sid,
+      callerUserId: userId,
+      report: { userId, totalMs, laps: [totalMs], isBotReport: false },
+    });
+    if (!r.ok) throw new Error(`time_trial submit failed: ${JSON.stringify(r)}`);
+  }
+
   it('clears only the week table — all-time records remain intact', async () => {
     const sid = setupQuick();
     submit(sid, HOST_ID, 120_000);
     submit(sid, P1, 130_000);
+    runTimeTrial(HOST_ID, 120_000);
+    runTimeTrial(P1, 130_000);
 
     // Wait for the fire-and-forget writer to land on the week table.
     const weekRec = await waitForRecord(env, 'tt_neon_blvd_B_week', HOST_ID);
@@ -148,18 +183,16 @@ describe('leaderboards weekly reset (Phase 2 §2.5)', () => {
   });
 
   it('a new race after the reset writes fresh records to the week table', async () => {
-    const sid1 = setupQuick();
-    submit(sid1, HOST_ID, 120_000);
-    submit(sid1, P1, 130_000);
+    runTimeTrial(HOST_ID, 120_000);
+    runTimeTrial(P1, 130_000);
     await waitForRecord(env, 'tt_neon_blvd_B_week', HOST_ID);
 
     env.nak.leaderboardReset('tt_neon_blvd_B_week');
     expect(env.fakeNakama.leaderboardRecords.get('tt_neon_blvd_B_week')).toBeUndefined();
 
-    // Run a second race on the same track/class.
-    const sid2 = setupQuick();
-    submit(sid2, HOST_ID, 130_000);
-    submit(sid2, P1, 140_000);
+    // Run a second pair of time trials on the same track/class.
+    runTimeTrial(HOST_ID, 130_000);
+    runTimeTrial(P1, 140_000);
 
     const weekRec = await waitForRecord(env, 'tt_neon_blvd_B_week', HOST_ID);
     expect(weekRec).toBeDefined();
@@ -176,6 +209,8 @@ describe('leaderboards weekly reset (Phase 2 §2.5)', () => {
     const sid = setupQuick();
     submit(sid, HOST_ID, 120_000);
     submit(sid, P1, 130_000);
+    runTimeTrial(HOST_ID, 120_000);
+    runTimeTrial(P1, 130_000);
     await waitForRecord(env, 'tt_neon_blvd_B_week', HOST_ID);
 
     // wins_week has its own resetSchedule but is NOT named here — it

@@ -128,7 +128,37 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     return getRecord(tableId, ownerId);
   }
 
-  it('writes tt_all / tt_week / lap_all records for every human finisher on quorum close', async () => {
+  /**
+   * Runs a solo time trial for `userId` to completion (time_trial is the only
+   * mode that feeds the tt_* tables, plan B2 D-08; its size is always 1).
+   */
+  function runTimeTrial(userId: string, trackId: string, totalMs: number): void {
+    const createEnv = call<RaceSessionCreateOutput>(env, 'race_session_create', null, {
+      matchId: `match-tt-${userId}-${trackId}`,
+      mode: 'time_trial',
+      trackId,
+      size: 1,
+      hostLoadout: { classId: 'B', bodyId: 'coupe' },
+      hostUserId: userId,
+    });
+    if (!createEnv.ok) throw new Error(`create failed: ${JSON.stringify(createEnv)}`);
+    const sid = createEnv.data.sessionId;
+    const startEnv = call<{ startedAt: number }>(env, 'race_session_start', userId, {
+      sessionId: sid,
+      callerUserId: userId,
+    });
+    if (!startEnv.ok) throw new Error('start failed');
+    const obj = env.fakeNakama.store.get(`race_sessions/${sid}/${SYSTEM_USER_ID}`);
+    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
+    const resp = call<RaceSubmitResultOutput>(env, 'race_submit_result', userId, {
+      sessionId: sid,
+      callerUserId: userId,
+      report: { userId, totalMs, laps: [totalMs], isBotReport: false },
+    });
+    if (!resp.ok) throw new Error(`time_trial submit failed: ${JSON.stringify(resp)}`);
+  }
+
+  it('a quick race writes lap_all and wins_week but leaves every tt_ table empty', async () => {
     const { sid } = setupFourPlayerSession();
     for (const r of [
       submitReport(sid, HOST_ID, 120_000),
@@ -138,12 +168,7 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     ]) expect(r.ok).toBe(true);
 
     // Wait for the fire-and-forget leaderboard writer to land.
-    const ttAll = await waitForRecord('tt_neon_blvd_B_all', HOST_ID);
-    expect(ttAll).toBeDefined();
-    expect(ttAll?.score).toBe(120_000);
-
-    // tt_week for HOST
-    expect(getRecord('tt_neon_blvd_B_week', HOST_ID)?.score).toBe(120_000);
+    await waitForRecord('lap_neon_blvd_B_all', HOST_ID);
 
     // lap_all for HOST (best lap = 40_000 ms)
     expect(getRecord('lap_neon_blvd_B_all', HOST_ID)?.score).toBe(40_000);
@@ -155,19 +180,25 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     // P1 (rank 2) does NOT win → wins_week not written for them.
     expect(getRecord('wins_week', P1)).toBeUndefined();
 
-    // All 4 humans entered the time + lap tables.
+    // All 4 humans entered the lap table; nobody entered a time table.
     for (const u of [HOST_ID, P1, P2, P3]) {
-      expect(getRecord('tt_neon_blvd_B_all', u)).toBeDefined();
       expect(getRecord('lap_neon_blvd_B_all', u)).toBeDefined();
+      expect(getRecord('tt_neon_blvd_B_all', u)).toBeUndefined();
+      expect(getRecord('tt_neon_blvd_B_week', u)).toBeUndefined();
     }
   });
 
+  it('writes tt_all / tt_week / lap_all for a time trial on a track added in plan B2', async () => {
+    runTimeTrial(HOST_ID, 'stadium_today', 70_000);
+
+    const rec = await waitForRecord('tt_stadium_today_B_all', HOST_ID);
+    expect(rec?.score).toBe(70_000);
+    expect(getRecord('tt_stadium_today_B_week', HOST_ID)?.score).toBe(70_000);
+    expect(getRecord('lap_stadium_today_B_all', HOST_ID)?.score).toBe(70_000);
+  });
+
   it('does not replace a better score (best operator is honored)', async () => {
-    const { sid } = setupFourPlayerSession();
-    submitReport(sid, HOST_ID, 120_000);
-    submitReport(sid, P1, 130_000);
-    submitReport(sid, P2, 140_000);
-    submitReport(sid, P3, 150_000);
+    runTimeTrial(HOST_ID, 'neon_blvd', 120_000);
     await waitForRecord('tt_neon_blvd_B_all', HOST_ID);
 
     const before = getRecord('tt_neon_blvd_B_all', HOST_ID)?.score;
@@ -207,7 +238,7 @@ describe('leaderboards RaceCompleted writer (Chunk 12)', () => {
     submitReport(sid, P2, 140_000);
     submitReport(sid, P3, 150_000);
 
-    const rec = await waitForRecord('tt_neon_blvd_B_all', HOST_ID);
+    const rec = await waitForRecord('lap_neon_blvd_B_all', HOST_ID);
     expect(rec).toBeDefined();
     const meta = rec?.metadata as Record<string, unknown>;
     expect(meta['__server_token__']).toBe('phase2');

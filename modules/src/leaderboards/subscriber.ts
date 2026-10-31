@@ -7,15 +7,18 @@
 //     only, never trusted for time boards).
 //   - Compute the confidence outcome: 0 humans → 'server', every human
 //     reported → 'quorum', otherwise → 'client' (incomplete_reports).
-//   - Apply the confidence rule for time tables:
-//       * 'quorum' and 'server' always enter the time tables
-//       * 'client' only enters if the mode is 'time_trial' (validated
-//         solo runs are accepted even with incomplete reports — flagged
-//         in metadata for later review)
+//   - Best-time tables (tt_*) hold time-trial runs only (plan B2, D-08).
+//     A time trial is self-evidenced, so the confidence gate does not
+//     apply to it (incomplete reports are flagged in metadata for later
+//     review); every other mode never writes to tt_*. lap_* takes every
+//     mode.
 //   - Write to:
-//       * tt_{track}_{class}_all     (best asc, no reset) — totalMs
-//       * tt_{track}_{class}_week    (best asc, Monday reset) — totalMs
-//       * lap_{track}_{class}_all    (best asc, no reset) — bestLapMs
+//       * tt_{track}_{class}_all     (best asc, no reset) — totalMs,
+//         time_trial only
+//       * tt_{track}_{class}_week    (best asc, Monday reset) — totalMs,
+//         time_trial only
+//       * lap_{track}_{class}_all    (best asc, no reset) — bestLapMs,
+//         every mode
 //       * wins_week                  (incr desc, Monday reset) — +1
 //         for rank-1 finisher, only in quick + ranked modes
 //   - Every write is stamped with the server token + a metadata bag
@@ -135,10 +138,9 @@ export async function applyRaceCompletedToLeaderboards(
     );
   }
 
-  // Confidence gate. 'client' (incomplete_reports) is allowed ONLY
-  // when the mode is time_trial.
-  const allowTimeTableWrite =
-    confidence !== 'client' || event.mode === 'time_trial';
+  // Best-time tables hold time-trial runs only (plan B2, D-08); a time trial is
+  // self-evidenced, so the client confidence gate does not apply to it.
+  const writeTimeTables = event.mode === 'time_trial';
 
   const winner = event.results.find((r) => r.rank === 1 && !r.abandoned && !r.isBot);
   const usernames = usernamesById(
@@ -165,7 +167,7 @@ export async function applyRaceCompletedToLeaderboards(
       isBot: false,
     };
 
-    if (allowTimeTableWrite) {
+    if (writeTimeTables) {
       // Best time tables (all + week), narrowed to the player's class.
       for (const t of [
         ...byClass(getTtAllTables(event.trackId), entry.loadout.classId),

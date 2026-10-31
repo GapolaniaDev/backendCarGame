@@ -18,7 +18,7 @@
     }
   ],
   "trackScoped": {
-    "tracks": ["neon_blvd", "reef_run", "mountain_pass", "canyon_drift", "harbor_sprint", "factory_loop"],
+    "tracks": ["neon_blvd", "reef_run", "mountain_pass", "canyon_drift", "harbor_sprint", "factory_loop", "stadium_today", "desert_circuit", "arctic_circuit"],
     "classes": ["D", "C", "B", "A", "S"],
     "patterns": {
       "tt_all": {

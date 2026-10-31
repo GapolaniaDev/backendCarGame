@@ -79,60 +79,48 @@ describe('lb_get RPC (Chunk 13)', () => {
   });
 
   /**
-   * Drive a 4-player quick race to completion and return the
-   * session id. After the last submit, the RaceCompleted subscriber
-   * writes a record per finisher into tt_neon_blvd_B_all (and friends),
-   * giving us a populated leaderboard to read from.
+   * Drive four solo time trials (HOST, P1, P2, P3) to completion. After each
+   * submit, the RaceCompleted subscriber writes a record into
+   * tt_neon_blvd_B_all (and friends); only time trials feed the tt_* tables
+   * (plan B2, D-08), and a time trial is always a solo run, so the four
+   * records come from four sessions. Returns the last session id.
    */
   async function setupPopulatedRace(): Promise<string> {
-    const create = call<{ ok: true; data: RaceSessionCreateOutput } | ErrResponse>(
-      env,
-      'race_session_create',
-      null,
-      {
-        matchId: 'm-lbget',
-        mode: 'quick',
-        trackId: 'neon_blvd',
-        size: 4,
-        hostLoadout: { classId: 'B', bodyId: 'coupe' },
-        hostUserId: HOST_ID,
-      },
-    );
-    if (!('ok' in create) || !create.ok) {
-      throw new Error(`create failed: ${JSON.stringify(create)}`);
-    }
-    const sid = create.data.sessionId;
-    for (const u of [P1, P2, P3]) {
-      const j = call<{ ok: true } | ErrResponse>(
+    let sid = '';
+    for (const u of [HOST_ID, P1, P2, P3]) {
+      const create = call<{ ok: true; data: RaceSessionCreateOutput } | ErrResponse>(
         env,
-        'race_session_join',
+        'race_session_create',
         null,
         {
-          sessionId: sid,
-          userId: u,
-          callerUserId: u,
-          loadout: { classId: 'B', bodyId: 'coupe' },
+          matchId: `m-lbget-${u}`,
+          mode: 'time_trial',
+          trackId: 'neon_blvd',
+          size: 1,
+          hostLoadout: { classId: 'B', bodyId: 'coupe' },
+          hostUserId: u,
         },
       );
-      if (!('ok' in j) || !j.ok) throw new Error(`join ${u} failed`);
-    }
-    const s = call<{ ok: true } | ErrResponse>(env, 'race_session_start', HOST_ID, {
-      sessionId: sid,
-      callerUserId: HOST_ID,
-    });
-    if (!('ok' in s) || !s.ok) throw new Error('start failed');
-    const k = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
-    const obj = env.fakeNakama.store.get(k);
-    if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
+      if (!('ok' in create) || !create.ok) {
+        throw new Error(`create failed: ${JSON.stringify(create)}`);
+      }
+      sid = create.data.sessionId;
+      const s = call<{ ok: true } | ErrResponse>(env, 'race_session_start', u, {
+        sessionId: sid,
+        callerUserId: u,
+      });
+      if (!('ok' in s) || !s.ok) throw new Error('start failed');
+      const k = `race_sessions/${sid}/${SYSTEM_USER_ID}`;
+      const obj = env.fakeNakama.store.get(k);
+      if (obj) (obj.value as { startedAt: number }).startedAt = Date.now() - 600_000; // inside ABANDONED_SESSION_MS (T-06)
 
-    for (const u of [HOST_ID, P1, P2, P3]) {
       const r = call<{ ok: true } | ErrResponse>(env, 'race_submit_result', u, {
         sessionId: sid,
         callerUserId: u,
         report: {
           userId: u,
           totalMs: 120_000,
-          laps: [40_000, 40_000, 40_000],
+          laps: [120_000],
           isBotReport: false,
         },
       });
@@ -142,13 +130,12 @@ describe('lb_get RPC (Chunk 13)', () => {
     const deadline = Date.now() + 500;
     while (
       Date.now() < deadline &&
-      !env.fakeNakama.leaderboardRecords.has('tt_neon_blvd_B_all')
+      (env.fakeNakama.leaderboardRecords.get('tt_neon_blvd_B_all')?.size ?? 0) < 4
     ) {
       await new Promise((r) => setImmediate(r));
     }
-   return sid;
+    return sid;
   }
-
   it('global view returns top-N records with rank + score + metadata', async () => {
     await setupPopulatedRace();
     const resp = call<LbGetResponse>(env, 'lb_get', HOST_ID, {

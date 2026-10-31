@@ -25,16 +25,16 @@ import {
 } from '../../modules/src/leaderboards/hooks';
 import leaderboardsJson from '../../modules/src/catalogs/leaderboards.json';
 
-const TRACKS = 6;
+const TRACKS = 9;
 const CLASSES = 5;
 const PATTERNS = 3; // tt_all, tt_week, lap_all
 /** Catalog tables (wins_week + club_week + track×class×pattern). */
-const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + 1 /* club_week */ + TRACKS * CLASSES * PATTERNS; // = 92
+const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + 1 /* club_week */ + TRACKS * CLASSES * PATTERNS; // = 137
 /**
  * Catalog tables (club_week included since plan B2) + the active
  * season's ranked table (`ranked_season_2`, plan T-13).
  */
-const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* ranked */; // = 93
+const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* ranked */; // = 138
 
 describe('leaderboards boot (Chunk 11)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
@@ -43,7 +43,7 @@ describe('leaderboards boot (Chunk 11)', () => {
     env = loadBundleForTest();
   });
 
-  it('creates every authoritative table from the expanded catalog (92, club_week included) + ranked', () => {
+  it('creates every authoritative table from the expanded catalog (137, club_week included) + ranked', () => {
     // InitModule populated env.fakeNakama.leaderboards (the bundle's nk
     // is the same FakeNakama instance). Confirm the count + a few
     // representative ids.
