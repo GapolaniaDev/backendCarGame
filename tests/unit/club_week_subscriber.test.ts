@@ -10,7 +10,7 @@
 //   - 0 humans / all bots → no writes
 //   - players without a club → skip silently
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import type { INakama, ILogger } from '../../modules/src/nkruntime';
 import { EventBus } from '../../modules/src/core/event_bus';
@@ -307,6 +307,34 @@ describe('club_week subscriber (Phase 7 Chunk 5)', () => {
     expect(readMeta(fake, 'club-1')!.weeklyPoints).toBe(3);
     const weekMeta = fake.store.get(`${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`);
     expect((weekMeta!.value as { currentWeek: string }).currentWeek).toBe(utcWeek(Date.now()));
+  });
+
+  it('skips a club whose week reset throws and still credits the other clubs', () => {
+    seedClubMeta(fake, 'club-1', 'user-L1');
+    seedClubMeta(fake, 'club-2', 'user-L2');
+    seedMember(fake, 'club-1', 'user-A');
+    seedMember(fake, 'club-2', 'user-B');
+    const deps = makeDeps(fake);
+    const realRead = deps.nk.storageRead.bind(deps.nk);
+    vi.spyOn(deps.nk, 'storageRead').mockImplementation((reqs) => {
+      if (reqs.some((r) => r.collection === CLUBS_WEEK_META_COLLECTION && r.key === 'club-1')) {
+        throw new Error('week meta read failed');
+      }
+      return realRead(reqs);
+    });
+    const event = makeEvent([
+      { rank: 1, userId: 'user-A', isBot: false, totalMs: 60_000, abandoned: false },
+      { rank: 2, userId: 'user-B', isBot: false, totalMs: 61_000, abandoned: false },
+    ]);
+
+    const out = handleRaceCompletedForClubWeek(deps, event);
+
+    expect(out.processed).toBe(true);
+    expect(out.humans.map((h) => h.clubId)).toEqual(['club-2']);
+    expect(readMemberRow(fake, 'club-1', 'user-A')!.weeklyContribution).toBe(0);
+    expect(readMeta(fake, 'club-1')!.weeklyPoints).toBe(0);
+    expect(readMemberRow(fake, 'club-2', 'user-B')!.weeklyContribution).toBe(2);
+    expect(readMeta(fake, 'club-2')!.weeklyPoints).toBe(2);
   });
 
   it('does not throw when leaderboard table is missing', () => {

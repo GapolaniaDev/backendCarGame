@@ -131,7 +131,25 @@ export function handleRaceCompletedForClubWeek(
   }
 
   // 4. Roll every involved club into the current week BEFORE crediting.
-  for (const clubId of new Set(clubByUser.values())) ensureWeekBoundary(nk, logger, clubId);
+  //    A club whose roll fails (or throws) is skipped: crediting it would mix the new
+  //    points with last week's state, which the next reset would wipe.
+  const skippedClubs = new Set<string>();
+  for (const clubId of new Set(clubByUser.values())) {
+    let reset: string;
+    try {
+      reset = ensureWeekBoundary(nk, logger, clubId).reason;
+    } catch (e) {
+      logger.warn(
+        'club_week: week boundary threw club=%s: %s',
+        clubId, e instanceof Error ? e.message : String(e),
+      );
+      reset = 'exception';
+    }
+    if (reset === 'write_failed' || reset === 'exception') {
+      logger.warn('club_week: skip club=%s reset=%s', clubId, reset);
+      skippedClubs.add(clubId);
+    }
+  }
 
   // 5. Per-human write loop.
   const outcomes: ClubWeekOutcome['humans'] = [];
@@ -139,8 +157,8 @@ export function handleRaceCompletedForClubWeek(
   for (const r of humans) {
     const userId = r.userId;
     const clubId = clubByUser.get(userId);
-    if (clubId === undefined) {
-      // Player is not in any club — no-op for club_week.
+    if (clubId === undefined || skippedClubs.has(clubId)) {
+      // Player is not in any club, or the club's week could not be rolled — no-op.
       continue;
     }
     const points = pointsForRaceResult(r);

@@ -347,7 +347,8 @@ same response.
 // body
 "{\"leaderboardId\":\"tt_neon_blvd_B_all\",\"view\":\"global\",\"limit\":20,\"cursor\":\"<nextCursor of the previous page>\"}"
 // view ∈ { "global", "around_me", "friends" }
-// aroundUserId optional — defaults to caller. Used by `around_me` to center.
+// aroundUserId optional — defaults to caller. Used by `around_me` to center (player tables).
+// aroundClubId optional — defaults to the caller's club. Used by `around_me` on club tables.
 // cursor optional (plan T-13) — nextCursor / prevCursor of a previous page of the same view.
 // leaderboardId may also be a season's ranked table, e.g. "ranked_season_2".
 
@@ -355,6 +356,7 @@ same response.
 {
   "leaderboardId": "tt_neon_blvd_B_all",
   "view":          "global",
+  "ownerKind":     "user",       // "club" on club tables (club_week)
   "totalCount":    237,
   "records": [
     {
@@ -380,6 +382,7 @@ same response.
     // users without a profile fall back to { userId, displayName: <username>, avatarUrl: null }
   },
   "clubs": {},                // club tables: { "<clubId>": { clubId, name, emblemId, memberCount } }
+  "nextCursor": null,         // null on the last page
   "prevCursor": null          // null on the first page
 }
 ```
@@ -606,9 +609,9 @@ type Confidence = 'quorum' | 'client' | 'server';
 
 | Value | When | Leaderboard writes (Phase 2) |
 |---|---|---|
-| `quorum` | At least ⌈n/2⌉ of the human players reported (plan T-09) | All tables (`tt_*`, `lap_*`, `wins_week` +1 for rank-1 in `quick`/`ranked`) |
-| `client` | Fewer than ⌈n/2⌉ humans reported (e.g. closed by the grace period); `needsReview: true` (`incomplete_reports`) | `tt_*` / `lap_*` only when `mode === 'time_trial'`. `wins_week` suppressed. |
-| `server` | No humans reported; order is the bot roster by `totalMs` | All tables but `wins_week` (bots never win) |
+| `quorum` | At least ⌈n/2⌉ of the human players reported (plan T-09) | `tt_*` only when `mode === 'time_trial'`; `lap_*` in every mode; `wins_week` +1 for rank-1 in `quick`/`ranked` |
+| `client` | Fewer than ⌈n/2⌉ humans reported (e.g. closed by the grace period); `needsReview: true` (`incomplete_reports`) | `tt_*` only when `mode === 'time_trial'`; `lap_*` in every mode. `wins_week` suppressed. |
+| `server` | No humans reported; order is the bot roster by `totalMs` | `tt_*` only when `mode === 'time_trial'`; `lap_*` in every mode; never `wins_week` (bots never win) |
 
 `race_submit_result` returns the confidence (`confidence`), and the internal
 `RaceCompleted` event carries it (plan T-09). Per-record confidence is also stamped on each leaderboard record's metadata
@@ -1847,8 +1850,8 @@ All Phase 7 RPCs follow the standard `Resp<T> = Ok<T> | Err` envelope
 | `block_remove` | owner | YES | `{removed: boolean}` |
 | `block_list` | owner | YES | `{blocks, count}` (cards with `displayName`) |
 | `club_create` | level ≥ 8, not in a club | YES | `{clubId, name, costPaid, newBalance}` |
-| club_get | any | YES | {club, members, weeklyRank} |
-| club_mine | any | YES | {inClub, club, membership, weeklyRank} |
+| `club_get` | any | YES | `{club, members, weeklyRank}` |
+| `club_mine` | any | YES | `{inClub, club, membership, weeklyRank}` |
 | `club_search` | any | YES | `{clubs, nextCursor}` |
 | `club_join` | level ≥ 8, not in a club (T-21) | YES | `{clubId, userId, role, joinedAt}` |
 | `club_update` | leader / admin | YES | `{clubId, updatedAt}` |

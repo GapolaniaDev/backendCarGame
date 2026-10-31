@@ -57,8 +57,8 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 | RPC | Auth | Returns |
 |---|---|---|
 | `club_create` | level 8 + 5000 coins, not in a club | `{clubId, name, costPaid, newBalance}` |
-| club_get | any | `{club, members: [leader], weeklyRank}` |
-| club_mine | any | `{inClub, club, membership, weeklyRank}` |
+| `club_get` | any | `{club, members: [leader], weeklyRank}` |
+| `club_mine` | any | `{inClub, club, membership, weeklyRank}` |
 | `club_search` | any | `{clubs, nextCursor}` (name prefix, region filter) |
 | `club_join` | level 8, not in a club (T-21) | `{clubId, userId, role: 'member', joinedAt}` |
 | `club_update` | leader / admin | `{clubId, updatedAt}` |
@@ -172,6 +172,7 @@ Chunks 1, 2, 3, 4, 6, and 7. Parties live separately — see
 | `block_list` | 30/min |
 | `club_create` | 5/min |
 | `club_get` | 60/min |
+| `club_mine` | 60/min |
 | `club_search` | 30/min |
 | `club_join` | 10/min |
 | `club_update` | 30/min |

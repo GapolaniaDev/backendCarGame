@@ -114,8 +114,8 @@ Confidence is computed by `computeQuorum(reports)` in `race/ordering.ts`:
 
 | | `quorum` | `server` (all-bot) | `client` (review pending) |
 |---|---|---|---|
-| `tt_*_all` / `tt_*_week` | ✅ | ✅ | ✅ only when `mode === 'time_trial'` |
-| `lap_*_all` | ✅ | ✅ | ✅ in every mode |
+| `tt_*_all` / `tt_*_week` | ✅ only when `mode === 'time_trial'` | ✅ only when `mode === 'time_trial'` | ✅ only when `mode === 'time_trial'` |
+| `lap_*_all` | ✅ in every mode | ✅ in every mode | ✅ in every mode |
 | `wins_week` | ✅ +1 for rank-1 in `quick`/`ranked` | ❌ (bots don't win) | ❌ |
 
 `time_trial` mode bypasses the `client` gate because the soloist's run is self-evidenced — there's no second client to disagree with.

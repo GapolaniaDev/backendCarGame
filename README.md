@@ -366,11 +366,12 @@ Phase 2 ships the leaderboard catalog, the `RaceCompleted` → leaderboard write
 
 ### Leaderboard catalog
 
-91 tables total, generated from `modules/src/catalogs/leaderboards.json` at boot:
+137 tables total, generated from `modules/src/catalogs/leaderboards.json` at boot:
 
 - `wins_week` — weekly wins counter (Monday 00:00 UTC reset), `incr desc`
-- per (track × class × pattern): `tt_{track}_{class}_{all|week}` (race time, `best asc`) and `lap_{track}_{class}_all` (best lap, `best asc`)
-- 6 tracks × 5 classes (D, C, B, A, S) × 3 patterns + 1 `wins_week` = 91
+- `club_week` — weekly club points (Monday 00:00 UTC reset), owner = club id
+- per (track × class × pattern): `tt_{track}_{class}_{all|week}` (time-trial race time, `best asc`) and `lap_{track}_{class}_all` (best lap, `best asc`)
+- 9 tracks × 5 classes (D, C, B, A, S) × 3 patterns (`tt_all`, `tt_week`, `lap_all`) + `wins_week` + `club_week` = 137
 
 Tables are registered through `initializer.registerLeaderboardCreate(...)` at `InitModule`. The catalog is also cached in `nk.localcache` (7-day TTL) so hot reads avoid re-walking the JSON.
 
@@ -423,17 +424,17 @@ The event now carries an additional `sessionId` (already present) and the subscr
 
 - **`global`** — top-N sorted ascending by score; `ownerRecord` is the caller's own entry (null if not on the table).
 - **`around_me`** — band of `limit/2` records on each side of the caller; clamped to the array bounds. Falls back to top-N when the caller has no record.
-- **`friends`** — stubbed to "just the caller" until the friends module lands.
+- **`friends`** — the caller and their friends that have a record, with their global ranks (paged with `friends:<n>` cursors).
 
 ### Confidence → leaderboard write rules
 
-| Confidence | How it's derived | Time/best-lap writes | wins_week write |
-|---|---|---|---|
-| `quorum` | every human agreed on the order | ✅ written | ✅ +1 for rank-1 (quick/ranked only) |
-| `server` | zero humans reported (all-bot race) | ✅ written | ❌ never (bots don't win) |
-| `client` | humans disagree or some didn't report | ✅ written only for `time_trial` mode | ❌ pending review |
+| Confidence | How it's derived | `tt_*` (race time) | `lap_*` (best lap) | wins_week write |
+|---|---|---|---|---|
+| `quorum` | every human agreed on the order | ✅ only for `time_trial` mode | ✅ every mode | ✅ +1 for rank-1 (quick/ranked only) |
+| `server` | zero humans reported (all-bot race) | ✅ only for `time_trial` mode | ✅ every mode | ❌ never (bots don't win) |
+| `client` | humans disagree or some didn't report | ✅ only for `time_trial` mode | ✅ every mode | ❌ pending review |
 
-The `time_trial` mode is special-cased: even at `client` confidence, the time table is written because the soloist's run is self-evidenced.
+The `tt_*` tables hold time-trial runs only, whatever the confidence; `lap_*` takes the best lap of any mode.
 
 ### Profile module
 

@@ -415,7 +415,14 @@ function buildClubOutput(
       logger.warn('lb_get club names unavailable table=%s: %s', leaderboardId, e instanceof Error ? e.message : String(e));
     }
   }
-  const metas = readClubMetadataMany(nk, ids);
+  let metas: ReturnType<typeof readClubMetadataMany> = new Map();
+  if (ids.length > 0) {
+    try {
+      metas = readClubMetadataMany(nk, ids);
+    } catch (e) {
+      logger.warn('lb_get club emblems unavailable table=%s: %s', leaderboardId, e instanceof Error ? e.message : String(e));
+    }
+  }
   const clubs: Record<string, LbClubView> = {};
   const names = new Map<string, string>();
   for (const g of groups) {

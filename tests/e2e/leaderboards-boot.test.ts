@@ -67,8 +67,8 @@ describe('leaderboards boot (Chunk 11)', () => {
   it('is a no-op when re-ensured (INSERT-IF-NOT-EXISTS)', () => {
     // Re-load + re-ensure against the same fakeNakama: every catalog
     // table is already there, so the catalog-summary reports
-    // `existing: 92` and `created: 0`. The ranked table is passed by
-    // InitModule, so the total table count is 93.
+    // `existing: 137` and `created: 0`. The ranked table is passed by
+    // InitModule, so the total table count is 138.
     loadLeaderboardsCatalog(
       env.fakeLogger,
       leaderboardsJson as unknown as Parameters<typeof loadLeaderboardsCatalog>[1],

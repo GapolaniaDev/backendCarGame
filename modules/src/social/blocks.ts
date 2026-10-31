@@ -108,6 +108,28 @@ export function block_add_impl(
     return toJson(err('BAD_REQUEST', 'cannot block yourself'));
   }
 
+  // Idempotent insert-if-absent. The block is written FIRST: if it fails nothing
+  // else changed, whereas deleting the friendship first and failing here would
+  // leave the players neither friends nor blocked.
+  const existing = readBlock(nk, caller.id, targetUserId);
+  if (existing === null) {
+    const record: BlockRecord = {
+      schemaVersion: 1,
+      ownerId: caller.id,
+      targetUserId,
+      createdAt: Date.now(),
+    };
+    try {
+      writeBlockCreate(nk, record);
+    } catch (e) {
+      logger.error(
+        'block_add: storage write failed: %s',
+        e instanceof Error ? e.message : String(e),
+      );
+      return toJson(err('INTERNAL', 'failed to persist block'));
+    }
+  }
+
   // Blocking ends any friendship (D-10). Runs even when the block already
   // exists, so a friendship seeded after the block is still removed.
   const wasFriend =
@@ -127,27 +149,9 @@ export function block_add_impl(
     emit(nk, logger, 'friend_removed', { friendId: targetUserId, reason: 'blocked' }, { userId: caller.id });
   }
 
-  // Idempotent insert-if-absent.
-  const existing = readBlock(nk, caller.id, targetUserId);
   if (existing !== null) {
     const out: BlockAddOutput = { created: false, unfriended: wasFriend };
     return toJson(ok(out));
-  }
-
-  const record: BlockRecord = {
-    schemaVersion: 1,
-    ownerId: caller.id,
-    targetUserId,
-    createdAt: Date.now(),
-  };
-  try {
-    writeBlockCreate(nk, record);
-  } catch (e) {
-    logger.error(
-      'block_add: storage write failed: %s',
-      e instanceof Error ? e.message : String(e),
-    );
-    return toJson(err('INTERNAL', 'failed to persist block'));
   }
 
   emit(nk, logger, 'player_blocked', { targetUserId }, { userId: caller.id });

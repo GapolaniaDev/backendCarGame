@@ -44,7 +44,7 @@ import type { ILogger, INakama } from '../nkruntime';
 import { sendReward } from '../liveops/inbox';
 import { serverNowMs, utcWeek, utcWeekStartMs, WEEK_MS } from '../core/time';
 import { readClubMembers, writeMemberUpdate } from './members_repo';
-import { readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
+import { readClubGroup, readClubMetadata, writeClubMetadataUpdate } from './clubs_repo';
 import { CLUB_WEEK_LEADERBOARD_ID } from './leaderboard_init';
 import {
   pickTopContributors,
@@ -161,6 +161,21 @@ export function ensureWeekBoundary(
     rewardedUserIds = marker.record.rewardedUserIds;
   }
 
+  // The reward step above can be slow and another actor may have rolled this club in
+  // the meantime (and already credited points to the new week): re-read the meta and
+  // never zero a club that is already on the current week.
+  const latest = readClubWeekMeta(nk, clubId);
+  if (latest === null || latest.record.currentWeek === week) {
+    return {
+      reset: false,
+      oldWeek: week,
+      newWeek: week,
+      winnerClubId,
+      rewardedUserIds,
+      reason: 'same_week',
+    };
+  }
+
   // Zero this club's per-club state (metadata + members).
   try {
     zeroClubForNewWeek(nk, logger, clubId);
@@ -187,7 +202,7 @@ export function ensureWeekBoundary(
     lastResetAt: now,
   };
   try {
-    writeClubWeekMetaUpdate(nk, nextMeta, existing.version);
+    writeClubWeekMetaUpdate(nk, nextMeta, latest.version);
   } catch (e) {
     logger.warn(
       'club_week_reset meta update failed clubId=%s: %s',
@@ -252,10 +267,20 @@ export function awardWeeklyReward(
   const top1 = top.records[0];
   const winnerClubId = top1 !== undefined ? top1.ownerId : null;
 
-  // 2. The winner club's top-3 contributors.
-  const top3 = winnerClubId === null
-    ? []
-    : pickTopContributors(readClubMembers(nk, winnerClubId).map((m): ContributionRow => ({
+  // 2. The winner club's top-3 contributors (members with 0 points are not rewarded).
+  const roster = winnerClubId === null ? [] : readClubMembers(nk, winnerClubId);
+  if (winnerClubId !== null && roster.length === 0 && readClubGroup(nk, winnerClubId) !== null) {
+    // A club that exists always has members: an empty roster is a failed read. Do not
+    // claim the marker, so the next ticker run retries instead of losing the reward.
+    logger.warn(
+      'club_week_reset empty roster for existing winner club=%s week=%s: marker not claimed',
+      winnerClubId, week,
+    );
+    return { winnerClubId, rewardedUserIds: [] };
+  }
+  const top3 = pickTopContributors(roster
+    .filter((m) => m.record.weeklyContribution > 0)
+    .map((m): ContributionRow => ({
       userId: m.record.userId,
       weeklyContribution: m.record.weeklyContribution,
       joinedAt: m.record.joinedAt,

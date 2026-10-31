@@ -9,8 +9,9 @@
 //   2. The per-club metadata (`clubs_metadata.weeklyPoints`) and the
 //      per-member `clubs_members/{clubId}/{userId}.weeklyContribution`
 //      field do NOT auto-reset — those are flattened in
-//      `club_week_reset.ts` via a lazy reset on the first `club_get`
-//      after the week boundary.
+//      `club_week_reset.ts`: the service ticker rewards the finished week,
+//      and the club reads and the race subscriber roll each club on its
+//      first touch after the week boundary.
 //
 // `ensureClubWeekLeaderboard` is idempotent — the runtime returns
 // `(created=false)` when the table already exists, so re-runs are

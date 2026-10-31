@@ -329,7 +329,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
       userId: 'club-1',
       value: {
         schemaVersion: 1, clubId: 'club-1',
-        currentWeek: '2026-W01', lastResetAt: Date.UTC(2026, 9, 28),
+        currentWeek: utcWeek(Date.UTC(2026, 9, 28)), lastResetAt: Date.UTC(2026, 9, 28),
       } as unknown as Record<string, unknown>,
       version: 'v00000001',
       permissionRead: 1, permissionWrite: 1,
@@ -346,7 +346,15 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
       ownerRecords: [], nextCursor: null, prevCursor: null, rankCount: 1,
     } as never);
 
-    const out = ensureWeekBoundary(nk, logger, 'club-1');
+    // `ensureWeekBoundary` reads the real clock: pin it to the week after the seeded one.
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 10, 3));
+    let out: ReturnType<typeof ensureWeekBoundary>;
+    try {
+      out = ensureWeekBoundary(nk, logger, 'club-1');
+    } finally {
+      vi.useRealTimers();
+    }
 
     // Week of 2026-10-28 starts Mon 2026-10-26; its records expire Mon 2026-11-02 00:00 UTC.
     expect(spy).toHaveBeenCalledWith(
@@ -355,7 +363,7 @@ describe('ensureWeekBoundary (Phase 7 Chunk 5)', () => {
     expect(out.reset).toBe(true);
     expect(out.winnerClubId).toBe('club-2');
     expect(out.rewardedUserIds).toEqual(['user-L2', 'user-N1']);
-    expect(readResetMarker(fake, '2026-W01')!.winnerClubId).toBe('club-2');
+    expect(readResetMarker(fake, utcWeek(Date.UTC(2026, 9, 28)))!.winnerClubId).toBe('club-2');
     expect(readInboxCount(fake, 'user-L2')).toBe(1);
     expect(readInboxCount(fake, 'user-N1')).toBe(1);
     expect(readInboxCount(fake, 'user-L1')).toBe(0);
@@ -418,6 +426,16 @@ describe('runClubWeekTick (plan B2, D-07)', () => {
     expect(readInboxCount(fake, 'user-L1')).toBe(1);
   });
 
+  it('reads the finished week of the tick by its exact expiry (overrideExpiry in seconds)', () => {
+    const nk = fake.nakama as INakama;
+    const spy = vi.spyOn(nk, 'leaderboardRecordsList');
+    runClubWeekTick(nk, logger, TICK_NOW);
+    // Tick at Mon 2026-11-02 00:03 UTC closes the week of 2026-10-26, which expires at 2026-11-02 00:00 UTC.
+    expect(spy).toHaveBeenCalledWith(
+      CLUB_WEEK_LEADERBOARD_ID, [], 3, '', Date.UTC(2026, 10, 2) / 1000,
+    );
+  });
+
   it('reports winner=none when the finished week has no records', () => {
     fake.leaderboardRecords.delete(CLUB_WEEK_LEADERBOARD_ID);
     expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW)).toBe('winner=none/rewarded=0');
@@ -452,5 +470,100 @@ describe('runClubWeekTick (plan B2, D-07)', () => {
 
     expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW)).toBe('already');
     expect(readInboxCount(fake, 'user-L1')).toBe(1);
+  });
+});
+
+describe('ensureWeekBoundary vs a concurrent reset (final review)', () => {
+  it('does not wipe the points a concurrent actor credited in the new week during the reward step', () => {
+    const fake = new FakeNakama();
+    const logger = new FakeLogger();
+    ensureLeaderboard(fake);
+    seedClubMeta(fake, 'club-1', 'user-L1', 30);
+    seedMember(fake, 'club-1', 'user-L1', 10, 100, 'leader');
+    const metaKey = `${CLUBS_WEEK_META_COLLECTION}/club-1/${SYSTEM}`;
+    fake.store.set(metaKey, {
+      collection: CLUBS_WEEK_META_COLLECTION,
+      key: 'club-1',
+      userId: SYSTEM,
+      value: {
+        schemaVersion: 1, clubId: 'club-1', currentWeek: '2026-W01', lastResetAt: Date.now() - 7 * 86_400_000,
+      } as unknown as Record<string, unknown>,
+      version: 'v00000001',
+      permissionRead: 1, permissionWrite: 1,
+      createTime: new Date(0).toISOString(),
+      updateTime: new Date(0).toISOString(),
+      expiresAt: null,
+    });
+    const nk = fake.nakama as INakama;
+    // While the reward step reads the leaderboard, another actor resets this club
+    // (meta moves to the current week) and credits +3 to the metadata and the member.
+    vi.spyOn(nk, 'leaderboardRecordsList').mockImplementation(() => {
+      const meta = fake.store.get(metaKey)!;
+      meta.value = { ...meta.value, currentWeek: utcWeek(Date.now()), lastResetAt: Date.now() };
+      meta.version = 'v00000002';
+      const clubMeta = fake.store.get(`${CLUBS_METADATA_COLLECTION}/club-1/${SYSTEM}`)!;
+      clubMeta.value = { ...clubMeta.value, weeklyPoints: 3 };
+      const member = fake.store.get(`${CLUBS_MEMBERS_COLLECTION}/current/user-L1`)!;
+      member.value = { ...member.value, weeklyContribution: 3 };
+      return { records: [], ownerRecords: [], nextCursor: null, prevCursor: null, rankCount: 0 } as never;
+    });
+
+    const out = ensureWeekBoundary(nk, logger, 'club-1');
+
+    expect(out.reset).toBe(false);
+    expect(out.reason).toBe('same_week');
+    expect(readMeta(fake, 'club-1')!.weeklyPoints).toBe(3);
+    expect(readMember(fake, 'club-1', 'user-L1')!.weeklyContribution).toBe(3);
+  });
+});
+
+describe('weekly reward reliability (final review)', () => {
+  const TICK_NOW = Date.UTC(2026, 10, 2, 0, 3);
+  let fake: FakeNakamaType;
+  let logger: ILogger;
+
+  function seedEmptyRoster(clubId: string): void {
+    fake.groups.set(clubId, {
+      id: clubId, creatorId: 'user-L1', name: clubId, description: '', avatarUrl: '', langTag: 'es',
+      metadata: {}, open: false, edgeCount: 0, maxCount: 30, createTime: 0, updateTime: 0,
+    });
+    fake.groupMembers.set(clubId, new Set());
+    fake.groupStates.set(clubId, new Map());
+  }
+
+  beforeEach(() => {
+    fake = new FakeNakama();
+    logger = new FakeLogger();
+    ensureLeaderboard(fake);
+    seedLbRecord(fake, 'club-1', 30);
+    seedClubMeta(fake, 'club-1', 'user-L1', 30);
+  });
+
+  it('an empty roster of an existing club does not claim the marker; the next tick rewards', () => {
+    seedEmptyRoster('club-1');
+    const nk = fake.nakama as INakama;
+
+    expect(runClubWeekTick(nk, logger, TICK_NOW)).toBe('winner=club-1/rewarded=0');
+    expect(readResetMarker(fake, utcWeek(Date.UTC(2026, 9, 26)))).toBeNull();
+
+    seedMember(fake, 'club-1', 'user-L1', 10, 100, 'leader');
+    seedMember(fake, 'club-1', 'user-M1', 8, 200);
+    expect(runClubWeekTick(nk, logger, TICK_NOW + 300_000)).toBe('winner=club-1/rewarded=2');
+    expect(readResetMarker(fake, utcWeek(Date.UTC(2026, 9, 26)))).not.toBeNull();
+    expect(readInboxCount(fake, 'user-L1')).toBe(1);
+    expect(readInboxCount(fake, 'user-M1')).toBe(1);
+  });
+
+  it('a winner whose members all have 0 contribution claims the marker with nobody rewarded', () => {
+    seedMember(fake, 'club-1', 'user-L1', 0, 100, 'leader');
+    seedMember(fake, 'club-1', 'user-M1', 0, 200);
+
+    expect(runClubWeekTick(fake.nakama as INakama, logger, TICK_NOW)).toBe('winner=club-1/rewarded=0');
+    const marker = readResetMarker(fake, utcWeek(Date.UTC(2026, 9, 26)));
+    expect(marker).not.toBeNull();
+    expect(marker!.winnerClubId).toBe('club-1');
+    expect(marker!.rewardedUserIds).toEqual([]);
+    expect(readInboxCount(fake, 'user-L1')).toBe(0);
+    expect(readInboxCount(fake, 'user-M1')).toBe(0);
   });
 });

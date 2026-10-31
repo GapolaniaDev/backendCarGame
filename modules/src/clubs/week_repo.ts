@@ -4,8 +4,8 @@
 //
 //   1. clubs_week_meta/{clubId}
 //      Per-club weekly meta — tracks which ISO week we're currently
-//      scoring so a fresh `club_get` can fire the lazy reset when the
-//      week rolls. The leaderboard itself is reset by Nakama's cron
+//      scoring so the club reads and the race subscriber can roll the
+//      club when the week changes (the ticker handles the reward). The leaderboard itself is reset by Nakama's cron
 //      schedule; we only need the storage-layer view because the
 //      `clubs_metadata.weeklyPoints` field + per-member
 //      `clubs_members/{clubId}/{userId}.weeklyContribution` field do
@@ -20,8 +20,8 @@
 //
 //   2. clubs_week_reset/{weekUtc}
 //      Global weekly-reset marker — exactly one row per (weekUtc,)
-//      so a fan-out of `club_get` calls across multiple clubs can't
-//      double-send the weekly reward. The first lazy reset to land
+//      so concurrent resets of multiple clubs (and the ticker) can't
+//      double-send the weekly reward. The first reset to land
 //      per week owns the marker; every other club just zeros their
 //      own metadata + members and returns.
 //
