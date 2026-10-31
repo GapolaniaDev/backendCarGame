@@ -278,6 +278,12 @@ describe('club_week flow e2e (Phase 7 Chunk 5)', () => {
     expect(entry!.weeklyPoints).toBe(0);
   });
 
+  it('club_get.weeklyRank is null before points and 1 once the club has them (plan B2)', () => {
+    expect(callGet(env, LEADER, clubId).data!.weeklyRank).toBeNull();
+    seedLb(env, clubId, 5);
+    expect(callGet(env, LEADER, clubId).data!.weeklyRank).toBe(1);
+  });
+
   it('SERVICE_UNAVAILABLE when maintenance=true (reset does not run)', () => {
     setWeeklyPoints(env, clubId, 30, LEADER);
     setMemberContribution(env, clubId, LEADER, 12);

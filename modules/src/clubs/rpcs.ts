@@ -38,6 +38,7 @@ import {
   writeClubMetadataUpdate,
 } from './clubs_repo';
 import { ensureWeekBoundary } from './club_week_reset';
+import { readClubWeeklyRank } from './weekly_rank';
 import {
   MAX_CAS_RETRIES,
   memberWrite,
@@ -78,6 +79,7 @@ import {
   type ClubMembersListOutput,
   type ClubMemberView,
   type ClubMemberViewV2,
+  type ClubMineOutput,
   type ClubMetadata,
   type ClubPromoteOutput,
   type ClubSearchOutput,
@@ -92,6 +94,7 @@ import { withRuntime } from '../core/runtime_state';
 const CLUB_RATE_LIMITS = {
   club_create: { maxPerWindow: 5, windowSec: 60 },
   club_get: { maxPerWindow: 60, windowSec: 60 },
+  club_mine: { maxPerWindow: 60, windowSec: 60 },
   club_search: { maxPerWindow: 30, windowSec: 60 },
   club_join: { maxPerWindow: 10, windowSec: 60 },
   // Chunk 4
@@ -450,7 +453,58 @@ export function club_get_impl(
   const out: ClubGetOutput = {
     club: view,
     members,
-    weeklyRank: null,
+    weeklyRank: readClubWeeklyRank(nk, clubId),
+  };
+  return toJson(ok(out));
+}
+
+// ─── club_mine ────────────────────────────────────────────────────────────────
+
+const NO_CLUB_OUTPUT: ClubMineOutput = { inClub: false, club: null, membership: null, weeklyRank: null };
+
+/** The caller's club, membership and weekly rank in one call (plan B2, D-01). */
+export function club_mine_impl(
+  ctx: IContext,
+  logger: ILogger,
+  nk: INakama,
+  body: string,
+): string {
+  const parsed = parseBody(body);
+  if (!parsed.ok) return parsed.error;
+  const caller = requireCallerId(ctx, parsed.data);
+  if (!caller.ok) return caller.error;
+
+  const limit = checkRateOrLimit(nk, logger, 'club_mine', caller.id);
+  if (limit !== null) return toJson(limit);
+
+  const m = assertNotInMaintenance(logger, nk, caller.id);
+  if (m !== null) return toJson(m);
+
+  const first = readMembership(nk, caller.id);
+  if (first === null) return toJson(ok(NO_CLUB_OUTPUT));
+  const clubId = first.record.clubId;
+
+  // Lazy weekly reset, like club_get; then re-read so the contribution is
+  // the one after a possible reset.
+  ensureWeekBoundary(nk, logger, clubId);
+  const fresh = readMembership(nk, caller.id) ?? first;
+
+  const meta = readClubMetadata(nk, clubId);
+  const group = readClubGroup(nk, clubId);
+  if (meta === null || group === null) {
+    logger.warn('club_mine: membership of a missing club user=%s club=%s', caller.id, clubId);
+    return toJson(ok(NO_CLUB_OUTPUT));
+  }
+
+  const out: ClubMineOutput = {
+    inClub: true,
+    club: buildClubView(group, meta.record, group.edgeCount),
+    membership: {
+      role: fresh.record.role,
+      joinedAt: fresh.record.joinedAt,
+      weeklyContribution: fresh.record.weeklyContribution,
+    },
+    weeklyRank: readClubWeeklyRank(nk, clubId),
   };
   return toJson(ok(out));
 }
@@ -1059,6 +1113,7 @@ void memberRecordFromRead;
 // loads the VM's runtime state first (plan T-29, D-11; audit N8).
 export const club_create = withRuntime(club_create_impl);
 export const club_get = withRuntime(club_get_impl);
+export const club_mine = withRuntime(club_mine_impl);
 export const club_search = withRuntime(club_search_impl);
 export const club_join = withRuntime(club_join_impl);
 export const club_update = withRuntime(club_update_impl);

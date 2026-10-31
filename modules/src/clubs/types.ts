@@ -138,6 +138,17 @@ export interface ClubGetOutput {
   weeklyRank: number | null;
 }
 
+/** The caller's own membership row as `club_mine` shows it. */
+export interface ClubMineMembership { role: Role; joinedAt: number; weeklyContribution: number; }
+
+/** `club_mine` output (plan B2, D-01). Property order is the wire order. */
+export interface ClubMineOutput {
+  inClub: boolean;
+  club: ClubView | null;
+  membership: ClubMineMembership | null;
+  weeklyRank: number | null;
+}
+
 export interface ClubSearchOutput {
   clubs: ClubView[];
   nextCursor: string;

@@ -4122,6 +4122,90 @@
         }
       }
     },
+    "/v2/rpc/club_mine": {
+      "post": {
+        "tags": [
+          "Clubs"
+        ],
+        "summary": "Mi club",
+        "operationId": "club_mine",
+        "description": "The caller's club, membership and weekly rank in one call (plan B2). Lazy weekly reset like club_get.\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"club_mine\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<ClubMineData>>(rpc.Payload)`.",
+        "security": [
+          {
+            "BearerSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/json",
+                "description": "El gateway HTTP exige que el body sea una CADENA JSON (el payload serializado como string), no un objeto.",
+                "contentSchema": {
+                  "$ref": "#/components/schemas/ClubMineRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Siempre 200 (aunque haya error de dominio): ramificar por `ok` dentro de `payload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payload": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "description": "JSON serializado con el envelope. Parsear y ramificar por `ok`.",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ok": {
+                                "const": true
+                              },
+                              "data": {
+                                "$ref": "#/components/schemas/ClubMineData"
+                              }
+                            },
+                            "required": [
+                              "ok",
+                              "data"
+                            ]
+                          },
+                          {
+                            "$ref": "#/components/schemas/Err"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "payload"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Token de sesión ausente/expirado (error del gateway de Nakama)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/rpc/club_search": {
       "post": {
         "tags": [
@@ -11581,6 +11665,80 @@
             ]
           }
         }
+      },
+      "ClubMineRequest": {
+        "type": "object",
+        "properties": {
+          "callerUserId": {
+            "type": "string",
+            "description": "userId del jugador. Obligatorio si el servidor no puede inferirlo del token (ver 'Autenticación' en info). Si se envía y no coincide con el token -> FORBIDDEN.",
+            "format": "uuid"
+          }
+        }
+      },
+      "ClubMineData": {
+        "type": "object",
+        "description": "The caller's club (plan B2). inClub false → club, membership and weeklyRank are null.",
+        "properties": {
+          "inClub": {
+            "type": "boolean"
+          },
+          "club": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Club"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "membership": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "leader",
+                      "admin",
+                      "member"
+                    ]
+                  },
+                  "joinedAt": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Epoch en milisegundos (UTC)"
+                  },
+                  "weeklyContribution": {
+                    "type": "integer"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weeklyRank": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rank of the club on club_week this week; null without points."
+          }
+        },
+        "required": [
+          "inClub",
+          "club",
+          "membership",
+          "weeklyRank"
+        ]
       },
       "ClubSearchRequest": {
         "type": "object",

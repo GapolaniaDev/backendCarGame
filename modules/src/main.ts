@@ -51,7 +51,7 @@ import {
 } from './social/rpcs';
 import { invite_send, invite_list, invite_respond } from './social/invites';
 import { block_add, block_remove, block_list } from './social/blocks';
-import { club_create, club_get, club_search, club_join } from './clubs/rpcs';
+import { club_create, club_get, club_mine, club_search, club_join } from './clubs/rpcs';
 import {
   club_update,
   club_members_list,
@@ -382,6 +382,8 @@ function InitModule(
     // Phase 7 Chunk 3: clubs CRUD + catalog.
     initializer.registerRpc('club_create', club_create);
     initializer.registerRpc('club_get', club_get);
+    // Plan B2: the caller's club.
+    initializer.registerRpc('club_mine', club_mine);
     initializer.registerRpc('club_search', club_search);
     initializer.registerRpc('club_join', club_join);
     // Phase 7 Chunk 4: membership + roles + updates.
