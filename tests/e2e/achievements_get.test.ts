@@ -144,6 +144,16 @@ describe('achievements_get e2e (Phase 6 Chunk 5)', () => {
     expect(rec.claimed).toEqual({});
   });
 
+  it('adds localization keys to every achievement card', () => {
+    const res = callGet(env, USER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const cards = res.data.achievements;
+    expect(cards.length).toBeGreaterThan(0);
+    expect(cards.every((a) => a.titleKey === 'achievement.' + a.achievementId + '.title')).toBe(true);
+    expect(cards.every((a) => a.descriptionKey === 'achievement.' + a.achievementId + '.description')).toBe(true);
+  });
+
   it('returns progress=0 + completed=false + claimed=false for a fresh user', () => {
     const res = callGet(env, USER);
     expect(res.ok).toBe(true);

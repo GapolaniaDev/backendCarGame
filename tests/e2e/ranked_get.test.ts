@@ -74,6 +74,16 @@ describe('ranked_get (Phase 4 Chunk 6)', () => {
     expect(out.daysLeftInSeason).toBeLessThanOrEqual(820);
   });
 
+  it('adds the division name and its localization key', () => {
+    const r = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // The initial rating (1000) falls in the second band, `plata`.
+    expect(r.data.division).toBe('plata');
+    expect(r.data.divisionNameKey).toBe('division.' + r.data.division + '.name');
+    expect(r.data.divisionName).toBe('Silver');
+  });
+
   it('second call returns the same record (persistence works)', () => {
     call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });
     const r2 = call<Resp<RankedGetOutput>>(env, 'ranked_get', 'user-a', { callerUserId: 'user-a' });

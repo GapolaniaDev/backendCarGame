@@ -56,6 +56,7 @@ import {
 import type { RankedGetInput, RankedGetOutput, RankedRecord } from './types';
 import { requireCaller } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
+import { locKey } from '../core/loc_keys';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -166,6 +167,8 @@ export const ranked_get_impl: RpcHandler = (ctx, logger, nk, body) => {
     rating: record.rating,
     peak: record.peak,
     division,
+    divisionName: cfg.divisions.find((d) => d.id === division)?.displayName ?? division,
+    divisionNameKey: locKey('division', division, 'name'),
     divisionProgress,
     racesPlayed: record.racesPlayed,
     wins: record.wins,

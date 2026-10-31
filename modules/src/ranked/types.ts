@@ -42,6 +42,10 @@ export interface RankedGetOutput {
   peak: number;
   /** Division id derived from `rating` via `divisionForRating`. */
   division: string;
+  /** English name of the division (ranked_config.json), the fallback text. */
+  divisionName: string;
+  /** Localization key of the division name (`division.<id>.name`). */
+  divisionNameKey: string;
   /** 0.0 at the top of `division` into the next-higher band, 1.0 at the
    *  bottom (one win from promotion). */
   divisionProgress: number;

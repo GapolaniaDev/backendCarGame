@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
+import { locKey } from '../core/loc_keys';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -60,6 +61,10 @@ export interface AchievementCardOutput {
   achievementId: string;
   title: string;
   description: string;
+  /** Localization key of `title` (D-11). */
+  titleKey: string;
+  /** Localization key of `description` (D-11). */
+  descriptionKey: string;
   kind: AchievementDefinition['kind'];
   target: number;
   reward: MissionReward;
@@ -116,6 +121,8 @@ function buildAchievementCard(
     achievementId: def.id,
     title: def.title,
     description: def.description,
+    titleKey: locKey('achievement', def.id, 'title'),
+    descriptionKey: locKey('achievement', def.id, 'description'),
     kind: def.kind,
     target: def.target,
     reward: def.reward,

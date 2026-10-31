@@ -55,6 +55,7 @@ import {
   type SpecialOfferPricing,
 } from './pricing';
 import { requireCallerId } from '../core/caller';
+import { locKey } from '../core/loc_keys';
 import { withRuntime } from '../core/runtime_state';
 
 export interface StoreGetInput {
@@ -68,9 +69,11 @@ export interface StoreGetOutput {
   dailySeed: string;
   /** Sections after rotation + filtering. */
   sections: ReadonlyArray<{
-    section: { id: StoreSection['id']; displayName: string };
+    /** displayNameKey is the Unity Localization key of displayName (D-11). */
+    section: { id: StoreSection['id']; displayName: string; displayNameKey: string };
     offers: ReadonlyArray<{
-      offer: StoreOffer;
+      /** The catalog offer plus displayNameKey, the localization key of its displayName (D-11). */
+      offer: StoreOffer & { displayNameKey: string };
       isDailyOffer: boolean;
       basePrice: OfferPrice;
       /** What `store_buy` charges right now (T-12). */
@@ -166,12 +169,16 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
   const filtered = rotated.map((section) => {
     const { visible } = filterOffersForSection(section, ctxFilter);
     return {
-      section: { id: section.id, displayName: section.displayName },
+      section: {
+        id: section.id,
+        displayName: section.displayName,
+        displayNameKey: locKey('store_section', section.id, 'name'),
+      },
       offers: visible.map((v: FilteredOffer) => {
         const offer = v.offer;
         const pricing = pricingByOffer.get(offer.offerId);
         return {
-          offer,
+          offer: { ...offer, displayNameKey: locKey('store_offer', offer.offerId, 'name') },
           isDailyOffer: v.isDailyOffer,
           basePrice: basePrice(offer),
           finalPrice: finalPrice(offer, pricingByOffer),

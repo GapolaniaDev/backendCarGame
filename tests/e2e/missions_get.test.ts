@@ -167,6 +167,16 @@ describe('missions_get e2e (Phase 6 Chunk 3)', () => {
     expect(res.data.weekly.weekUtc).toMatch(/^\d{4}-W\d{2}$/);
   });
 
+  it('adds localization keys to every mission card', () => {
+    const res = callMissionsGet(env, USER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const cards = [...res.data.daily.missions, ...res.data.weekly.missions];
+    expect(cards.length).toBeGreaterThan(0);
+    expect(cards.every((m) => m.titleKey === 'mission.' + m.missionId + '.title')).toBe(true);
+    expect(cards.every((m) => m.descriptionKey === 'mission.' + m.missionId + '.description')).toBe(true);
+  });
+
   it('returns some unlocked when playerLevel=3', () => {
     setPlayerLevel(env, USER, 3);
     const res = callMissionsGet(env, USER);

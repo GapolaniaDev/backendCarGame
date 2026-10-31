@@ -37,6 +37,7 @@ import {
 } from './missions_repo';
 import { requireCallerId } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
+import { locKey } from '../core/loc_keys';
 
 export type RpcHandler = (
   ctx: IContext,
@@ -78,6 +79,10 @@ export interface MissionCardOutput {
   missionId: string;
   title: string;
   description: string;
+  /** Localization key of `title` (D-11). */
+  titleKey: string;
+  /** Localization key of `description` (D-11). */
+  descriptionKey: string;
   kind: MissionDefinition['kind'];
   filters: MissionDefinition['filters'];
   target: number;
@@ -132,6 +137,8 @@ function buildMissionCard(
     missionId: definition.id,
     title: definition.title,
     description: definition.description,
+    titleKey: locKey('mission', definition.id, 'title'),
+    descriptionKey: locKey('mission', definition.id, 'description'),
     kind: definition.kind,
     filters: definition.filters,
     target: definition.target,

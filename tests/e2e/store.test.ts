@@ -75,6 +75,19 @@ describe('store_get (Chunk 8)', () => {
     expect(ids).toEqual(expect.arrayContaining(['permanent', 'daily', 'level_gated']));
   });
 
+  it('adds localization keys to every section and offer', () => {
+    const r = call<Resp<{ sections: ReadonlyArray<{
+      section: { id: string; displayNameKey: string };
+      offers: ReadonlyArray<{ offer: { offerId: string; displayNameKey: string } }>;
+    }> }>>(env, 'store_get', HOST_ID, { callerUserId: HOST_ID });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const offers = r.data.sections.flatMap((s) => s.offers);
+    expect(offers.length).toBeGreaterThan(0);
+    expect(r.data.sections.every((s) => s.section.displayNameKey === 'store_section.' + s.section.id + '.name')).toBe(true);
+    expect(offers.every((o) => o.offer.displayNameKey === 'store_offer.' + o.offer.offerId + '.name')).toBe(true);
+  });
+
   it('hides level-gated offers when the player is below the required level', () => {
     setLevel(env, HOST_ID, 1);
     const r = call<Resp<{ sections: ReadonlyArray<{ section: { id: string }; offers: ReadonlyArray<{ offer: { offerId: string } }> }> }>>(
