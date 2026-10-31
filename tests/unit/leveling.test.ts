@@ -86,6 +86,28 @@ describe('progression/leveling — levelFromXp', () => {
   });
 });
 
+describe('progression/leveling — levelStartXp', () => {
+  beforeEach(() => {
+    _resetLevelsForTests();
+    loadLevelsCatalog(SILENT_LOGGER, makeTable(), { localcachePut: () => {} } as unknown as INakama);
+  });
+
+  it('reports the cumulative XP at which the current level starts', () => {
+    const c = getLevelsCatalog();
+    const last = c.table[c.table.length - 1]?.xpRequired ?? 0;
+    // xp 0 -> level 1 starts at 0; next threshold is 150 in this table.
+    expect(buildLevelInfo(c, 0)).toMatchObject({ level: 1, levelStartXp: 0, xpToNextLevel: 150 });
+    // xp 200 -> level 2 starts at 150; level 3 starts at 150 + 200 = 350.
+    expect(buildLevelInfo(c, 200)).toMatchObject({ level: 2, levelStartXp: 150, xpToNextLevel: 150 });
+    // At and past the last threshold: levelStartXp is the last threshold, nothing to next.
+    expect(buildLevelInfo(c, last)).toMatchObject({ level: MAX_LEVEL, levelStartXp: last, xpToNextLevel: 0 });
+    expect(buildLevelInfo(c, last + 1_000_000)).toMatchObject({ levelStartXp: last, xpToNextLevel: 0 });
+    // Invalid xp falls back to the level-1 start.
+    expect(levelFromXp(c, -5).levelStartXp).toBe(0);
+    expect(levelFromXp(c, Number.NaN).levelStartXp).toBe(0);
+  });
+});
+
 describe('progression/leveling — buildLevelInfo', () => {
   beforeEach(() => {
     _resetLevelsForTests();

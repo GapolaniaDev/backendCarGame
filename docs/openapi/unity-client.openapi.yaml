@@ -4827,9 +4827,37 @@ components:
           type: "integer"
           description: "Epoch en milisegundos (UTC)"
           format: "int64"
+        progression:
+          "$ref": "#/components/schemas/ProfileProgression"
       required:
         - "userId"
         - "displayName"
+    ProfileProgression:
+      type: "object"
+      description: "Own profile only. Level bar: (xp - levelStartXp) / (xp - levelStartXp + xpToNextLevel); full when xpToNextLevel is 0 (max level)."
+      properties:
+        level:
+          type: "integer"
+        xp:
+          type: "integer"
+        levelStartXp:
+          type: "integer"
+        xpToNextLevel:
+          type: "integer"
+        unlockedLevels:
+          type: "array"
+          items:
+            type: "string"
+        lastDailyWinAt:
+          type: "integer"
+          format: "int64"
+      required:
+        - "level"
+        - "xp"
+        - "levelStartXp"
+        - "xpToNextLevel"
+        - "unlockedLevels"
+        - "lastDailyWinAt"
     OwnedCar:
       type: "object"
       properties:

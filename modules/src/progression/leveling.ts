@@ -15,9 +15,9 @@ import { MAX_LEVEL, type LevelEntry, type LevelInfo, type LevelsCatalog } from '
 export function levelFromXp(
   catalog: LevelsCatalog,
   xp: number,
-): { level: number; xpIntoLevel: number; xpToNextLevel: number; xpOverflow: number } {
+): { level: number; levelStartXp: number; xpIntoLevel: number; xpToNextLevel: number; xpOverflow: number } {
   if (!Number.isFinite(xp) || xp < 0) {
-    return { level: 1, xpIntoLevel: 0, xpToNextLevel: catalog.table[0]?.xpRequired ?? 0, xpOverflow: 0 };
+    return { level: 1, levelStartXp: 0, xpIntoLevel: 0, xpToNextLevel: catalog.table[0]?.xpRequired ?? 0, xpOverflow: 0 };
   }
   const table = catalog.table;
   let level = 1;
@@ -30,6 +30,7 @@ export function levelFromXp(
       const nextThreshold = entry.xpRequired;
       return {
         level,
+        levelStartXp: prevThreshold,
         xpIntoLevel: xp - prevThreshold,
         xpToNextLevel: nextThreshold - xp,
         xpOverflow: 0,
@@ -42,6 +43,7 @@ export function levelFromXp(
   const last = table[table.length - 1];
   return {
     level: last?.level ?? MAX_LEVEL,
+    levelStartXp: prevThreshold,
     xpIntoLevel: xp - prevThreshold,
     xpToNextLevel: 0,
     xpOverflow: Math.max(0, xp - (last?.xpRequired ?? prevThreshold)),
@@ -60,10 +62,11 @@ export function levelFromCurrentXp(xp: number): ReturnType<typeof levelFromXp> {
  * cumulative) for a given cumulative XP.
  */
 export function buildLevelInfo(catalog: LevelsCatalog, xp: number): LevelInfo {
-  const { level, xpToNextLevel } = levelFromXp(catalog, xp);
+  const { level, levelStartXp, xpToNextLevel } = levelFromXp(catalog, xp);
   return {
     level,
     xp,
+    levelStartXp,
     xpToNextLevel,
     unlockedLevels: collectUnlocksUpTo(catalog, level),
   };

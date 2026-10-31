@@ -423,10 +423,15 @@ creates anything: `NOT_FOUND` when that player has no profile.
     "displayName": "Racer",
     "avatarUrl":   null,
     "createdAt":   1740000000000,
-    "updatedAt":   1740000000000
+    "updatedAt":   1740000000000,
+    "progression": { "level": 2, "xp": 350, "levelStartXp": 200, "xpToNextLevel": 150, "unlockedLevels": ["class:D"], "lastDailyWinAt": 0 }
   }
 }
 ```
+
+`progression` is only on the caller's own profile. Level bar fill:
+`(xp - levelStartXp) / (xp - levelStartXp + xpToNextLevel)`; the bar is full when
+`xpToNextLevel` is `0` (max level).
 
 **Authz**: session user (§2); an optional `callerUserId` must match it, otherwise
 `FORBIDDEN`.

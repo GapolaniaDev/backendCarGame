@@ -2176,6 +2176,10 @@ async function main() {
     const r = await rpc(a.token, id, { callerUserId: a.uid, clientVersion: '0.1.0', platform: 'android' });
     record(`${id} (own account) ok`, r.envelope?.ok === true, errCode(r));
   }
+  const prof = await rpc(a.token, 'profile_get', { callerUserId: a.uid });
+  const pg = prof.envelope?.data?.profile?.progression;
+  record('profile_get progression has levelStartXp (P-04)',
+    typeof pg?.levelStartXp === 'number' && pg.levelStartXp <= pg.xp && typeof pg.xpToNextLevel === 'number', errCode(prof));
   const lbw = await http('POST', '/v2/leaderboard/wins_week', {
     body: { score: '999' },
     headers: { Authorization: `Bearer ${a.token}` },

@@ -78,6 +78,7 @@ describe('profile module (Chunk 14)', () => {
           progression: {
             level: number;
             xp: number;
+            levelStartXp: number;
             xpToNextLevel: number;
             unlockedLevels: string[];
             lastDailyWinAt: number;
@@ -89,9 +90,32 @@ describe('profile module (Chunk 14)', () => {
     const p = resp.data.profile.progression;
     expect(p.level).toBe(1);
     expect(p.xp).toBe(0);
+    expect(p.levelStartXp).toBe(0);
     expect(p.xpToNextLevel).toBeGreaterThan(0);
     expect(p.unlockedLevels).toContain('class:D');
     expect(p.lastDailyWinAt).toBe(0);
+  });
+
+  it('profile_get returns levelStartXp for a stored xp; the public projection stays { level } (P-04)', () => {
+    call(env, 'profile_get', HOST_ID, { callerUserId: HOST_ID });
+    const stored = env.fakeNakama.store.get(`profiles/${HOST_ID}/${HOST_ID}`);
+    expect(stored).toBeDefined();
+    const record = stored!.value as { progression?: Record<string, unknown> };
+    record.progression = { ...(record.progression ?? {}), xp: 350 };
+    const own = call<{
+      ok: true;
+      data: { profile: { progression: { level: number; xp: number; levelStartXp: number; xpToNextLevel: number } } };
+    }>(env, 'profile_get', HOST_ID, { callerUserId: HOST_ID });
+    expect(own.data.profile.progression).toMatchObject({ level: 2, xp: 350, levelStartXp: 200, xpToNextLevel: 150 });
+
+    call(env, 'profile_get', OTHER_ID, { callerUserId: OTHER_ID });
+    const pub = call<{ ok: true; data: { profile: { progression: unknown } } }>(
+      env,
+      'profile_get',
+      HOST_ID,
+      { userId: HOST_ID === OTHER_ID ? HOST_ID : OTHER_ID },
+    );
+    expect(pub.data.profile.progression).toEqual({ level: 1 });
   });
 
   it('profile_update persists a new displayName + avatarUrl', () => {

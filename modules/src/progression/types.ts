@@ -34,6 +34,8 @@ export interface LevelInfo {
   level: number;
   /** Cumulative XP across all races. */
   xp: number;
+  /** Cumulative XP at which the current level starts (`0` at level 1). */
+  levelStartXp: number;
   /** XP needed to reach `level + 1`. `0` when at MAX_LEVEL. */
   xpToNextLevel: number;
   /** Catalog-level unlocks the player has earned (cumulative across levels). */
