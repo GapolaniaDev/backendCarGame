@@ -89,6 +89,7 @@ describe('leaderboards catalog', () => {
     loadLeaderboardsCatalog(LOGGER, SAMPLE, FAKE_NK);
     const all = getLeaderboardTables();
     expect(all.length).toBe(1 /* wins_week */ + 12);
+    expect(all.every((t) => t.ownerKind === 'user')).toBe(true);
     expect(getWinsWeekTable()).toBeDefined();
     expect(getLeaderboardTable('wins_week')?.operator).toBe('incr');
     expect(getLeaderboardTable('tt_neon_blvd_D_all')?.operator).toBe('best');
@@ -183,6 +184,41 @@ describe('leaderboards catalog', () => {
     expect(getLeaderboardTable('wins_week')?.sortOrder).toBe('desc');
     expect(getRankedTable('season_2').sortOrder).toBe('desc');
     expect(getLeaderboardTable('tt_neon_blvd_D_all')?.sortOrder).toBe('asc');
+  });
+
+  it('ownerKind defaults to user when absent and accepts club', () => {
+    const club = {
+      id: 'club_week',
+      operator: 'incr' as const,
+      sortOrder: 'desc' as const,
+      resetSchedule: '0 0 * * 1',
+      description: 'club points',
+      ownerKind: 'club' as const,
+    };
+    loadLeaderboardsCatalog(LOGGER, { ...SAMPLE, tables: [...SAMPLE.tables, club] }, FAKE_NK);
+    expect(getLeaderboardTable('wins_week')?.ownerKind).toBe('user');
+    expect(getLeaderboardTable('club_week')?.ownerKind).toBe('club');
+    expect(getLeaderboardTable('tt_neon_blvd_D_all')?.ownerKind).toBe('user');
+    expect(getRankedTable('season_2').ownerKind).toBe('user');
+    expect(resolveLeaderboardTable('ranked_season_3')?.ownerKind).toBe('user');
+  });
+
+  it('rejects an unknown ownerKind', () => {
+    expect(() =>
+      loadLeaderboardsCatalog(LOGGER, {
+        ...SAMPLE,
+        tables: [
+          {
+            id: 'team_week',
+            operator: 'incr',
+            sortOrder: 'desc',
+            resetSchedule: '',
+            description: '',
+            ownerKind: 'team' as unknown as 'club',
+          },
+        ],
+      }, FAKE_NK),
+    ).toThrow(/ownerKind invalid/);
   });
 
   it('throws when getLeaderboardTables is called before load', () => {

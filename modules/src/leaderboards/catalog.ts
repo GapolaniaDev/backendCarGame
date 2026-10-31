@@ -16,6 +16,7 @@ import type { ILogger, INakama } from '../nkruntime';
 
 export type LeaderboardOperator = 'best' | 'set' | 'incr' | 'decr';
 export type LeaderboardSortOrder = 'asc' | 'desc';
+export type LeaderboardOwnerKind = 'user' | 'club';
 
 export interface LeaderboardTableEntry {
   /** Final, fully-expanded table id (e.g. `tt_neon_blvd_B_all`). */
@@ -30,6 +31,8 @@ export interface LeaderboardTableEntry {
   description: string;
   /** Which `key` from the table-scoped catalog this row came from. */
   source: string;
+  /** Who owns the records: players or clubs (plan B2, D-05). */
+  ownerKind: LeaderboardOwnerKind;
 }
 
 export interface LeaderboardCatalog {
@@ -47,6 +50,8 @@ export interface RawTablesFile {
     sortOrder: LeaderboardSortOrder;
     resetSchedule: string;
     description: string;
+    /** 'user' when absent; anything else is rejected by the validator. */
+    ownerKind?: LeaderboardOwnerKind;
   }>;
   trackScoped: {
     tracks: string[];
@@ -98,7 +103,7 @@ export function getLeaderboardTable(id: string): LeaderboardTableEntry | undefin
 
 /** Like `getLeaderboardTables` but only returns tables that fit a `(track, class)` pair. */
 export function getTrackScopedTables(): ReadonlyArray<LeaderboardTableEntry> {
-  return resolveTables().filter((t) => t.source !== 'wins_week');
+  return resolveTables().filter((t) => t.source !== 'wins_week' && t.ownerKind === 'user');
 }
 
 /** Returns only the always-on (never-reset) time-trial tables for a track. */
@@ -162,6 +167,7 @@ function seasonEntry(source: string, pattern: RawPattern, seasonId: string): Lea
     resetSchedule: pattern.resetSchedule,
     description: pattern.description,
     source,
+    ownerKind: 'user',
   };
 }
 
@@ -188,6 +194,7 @@ export function loadLeaderboardsCatalog(
       resetSchedule: t.resetSchedule,
       description: t.description,
       source: t.id,
+      ownerKind: t.ownerKind ?? 'user',
     });
   }
   for (const [patternName, pattern] of Object.entries(raw.trackScoped.patterns)) {
@@ -203,6 +210,7 @@ export function loadLeaderboardsCatalog(
           resetSchedule: pattern.resetSchedule,
           description: pattern.description,
           source: patternName,
+          ownerKind: 'user',
         });
       }
     }
@@ -229,6 +237,7 @@ export function loadLeaderboardsCatalog(
         resetSchedule: t.resetSchedule,
         description: t.description,
         source: t.source,
+        ownerKind: t.ownerKind,
       })),
     });
     nk.localcachePut(LEADERBOARD_CATALOG_CACHE_KEY, serialized, 7 * 24 * 60 * 60);
@@ -262,6 +271,7 @@ const VALID_OPERATORS: ReadonlySet<LeaderboardOperator> = new Set([
   'decr',
 ]);
 const VALID_SORT: ReadonlySet<LeaderboardSortOrder> = new Set(['asc', 'desc']);
+const VALID_OWNER_KINDS: ReadonlySet<LeaderboardOwnerKind> = new Set(['user', 'club']);
 const ID_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
 
 function validate(c: unknown): asserts c is RawTablesFile {
@@ -291,6 +301,12 @@ function validate(c: unknown): asserts c is RawTablesFile {
     }
     if (typeof tr['description'] !== 'string') {
       fail(`table ${String(tr['id'])}: description must be a string`);
+    }
+    if (
+      tr['ownerKind'] !== undefined &&
+      !VALID_OWNER_KINDS.has(tr['ownerKind'] as LeaderboardOwnerKind)
+    ) {
+      fail(`table ${String(tr['id'])}: ownerKind invalid`);
     }
   }
 

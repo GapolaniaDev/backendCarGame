@@ -24,15 +24,21 @@
 //     filled from the account for older records), and the profile
 //     fallback is that username instead of the raw user id.
 //   - The ranked table of a season (`ranked_{seasonId}`) is accepted.
+//
+// Club tables (`ownerKind: 'club'`, plan B2): `global`/`around_me` around the
+// caller's club; records carry the club name in `username`; `clubs` maps club ids
+// to name, emblem and member count.
 
 import type { IContext, ILogger, ILeaderboardRecord, INakama } from '../nkruntime';
-import { resolveLeaderboardTable } from './catalog';
+import { resolveLeaderboardTable, type LeaderboardOwnerKind } from './catalog';
 import { err, ok, type Resp } from '../core/response';
 import { liveopsGate } from '../core/liveops';
 import type { ClientPlatform } from '../liveops/types';
 import { requireCaller } from '../core/caller';
 import { withRuntime } from '../core/runtime_state';
 import { listFriendEdges } from '../social/friends_repo';
+import { readMembership } from '../clubs/members_repo';
+import { readClubMetadataMany } from '../clubs/clubs_repo';
 import { usernamesById } from './usernames';
 
 const PLATFORM_DEFAULT: ClientPlatform = 'ios';
@@ -51,6 +57,8 @@ export interface LbGetInput {
    * returned). Defaults to the caller. Leaderboards are public.
    */
   aroundUserId?: string;
+  /** Club tables: club to center `around_me` on; defaults to the caller's club. */
+  aroundClubId?: string;
   /** `nextCursor` / `prevCursor` of a previous page of the same view (plan T-13). */
   cursor?: string;
   /**
@@ -79,15 +87,25 @@ export interface LbProfileView {
   avatarUrl: string | null;
 }
 
+export interface LbClubView {
+  clubId: string;
+  name: string;
+  emblemId: string;
+  memberCount: number;
+}
+
 export interface LbGetOutput {
   leaderboardId: string;
   view: LbView;
+  ownerKind: LeaderboardOwnerKind;
   /** Ranked records in the whole table (not just this page). */
   totalCount: number;
   records: LbRecordWithRank[];
   ownerRecord: LbRecordWithRank | null;
   /** Keyed by ownerId; falls back to the username for users without a profile. */
   profiles: Record<string, LbProfileView>;
+  /** Club tables: the clubs of the page and ownerRecord, keyed by club id; {} otherwise. */
+  clubs: Record<string, LbClubView>;
   /** Cursor of the next page, or null on the last one (plan T-13, additive). */
   nextCursor: string | null;
   /** Cursor of the previous page, or null on the first one (plan T-13, additive). */
@@ -145,12 +163,17 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   if (typeof leaderboardId !== 'string' || leaderboardId.length === 0) {
     return toJson(err('BAD_REQUEST', 'leaderboardId is required'));
   }
-  if (!resolveLeaderboardTable(leaderboardId)) {
+  const table = resolveLeaderboardTable(leaderboardId);
+  if (!table) {
     return toJson(err('NOT_FOUND', `unknown leaderboard ${leaderboardId}`));
   }
+  const ownerKind = table.ownerKind;
   const view = payload.view;
   if (view !== 'global' && view !== 'around_me' && view !== 'friends') {
     return toJson(err('BAD_REQUEST', "view must be one of 'global' | 'around_me' | 'friends'"));
+  }
+  if (ownerKind === 'club' && view === 'friends') {
+    return toJson(err('BAD_REQUEST', "view 'friends' is not available for club tables"));
   }
   if (payload.cursor !== undefined && payload.cursor !== null && typeof payload.cursor !== 'string') {
     return toJson(err('BAD_REQUEST', 'cursor must be a string'));
@@ -158,15 +181,25 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   const cursor = typeof payload.cursor === 'string' ? payload.cursor : '';
   const limit = clampLimit(payload.limit);
 
-  const aroundUserId =
-    typeof payload.aroundUserId === 'string' && payload.aroundUserId.length > 0
-      ? payload.aroundUserId
-      : callerId;
+  // The owner the view is centered on: a player, or for club tables the
+  // explicit club or else the caller's club ('' when they have none).
+  let aroundUserId: string;
+  if (ownerKind === 'club') {
+    aroundUserId =
+      typeof payload.aroundClubId === 'string' && payload.aroundClubId.length > 0
+        ? payload.aroundClubId
+        : readMembership(nk, callerId)?.record.clubId ?? '';
+  } else {
+    aroundUserId =
+      typeof payload.aroundUserId === 'string' && payload.aroundUserId.length > 0
+        ? payload.aroundUserId
+        : callerId;
+  }
 
   // A ranked season's table is created by its first ranked race (or at
   // boot for the active season): until then the board is empty.
   if ((nk.leaderboardsGetId([leaderboardId]) ?? []).length === 0) {
-    return toJson(ok(emptyOutput(leaderboardId, view)));
+    return toJson(ok(emptyOutput(leaderboardId, view, ownerKind)));
   }
 
   // 1) The page, in the table's own order with Nakama's ranks, plus
@@ -188,6 +221,10 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   if (read === null) return toJson(err('BAD_REQUEST', 'cursor is not a friends-view cursor'));
   const { page, ownerEntry, totalCount } = read;
 
+  if (ownerKind === 'club') {
+    return toJson(ok(buildClubOutput(logger, nk, leaderboardId, view, read)));
+  }
+
   // 2) Usernames (records written before T-13 have none) and profiles.
   const ownerIds = new Set<string>(page.records.map((r) => r.ownerId));
   if (ownerEntry) ownerIds.add(ownerEntry.ownerId);
@@ -206,10 +243,12 @@ export const lb_get_impl: LbGetRpc = (ctx, logger, nk, body) => {
   const out: LbGetOutput = {
     leaderboardId,
     view,
+    ownerKind: 'user',
     totalCount,
     records,
     ownerRecord,
     profiles,
+    clubs: {},
     nextCursor: page.nextCursor,
     prevCursor: page.prevCursor,
   };
@@ -243,15 +282,18 @@ function readView(
   limit: number,
   cursor: string,
 ): ViewRead | null {
+  // An empty around id (a club table, caller without a club) never goes
+  // to the runtime as an owner id: it reads the top page without an owner.
+  const ownerIds = aroundUserId.length > 0 ? [aroundUserId] : [];
   if (view === 'global') {
-    const res = nk.leaderboardRecordsList(leaderboardId, [aroundUserId], limit, cursor);
+    const res = nk.leaderboardRecordsList(leaderboardId, ownerIds, limit, cursor);
     return {
       page: { records: res.records, nextCursor: res.nextCursor ?? null, prevCursor: res.prevCursor ?? null },
       ownerEntry: res.ownerRecords.find((r) => r.ownerId === aroundUserId),
       totalCount: res.rankCount ?? 0,
     };
   }
-  const own = nk.leaderboardRecordsList(leaderboardId, [aroundUserId], 0);
+  const own = nk.leaderboardRecordsList(leaderboardId, ownerIds, 0);
   const ownerEntry = own.ownerRecords.find((r) => r.ownerId === aroundUserId);
   const totalCount = own.rankCount ?? 0;
   if (view === 'around_me') {
@@ -334,16 +376,69 @@ function toWire(r: ILeaderboardRecord, username: string): LbRecordWithRank {
   };
 }
 
-function emptyOutput(leaderboardId: string, view: LbView): LbGetOutput {
+function emptyOutput(leaderboardId: string, view: LbView, ownerKind: LeaderboardOwnerKind): LbGetOutput {
   return {
     leaderboardId,
     view,
+    ownerKind,
     totalCount: 0,
     records: [],
     ownerRecord: null,
     profiles: {},
+    clubs: {},
     nextCursor: null,
     prevCursor: null,
+  };
+}
+
+/**
+ * The response of a club table: records carry the club name in `username`
+ * ('' for a deleted club, which then has no `clubs` entry) and `clubs`
+ * maps each club of the page and the owner record to name, emblem and size.
+ */
+function buildClubOutput(
+  logger: ILogger,
+  nk: INakama,
+  leaderboardId: string,
+  view: LbView,
+  read: ViewRead,
+): LbGetOutput {
+  const { page, ownerEntry, totalCount } = read;
+  const ids = Array.from(
+    new Set<string>([...page.records.map((r) => r.ownerId), ...(ownerEntry ? [ownerEntry.ownerId] : [])]),
+  );
+  let groups: Array<{ id: string; name: string; edgeCount: number }> = [];
+  if (ids.length > 0) {
+    try {
+      groups = nk.groupsGetId(ids);
+    } catch (e) {
+      logger.warn('lb_get club names unavailable table=%s: %s', leaderboardId, e instanceof Error ? e.message : String(e));
+    }
+  }
+  const metas = readClubMetadataMany(nk, ids);
+  const clubs: Record<string, LbClubView> = {};
+  const names = new Map<string, string>();
+  for (const g of groups) {
+    names.set(g.id, g.name);
+    clubs[g.id] = {
+      clubId: g.id,
+      name: g.name,
+      emblemId: metas.get(g.id)?.record.emblemId ?? '',
+      memberCount: g.edgeCount,
+    };
+  }
+  const wire = (r: ILeaderboardRecord): LbRecordWithRank => toWire(r, names.get(r.ownerId) ?? '');
+  return {
+    leaderboardId,
+    view,
+    ownerKind: 'club',
+    totalCount,
+    records: page.records.map(wire),
+    ownerRecord: ownerEntry ? wire(ownerEntry) : null,
+    profiles: {},
+    clubs,
+    nextCursor: page.nextCursor,
+    prevCursor: page.prevCursor,
   };
 }
 

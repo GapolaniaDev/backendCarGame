@@ -28,13 +28,13 @@ import leaderboardsJson from '../../modules/src/catalogs/leaderboards.json';
 const TRACKS = 6;
 const CLASSES = 5;
 const PATTERNS = 3; // tt_all, tt_week, lap_all
-/** Catalog tables (wins_week + track×class×pattern). Excludes club_week. */
-const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + TRACKS * CLASSES * PATTERNS; // = 91
+/** Catalog tables (wins_week + club_week + track×class×pattern). */
+const EXPECTED_CATALOG_TABLES = 1 /* wins_week */ + 1 /* club_week */ + TRACKS * CLASSES * PATTERNS; // = 92
 /**
- * Catalog tables + the standalone club_week table (Phase 7 Chunk 5) +
- * the active season's ranked table (`ranked_season_2`, plan T-13).
+ * Catalog tables (club_week included since plan B2) + the active
+ * season's ranked table (`ranked_season_2`, plan T-13).
  */
-const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* club_week */ + 1 /* ranked */; // = 93
+const EXPECTED_TOTAL_TABLES = EXPECTED_CATALOG_TABLES + 1 /* ranked */; // = 93
 
 describe('leaderboards boot (Chunk 11)', () => {
   let env: ReturnType<typeof loadBundleForTest>;
@@ -43,7 +43,7 @@ describe('leaderboards boot (Chunk 11)', () => {
     env = loadBundleForTest();
   });
 
-  it('creates every authoritative table from the expanded catalog (91) + club_week + ranked', () => {
+  it('creates every authoritative table from the expanded catalog (92, club_week included) + ranked', () => {
     // InitModule populated env.fakeNakama.leaderboards (the bundle's nk
     // is the same FakeNakama instance). Confirm the count + a few
     // representative ids.
@@ -53,7 +53,7 @@ describe('leaderboards boot (Chunk 11)', () => {
     expect(created.has('tt_neon_blvd_B_all')).toBe(true);
     expect(created.has('tt_neon_blvd_B_week')).toBe(true);
     expect(created.has('lap_factory_loop_S_all')).toBe(true);
-    // Phase 7 Chunk 5: the standalone club_week leaderboard.
+    // Phase 7 Chunk 5 / plan B2: the club_week leaderboard (catalog entry).
     expect(created.has('club_week')).toBe(true);
     // Plan T-13: the active season's ranked table exists from boot, descending.
     expect(env.nak.leaderboardsGetId(['ranked_season_2'])[0]?.sortOrder).toBe(1);
@@ -67,9 +67,8 @@ describe('leaderboards boot (Chunk 11)', () => {
   it('is a no-op when re-ensured (INSERT-IF-NOT-EXISTS)', () => {
     // Re-load + re-ensure against the same fakeNakama: every catalog
     // table is already there, so the catalog-summary reports
-    // `existing: 91` and `created: 0`. The club_week table is wired
-    // via a separate helper and the ranked table is passed by InitModule,
-    // so the total table count is 93.
+    // `existing: 92` and `created: 0`. The ranked table is passed by
+    // InitModule, so the total table count is 93.
     loadLeaderboardsCatalog(
       env.fakeLogger,
       leaderboardsJson as unknown as Parameters<typeof loadLeaderboardsCatalog>[1],

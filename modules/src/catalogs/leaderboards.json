@@ -7,6 +7,14 @@
       "sortOrder": "desc",
       "resetSchedule": "0 0 * * 1",
       "description": "Weekly wins in quick + ranked modes (Monday 00:00 UTC reset)"
+    },
+    {
+      "id": "club_week",
+      "operator": "incr",
+      "sortOrder": "desc",
+      "resetSchedule": "0 0 * * 1",
+      "ownerKind": "club",
+      "description": "Weekly club points: win 3, podium 2, finish 1 (Monday 00:00 UTC reset)"
     }
   ],
   "trackScoped": {

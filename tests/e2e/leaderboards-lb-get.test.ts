@@ -15,6 +15,8 @@ import {
   autoSeedRaceGarages,
 } from './_stubs';
 import type { RaceSessionCreateOutput } from '../../modules/src/race/types';
+import { clubMetadataWrite } from '../../modules/src/clubs/clubs_repo';
+import { memberWrite } from '../../modules/src/clubs/members_repo';
 
 const HOST_ID = 'user-host';
 const P1 = 'user-p1';
@@ -468,5 +470,122 @@ describe('lb_get RPC (Chunk 13)', () => {
     expect(resp.ok).toBe(true);
     expect(resp.data.records).toEqual([]);
     expect(resp.data.totalCount).toBe(0);
+  });
+
+  // ── Plan B2 (D-05): club tables ──────────────────────────────────────────
+
+  interface ClubLbResponse {
+    ok: true;
+    data: {
+      leaderboardId: string;
+      view: string;
+      ownerKind: string;
+      totalCount: number;
+      records: Array<{ ownerId: string; username: string; rank: number; score: number }>;
+      ownerRecord: { ownerId: string; rank: number; score: number } | null;
+      profiles: Record<string, unknown>;
+      clubs: Record<string, { clubId: string; name: string; emblemId: string; memberCount: number }>;
+      nextCursor: string | null;
+      prevCursor: string | null;
+    };
+  }
+
+  /** A club group of `size` members, its metadata, the leader's membership row and `points` in club_week. */
+  function seedClub(name: string, leaderId: string, size: number, points: number): string {
+    const group = env.nak.groupCreate(leaderId, name);
+    const members = env.fakeNakama.groupMembers.get(group.id)!;
+    for (let i = 1; i < size; i += 1) members.add(`${leaderId}-m${i}`);
+    env.nak.storageWrite([
+      clubMetadataWrite({
+        schemaVersion: 1,
+        clubId: group.id,
+        leaderId,
+        motto: 'go fast',
+        emblemId: 'emblem_default',
+        region: 'global',
+        minDivision: 'bronce',
+        weeklyPoints: points,
+        createdAt: 1,
+      }),
+      memberWrite(
+        { schemaVersion: 1, clubId: group.id, userId: leaderId, role: 'leader', joinedAt: 1, weeklyContribution: points },
+        '*',
+      ),
+    ]);
+    env.nak.leaderboardRecordWrite('club_week', group.id, '', points, 1761955200000, {});
+    return group.id;
+  }
+
+  it('club_week global lists clubs with names, ranks, club views and the C-04 key order', () => {
+    const big = seedClub('Night Riders', 'leader-big', 5, 5);
+    const small = seedClub('Slow Pokes', 'leader-small', 2, 2);
+    const resp = call<ClubLbResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'club_week',
+      view: 'global',
+    });
+    expect(resp.ok).toBe(true);
+    expect(Object.keys(resp.data)).toEqual([
+      'leaderboardId', 'view', 'ownerKind', 'totalCount', 'records', 'ownerRecord',
+      'profiles', 'clubs', 'nextCursor', 'prevCursor',
+    ]);
+    expect(resp.data.ownerKind).toBe('club');
+    expect(resp.data.records.map((r) => [r.ownerId, r.username, r.rank])).toEqual([
+      [big, 'Night Riders', 1],
+      [small, 'Slow Pokes', 2],
+    ]);
+    expect(resp.data.clubs).toEqual({
+      [big]: { clubId: big, name: 'Night Riders', emblemId: 'emblem_default', memberCount: 5 },
+      [small]: { clubId: small, name: 'Slow Pokes', emblemId: 'emblem_default', memberCount: 2 },
+    });
+    expect(resp.data.profiles).toEqual({});
+    expect(resp.data.ownerRecord).toBeNull();
+  });
+
+  it('club_week around_me centers on the clubs of the caller; no club gives the top page', () => {
+    const big = seedClub('Night Riders', 'leader-big', 5, 5);
+    const small = seedClub('Slow Pokes', 'leader-small', 2, 2);
+    const member = call<ClubLbResponse>(env, 'lb_get', 'leader-small', {
+      leaderboardId: 'club_week',
+      view: 'around_me',
+    });
+    expect(member.ok).toBe(true);
+    expect(member.data.ownerRecord?.ownerId).toBe(small);
+    expect(member.data.ownerRecord?.rank).toBe(2);
+
+    const loner = call<ClubLbResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'club_week',
+      view: 'around_me',
+    });
+    expect(loner.ok).toBe(true);
+    expect(loner.data.ownerRecord).toBeNull();
+    expect(loner.data.records.map((r) => r.ownerId)).toEqual([big, small]);
+
+    const explicit = call<ClubLbResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'club_week',
+      view: 'around_me',
+      aroundClubId: big,
+    });
+    expect(explicit.data.ownerRecord?.ownerId).toBe(big);
+  });
+
+  it('club_week rejects the friends view', () => {
+    const resp = call<ErrResponse>(env, 'lb_get', HOST_ID, {
+      leaderboardId: 'club_week',
+      view: 'friends',
+    });
+    expect(resp.ok).toBe(false);
+    expect(resp.error.code).toBe('BAD_REQUEST');
+  });
+
+  it('player tables answer ownerKind user and no clubs', () => {
+    seedWins({ [P1]: 1 });
+    const resp = call<LbGetResponse & { data: { ownerKind: string; clubs: Record<string, unknown> } }>(
+      env,
+      'lb_get',
+      HOST_ID,
+      { leaderboardId: 'wins_week', view: 'global' },
+    );
+    expect(resp.data.ownerKind).toBe('user');
+    expect(resp.data.clubs).toEqual({});
   });
 });
