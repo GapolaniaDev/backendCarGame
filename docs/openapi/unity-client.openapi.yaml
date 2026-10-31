@@ -4776,6 +4776,9 @@ components:
           type: "string"
         displayName:
           type: "string"
+        displayNameKey:
+          type: "string"
+          description: "Localization key of displayName (track.<id>.name / mode.<id>.name)."
         modes:
           type: "object"
           additionalProperties:
@@ -4794,6 +4797,9 @@ components:
           "$ref": "#/components/schemas/ModeId"
         displayName:
           type: "string"
+        displayNameKey:
+          type: "string"
+          description: "Localization key of displayName (track.<id>.name / mode.<id>.name)."
         allowedSizes:
           type: "array"
           items:
@@ -5361,9 +5367,51 @@ components:
           type: "array"
           items:
             "$ref": "#/components/schemas/Mode"
+        cars:
+          type: "array"
+          description: "Car catalog in cars.json order (P-13); catalogsHash covers it."
+          items:
+            "$ref": "#/components/schemas/CatalogCar"
         minClientVersion:
           type: "string"
           description: "LiveOps minClientVersion[platform] (platform from the request, default ios). Was a hard-coded '1.0.0' until T-14."
+    CatalogCar:
+      type: "object"
+      description: "A car of the catalog (cars.json) as config_get serves it (P-13)."
+      properties:
+        id:
+          type: "string"
+        displayName:
+          type: "string"
+        classId:
+          "$ref": "#/components/schemas/CarClassId"
+        baseStats:
+          "$ref": "#/components/schemas/Stats"
+        maxStats:
+          "$ref": "#/components/schemas/Stats"
+        priceCoins:
+          type: "integer"
+        priceGems:
+          type: "integer"
+          description: "0 when the car has no gem price."
+        requiredLevel:
+          type: "integer"
+        isStarter:
+          type: "boolean"
+        displayNameKey:
+          type: "string"
+          description: "Localization key of displayName (car.<id>.name); displayName is the English fallback."
+      required:
+        - "id"
+        - "displayName"
+        - "classId"
+        - "baseStats"
+        - "maxStats"
+        - "priceCoins"
+        - "priceGems"
+        - "requiredLevel"
+        - "isStarter"
+        - "displayNameKey"
     LiveopsConfigGetRequest:
       type: "object"
       properties:

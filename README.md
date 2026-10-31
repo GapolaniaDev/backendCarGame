@@ -310,7 +310,7 @@ The full, current list (14 codes) is in [`docs/unity-api.md`](./docs/unity-api.m
 
 | RPC | Inputs | Errors | Notes |
 |---|---|---|---|
-| `config_get` | `{}` | `INTERNAL` | returns serverTimeMs, catalogsHash, tracks, modes, minClientVersion |
+| `config_get` | `{}` | `INTERNAL` | returns serverTimeMs, catalogsHash, tracks, modes, cars, minClientVersion |
 | `race_session_create` | `{ matchId, mode, trackId, size, hostLoadout, hostUserId? }` | `BAD_REQUEST`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | the host is the session user; `hostUserId` optional and must match it (D-03); the car class comes from the garage (T-10) |
 | `race_session_join` | `{ sessionId, userId, callerUserId, loadout }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED` | identity fields optional and must equal the session user (D-03); rejects double-join and started-state |
 | `race_session_start` | `{ sessionId, callerUserId? }` | `FORBIDDEN`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | only host can start; only valid from `created` |

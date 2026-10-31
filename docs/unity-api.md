@@ -177,9 +177,12 @@ gateway still requires `Authorization` (use the session Bearer, or any token).
   "catalogsHash":     "sha256-of-catalogs-blob",
   "tracks":           [ ... track objects ... ],
   "modes":            [ ... mode objects ... ],
+  "cars":             [ ... car objects ... ],
   "minClientVersion": "0.1.0"
 }
 ```
+
+`cars` is the car catalog in `cars.json` order; `catalogsHash` covers tracks, modes and cars.
 
 `serverTimeMs` is used by the client to compute its clock offset vs the server
 (median of N samples). `minClientVersion` is the LiveOps
@@ -505,12 +508,15 @@ on each leaderboard record's metadata (see §6.7 `lb_get`).
 
 ## 8. Catalogs (from `config_get`)
 
+Every player-visible catalog text comes in English (the fallback) with a sibling key: `displayName` → `displayNameKey`, `title` → `titleKey`, `description` → `descriptionKey`. Keys are `<kind>.<id>.<field>` with kind `track`, `mode`, `car`, `cosmetic`, `store_section`, `store_offer`, `mission`, `achievement` or `division` and field `name`, `title` or `description` (e.g. `car.starter_viper.name`). A client uses its Unity Localization entry for the key when it has one and the English text otherwise. Keys are only added: clients that read `displayName` keep working.
+
 ### `tracks[]`
 
 ```json
 {
   "id":          "neon_blvd",
   "displayName": "Neon Boulevard",
+  "displayNameKey": "track.neon_blvd.name",
   "modes": {
     "quick":      3,    // laps for this mode on this track
     "ranked":     5,
@@ -533,6 +539,7 @@ server rejects reports faster than this as `INVALID_RESULT`.
 {
   "id":              "quick",
   "displayName":     "Quick Race",
+  "displayNameKey":  "mode.quick.name",
   "allowedSizes":    [2, 4, 6],
   "scoreMultiplier": 1.0,
   "usesRating":      false
@@ -540,6 +547,25 @@ server rejects reports faster than this as `INVALID_RESULT`.
 ```
 
 `usesRating: true` means results feed into ranked season rating (Phase 4).
+
+### `cars[]`
+
+```json
+{
+  "id":           "starter_viper",
+  "displayName":  "Viper inicial",
+  "classId":      "D",
+  "baseStats":    { "speed": 50, "acceleration": 50, "handling": 50, "nitro": 50 },
+  "maxStats":     { "speed": 70, "acceleration": 70, "handling": 70, "nitro": 70 },
+  "priceCoins":   0,
+  "priceGems":    0,
+  "requiredLevel": 1,
+  "isStarter":    true,
+  "displayNameKey": "car.starter_viper.name"
+}
+```
+
+`priceGems` is always present (`0` when the car has no gem price).
 
 ---
 

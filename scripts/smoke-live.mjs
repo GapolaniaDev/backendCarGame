@@ -2165,6 +2165,13 @@ async function main() {
   // Minimal F0 flow (what BackendSmoke needs first).
   const cfg = await rpc(a.token, 'config_get', {});
   record('config_get ok with serverTimeMs', cfg.envelope?.ok === true && typeof cfg.envelope?.data?.serverTimeMs === 'number', errCode(cfg));
+  const CATALOG_CAR_IDS = JSON.parse(readFileSync(resolve(ROOT, 'modules/src/catalogs/cars.json'), 'utf8')).cars.map((c) => c.id);
+  const cars = cfg.envelope?.data?.cars;
+  record('config_get serves the car catalog in cars.json order (P-13)',
+    Array.isArray(cars) && cars.map((c) => c.id).join(',') === CATALOG_CAR_IDS.join(',')
+      && cars.every((c) => typeof c.priceGems === 'number' && typeof c.isStarter === 'boolean'
+        && c.displayNameKey === `car.${c.id}.name`),
+    `${Array.isArray(cars) ? cars.length : 'no'} cars`);
   for (const id of ['profile_get', 'garage_get', 'wallet_get']) {
     const r = await rpc(a.token, id, { callerUserId: a.uid, clientVersion: '0.1.0', platform: 'android' });
     record(`${id} (own account) ok`, r.envelope?.ok === true, errCode(r));
