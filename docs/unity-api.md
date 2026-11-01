@@ -178,11 +178,13 @@ gateway still requires `Authorization` (use the session Bearer, or any token).
   "tracks":           [ ... track objects ... ],
   "modes":            [ ... mode objects ... ],
   "cars":             [ ... car objects ... ],
+  "upgrades":         { ... upgrades table, §8 ... },
+  "cosmetics":        [ ... cosmetic objects, §8 ... ],
   "minClientVersion": "0.1.0"
 }
 ```
 
-`cars` is the car catalog in `cars.json` order; `catalogsHash` covers tracks, modes and cars.
+`cars` is the car catalog in `cars.json` order; `upgrades` and `cosmetics` are described in §8. `catalogsHash` covers tracks, modes, cars, upgrades and cosmetics.
 
 `serverTimeMs` is used by the client to compute its clock offset vs the server
 (median of N samples). `minClientVersion` is the LiveOps
@@ -528,7 +530,7 @@ on each leaderboard record's metadata (see §6.7 `lb_get`).
 
 ## 8. Catalogs (from `config_get`)
 
-Every player-visible catalog text comes in English (the fallback) with a sibling key: `displayName` → `displayNameKey`, `title` → `titleKey`, `description` → `descriptionKey`. Keys are `<kind>.<id>.<field>` with kind `track`, `mode`, `car`, `cosmetic`, `store_section`, `store_offer`, `mission`, `achievement` or `division` and field `name`, `title` or `description` (e.g. `car.starter_viper.name`). A client uses its Unity Localization entry for the key when it has one and the English text otherwise. Keys are only added: clients that read `displayName` keep working. The `cosmetic` kind is reserved: no RPC serves a cosmetic key yet.
+Every player-visible catalog text comes in English (the fallback) with a sibling key: `displayName` → `displayNameKey`, `title` → `titleKey`, `description` → `descriptionKey`. Keys are `<kind>.<id>.<field>` with kind `track`, `mode`, `car`, `cosmetic`, `store_section`, `store_offer`, `mission`, `achievement` or `division` and field `name`, `title` or `description` (e.g. `car.starter_viper.name`). A client uses its Unity Localization entry for the key when it has one and the English text otherwise. Keys are only added: clients that read `displayName` keep working. The `cosmetic` kind is served by `cosmetics[]` below.
 
 ### `tracks[]`
 
@@ -586,6 +588,50 @@ server rejects reports faster than this as `INVALID_RESULT`.
 ```
 
 `priceGems` is always present (`0` when the car has no gem price).
+
+### `upgrades`
+
+```json
+{
+  "maxLevel": 5,
+  "lines": [ { "line": "engine", "stat": "speed" }, { "line": "tires", "stat": "handling" },
+             { "line": "nitro", "stat": "nitro" }, { "line": "handling", "stat": "acceleration" } ],
+  "perCarClass": {
+    "D": { "engine":   [ { "level": 1, "cost": 500, "delta": 2 }, { "level": 2, "cost": 800, "delta": 3 },
+                         { "level": 3, "cost": 1200, "delta": 4 }, { "level": 4, "cost": 1800, "delta": 5 },
+                         { "level": 5, "cost": 2500, "delta": 6 } ],
+           "tires":    [ { "level": 1, "cost": 400, "delta": 2 }, { "level": 2, "cost": 700, "delta": 3 },
+                         { "level": 3, "cost": 1100, "delta": 4 }, { "level": 4, "cost": 1600, "delta": 5 },
+                         { "level": 5, "cost": 2200, "delta": 6 } ],
+           "nitro":    [ { "level": 1, "cost": 400, "delta": 2 }, { "level": 2, "cost": 700, "delta": 3 },
+                         { "level": 3, "cost": 1100, "delta": 4 }, { "level": 4, "cost": 1600, "delta": 5 },
+                         { "level": 5, "cost": 2200, "delta": 6 } ],
+           "handling": [ { "level": 1, "cost": 400, "delta": 2 }, { "level": 2, "cost": 700, "delta": 3 },
+                         { "level": 3, "cost": 1100, "delta": 4 }, { "level": 4, "cost": 1600, "delta": 5 },
+                         { "level": 5, "cost": 2200, "delta": 6 } ] },
+    "C": { … }, "B": { … }, "A": { … }, "S": { … } } }
+```
+
+Classes in the order `D, C, B, A, S`; lines in the order of `lines`. `cost` is in
+coins. `delta` is the **increment** of its level, not an accumulated bonus: the
+stat of a line at level `n` is `min(baseStats[stat] + Σ_{k=1..n} delta_k, maxStats[stat])`,
+with `baseStats` and `maxStats` from `cars[]`; level 0 is `baseStats`. Every
+class's four lines sum to the smallest stat margin of that class (C 22, B 23,
+A 22, D and S 20), so for every car in `cars[]` each level raises its stat without being clamped. Ranked races ignore
+upgrades and use `maxStats`. An upgrade always goes to the current level + 1.
+
+### `cosmetics[]`
+
+```json
+{ "id": "paint_red_flame", "displayName": "Red Flame", "displayNameKey": "cosmetic.paint_red_flame.name",
+  "type": "paint", "rarity": "common", "compatibleClasses": ["D", "C", "B"], "priceCoins": 500, "priceGems": 0 }
+```
+
+In the order of `cosmetics.json`. `type` is one of `paint | wheels | decal | trail | horn`
+(the equip slot); `rarity` is one of `common | rare | epic | legendary`. The
+prices are always present (`0` when missing) and are **informative**: what is
+charged is the `store_get` offer (`finalPrice`), not these fields.
+`catalogsHash` covers `tracks`, `modes`, `cars`, `upgrades` and `cosmetics`.
 
 ---
 
@@ -742,7 +788,9 @@ Returns the entire garage (cars + cosmetics + loadout + daily
 counters) in one call — no pagination, no per-car fetches. Auto-creates
 the starter garage (viper + zero upgrades) on first read so a client
 that authenticates via an after-auth channel the hook doesn't cover
-still gets a usable garage immediately.
+still gets a usable garage immediately. A missing garage is also created by
+the first call of any garage mutator (`car_buy`, `car_upgrade`, `cosmetic_equip`,
+`loadout_set`), so none of them answers `NOT_FOUND 'garage does not exist'` (C-05).
 
 **Input** — `{ userId?: string; callerUserId: string }`. Defaults to
 self when `userId` is omitted.
@@ -776,16 +824,18 @@ interface LoadoutView {
 }
 ```
 
+`computedStats` and `loadout.stats` are computed when the response is built, from
+the current upgrade table (C-03, D-03), not read back from storage. If a car is no
+longer in the catalog, its stored value is served. Stored values are not migrated.
+
 See `docs/garage.md`.
 
 ### 16.3 `car_buy`
 
-Buy a car from the catalog by `carId`. Wallet reads BEFORE the spend
-(`nk.accountGetId`), then `nk.walletUpdate` (deducted via `spend()`
-with idempotency key `garage:buy:{userId}:{carId}`), then CAS write
-of the garage. On CAS conflict the spend is refunded via `grant()`
-with key `garage:buy:refund:{userId}:{carId}` so the player can
-retry without losing coins.
+Buy a car from the catalog by `carId`. Charge and delivery are one wallet
+transaction (idempotency key `garage:buy:{userId}:{carId}`) that also writes the
+garage with CAS. A lost garage CAS answers `CONFLICT` and charges nothing (no
+refunds); a retry charges normally.
 
 **Input** — `{ carId: string; callerUserId: string }`.
 
@@ -793,38 +843,52 @@ retry without losing coins.
 
 | Error | When |
 |---|---|
-| `INSUFFICIENT_FUNDS` | wallet balance < offer price |
-| `CONFLICT` | car already owned OR CAS garage write failed (refund issued — retry safely) |
+| `INSUFFICIENT_FUNDS` | wallet balance < car price |
+| `CONFLICT` | car already owned OR CAS garage write failed (nothing charged — retry) |
+| `FORBIDDEN` | player level below `requiredLevel` (`details: {requiredLevel, currentLevel}`) |
 | `NOT_FOUND` | `carId` not in catalog |
 
 ### 16.4 `car_upgrade`
 
-Upgrade one of `engine | tires | nitro | handling` on an owned car to
-a new level (1..UPGRADE_MAX). Cost is `upgrades.perCarClass[classId][line][newLevel]`.
-Stats are recomputed server-side; the response includes the new
-`garage.cars[].computedStats` snapshot.
+Upgrade one of `engine | tires | nitro | handling` on an owned car. `newLevel`
+must be the current level + 1 (1..UPGRADE_MAX, else `BAD_REQUEST`). Cost is
+`upgrades.perCarClass[classId][line][newLevel-1].cost` (§8). Charge and delivery
+are one wallet transaction: a lost garage CAS answers `CONFLICT` and charges nothing.
 
 **Input** — `{ carId: string; line: UpgradeLine; newLevel: number; callerUserId: string }`.
 
-**Output** — `{ garage: GarageView; costPaid: { coins: number; gems: number } }`.
+**Output** — `{ garage: GarageView; costPaid: { coins: number; gems: number }; newBalance: { coins: number; gems: number } }`.
+`newBalance` is the wallet after the charge.
 
 ### 16.5 `cosmetic_equip`
 
-Equip a cosmetic on a specific slot of a specific car. Validates:
+Equip a cosmetic on a specific slot of a specific car. Slots are
+`paint | wheels | decal | trail | horn`. Validates:
 - car is owned
 - cosmetic is in `garage.cosmeticsBag`
 - cosmetic type matches the slot
 - cosmetic's `compatibleClasses` includes the car's `classId`
 
-**Input** — `{ carId: string; slot: CosmeticSlot; cosmeticId: string; callerUserId: string }`.
+**Input** — `{ carId: string; slot: CosmeticSlot; cosmeticId: string | null; callerUserId: string }`.
+
+Remove the cosmetic from the slot with `cosmeticId: null` (or `""`, or without
+`cosmeticId`) (C-06). The slot key is then absent from `cars[i].cosmetics`, and
+from `loadout.equipped` when `carId` is the active car. Removing from an empty
+slot is `ok`.
 
 **Output** — `{ garage: GarageView }`.
+
+| Error | When |
+|---|---|
+| `BAD_REQUEST` | invalid slot |
+| `NOT_FOUND` | car not in catalog (or cosmetic not in catalog, when equipping) |
+| `FORBIDDEN` | car not owned, or cosmetic not in the bag / not compatible |
 
 ### 16.6 `loadout_set`
 
 Change the active car in the loadout. Equipped cosmetics are pulled
 from the new active car's `cosmetics` so the loadout always reflects
-the active car's choices.
+the active car's choices. A missing garage is created first (C-05).
 
 **Input** — `{ carId: string; callerUserId: string }`.
 
@@ -835,10 +899,14 @@ the active car's choices.
 `sections[].section.displayNameKey` and `sections[].offers[].offer.displayNameKey` are the localization keys of the English `displayName` fields (T-11, D-11).
 
 Returns the catalog sections after applying the player's filters
-(level, ownership, packs-purchased) plus the daily rotation. Rotation
-is deterministic per UTC day (FNV-1a hash of `${offerId}:${dayIndex}`
-over the `daily` section's offers, top `dailyRotationPoolSize` wins).
-All players see the same rotation on the same day.
+(ownership, packs-purchased) plus the daily rotation. Offers above the
+player's level are listed with `locked: true` and are not buyable (C-07);
+owned and expired offers stay hidden.
+
+Daily rotation: the `daily` section's offers are sorted **ascending** by
+FNV-1a hash of `${offerId}:${dayIndex}`, and the first 3
+(`dailyRotationPoolSize`) are the day's rotation. All players see the same
+rotation on the same day. The rotation anchor changes at UTC midnight.
 
 **Input** — `{ nowMs?: number; callerUserId: string }`. `nowMs` is
 optional client-supplied "now" for deterministic tests.
@@ -850,22 +918,48 @@ interface StoreGetOutput {
   /** base36 day index the rotation is anchored to. */
   dailySeed: string;
   sections: ReadonlyArray<{
-    section: { id: 'permanent' | 'daily' | 'level_gated'; displayName: string };
-    offers: ReadonlyArray<{ offer: StoreOffer; isDailyOffer: boolean }>;
+    section: { id: 'permanent' | 'daily' | 'level_gated'; displayName: string; displayNameKey: string };
+    offers: ReadonlyArray<{
+      offer: StoreOffer & { displayNameKey: string };   // e.g. "store_offer.lg_civic_r.name"
+      isDailyOffer: boolean;
+      basePrice: { coins: number; gems: number };
+      /** What `store_buy` charges right now (server clock). */
+      finalPrice: { coins: number; gems: number };
+      /** Present only when a special offer discounts this offer. */
+      activeSpecialOfferId?: string;
+      owned: boolean;                                    // false for every listed offer
+      locked: boolean;                                   // true when player level < requiredLevel
+    }>;
   }>;
 }
 ```
 
+Example offer (a level-gated car the player cannot buy yet):
+
+```json
+{ "offer": { "offerId": "lg_civic_r", "kind": "car", "refId": "civic_r", "displayName": "Civic R", "priceCoins": 8000,
+             "requiredLevel": 6, "displayNameKey": "store_offer.lg_civic_r.name" },
+  "isDailyOffer": false, "basePrice": { "coins": 8000, "gems": 0 }, "finalPrice": { "coins": 8000, "gems": 0 },
+  "owned": false, "locked": true }
+```
+
+The price is the store offer's own (`finalPrice`), not the cosmetics catalog price.
+
 ### 16.8 `store_buy`
 
-Redeem a `store_get` offer. Spend first via `spend()` with key
-`store:buy:{kind}:{userId}:{refId}`, then mutate the garage (add car
-to garage / cosmetic to bag / mark pack purchased), then CAS write
-the garage. On CAS conflict refund via `grant()` with `:refund` suffix.
-For packs, the pack contents are granted with `:pack` and reversed
-on CAS conflict with `:pack:reverse`.
+Redeem a `store_get` offer. Charge and delivery are one wallet transaction
+(key `store:buy:{kind}:{userId}:{refId}`) that also adds the car to the garage,
+the cosmetic to the bag, or marks the pack purchased, with CAS on the garage.
+A lost garage CAS answers `CONFLICT` and charges nothing (no refunds); a retry
+charges normally. For a `pack`, the pack contents are the second move of the
+same transaction.
 
-**Input** — `{ offerId: string; nowMs?: number; callerUserId: string }`.
+Rotation: a `daily` offer that is not in today's rotation (UTC, §16.7) is
+rejected with `BAD_REQUEST` `details: {reason: "NOT_IN_ROTATION"}` (C-08). This
+also happens when UTC midnight passes between `store_get` and `store_buy`.
+
+**Input** — `{ offerId: string; nowMs?: number; callerUserId: string }`. `nowMs`
+is ignored: prices, discounts and expiry use the server clock.
 
 **Output**:
 
@@ -876,6 +970,8 @@ interface StoreBuyOutput {
     | { kind: 'cosmetic'; refId: string }
     | { kind: 'pack'; refId: string; changeset: { coins?: number; gems?: number } };
   newBalance: { coins: number; gems: number };
+  /** The price charged; equal to `finalPrice` of `store_get` for this offer. */
+  pricePaid: { coins: number; gems: number };
 }
 ```
 
@@ -883,9 +979,11 @@ interface StoreBuyOutput {
 |---|---|
 | `NOT_FOUND` | `offerId` not in catalog |
 | `BAD_REQUEST` | offer expired |
-| `CONFLICT` | car/cosmetic/pack already owned OR CAS conflict (refund issued — retry safely) |
-| `INSUFFICIENT_FUNDS` | wallet balance < offer price |
-| `FORBIDDEN` | player level below `requiredLevel` |
+| `BAD_REQUEST` | `details: {reason: "NOT_IN_ROTATION"}`: `daily` offer not in today's rotation (C-08) |
+| `CONFLICT` | car/cosmetic/pack already owned OR concurrent garage update (nothing charged — retry) |
+| `INSUFFICIENT_FUNDS` | wallet balance < price |
+| `FORBIDDEN` | player level below `requiredLevel` (`details: {requiredLevel, currentLevel}`) |
+| `SERVICE_UNAVAILABLE` | maintenance |
 
 ### 16.9 Phase 3 client integration checklist
 

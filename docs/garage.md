@@ -73,7 +73,7 @@ See "One transaction per movement" in `docs/economy.md`.
 
 `garage_get` returns the entire garage — no pagination, no per-car
 fetches. The client never needs a `get_car(carId)` RPC because the
-server-side `computeStats` snapshot is included in `OwnedCar.computedStats`.
+server computes `OwnedCar.computedStats` when it builds the response (D-03).
 
 ## Decision 4 — cosmetic compatibility Strict
 
@@ -82,12 +82,27 @@ server-side `computeStats` snapshot is included in `OwnedCar.computedStats`.
 1. Car is owned (`garage.cars.some(c => c.carId === carId)`).
 2. Cosmetic is in the bag (`garage.cosmeticsBag.includes(cosmeticId)`).
 3. Cosmetic's `type` matches the slot:
-   `paint | decal | wheels | trail` ↔ `paint | decal | wheels | trail`.
+   `paint | wheels | decal | trail | horn` ↔ the same five slots.
 4. Cosmetic's `compatibleClasses` includes the car's `classId`.
 
 Failing any one → `FORBIDDEN` (cosmetics the player can't legally equip
 are a client-side bug, not a server-side data hazard, but the server
 defends anyway).
+
+### Removing a cosmetic
+
+`cosmetic_equip` with `cosmeticId` `null`, `""` or absent removes the cosmetic
+from the slot (`unequipCosmetic`): the slot key is deleted from `cars[].cosmetics`
+and, when the car is the active one, from `loadout.equipped`. Validation: slot
+(`BAD_REQUEST`), car in the catalog (`NOT_FOUND`), car owned (`FORBIDDEN`).
+Removing from an empty slot is idempotent (`ok`). No separate RPC.
+
+### Automatic garage
+
+`car_buy`, `car_upgrade`, `cosmetic_equip` and `loadout_set` create the default
+garage when it is missing (`readOrCreateGarageObject`), so none of them asks the
+client to call `garage_get` first. If the creation write fails, the call answers
+`INTERNAL`.
 
 ## Decision 5 — loadout publicly readable
 
@@ -96,22 +111,37 @@ The loadout IS publicly readable, but only via future `player_get`
 owner-only: `callerUserId === ctx.userId`. A different player inspecting
 your loadout is a Phase 7 social RPC.
 
-## Stats snapshot — `computeStats`
+## Stats — `computeStats`
 
-`computeStats(carCatalog, upgradesCatalog, levels)` returns the same
-shape as `OwnedCar.computedStats`:
+`computeStats(car, upgradesCatalog, levels)` returns the same shape as
+`OwnedCar.computedStats`. The `delta` of each upgrade level is an
+**increment** (D-01), not an accumulated bonus. For each stat of a line:
 
 ```
-baseStats[classId] + levelSum * deltaStats[line][classId] * levelWeight
+stat(level n) = min(baseStats[stat] + Σ_{k=1..n} delta_k, maxStats[stat])
 ```
 
-Equalized-to-class-cap: each class is bound to the same stat ceiling
-so an A-class car at level 0 is not faster than an S-class car at
-level 0. The cap is enforced in `computeStats` and checked again in
-the `ranked` variant (used by matchmaking for fairness scoring).
+Level 0 is `baseStats`. The stat is clamped to the car's `maxStats`. The
+values are recomputed when a response is built, from the current table (D-03).
 
-The ranked variant (`computeStatsRanked`) factors in the player's
-upgrade levels against the match's `mode`-weighted target.
+Delta table (D-02): the four lines of each class use the same vector, and its
+sum is the smallest stat margin of that class, so every car in `cars.json` rises
+at each level 0→5 without being clamped.
+
+| Class | Deltas per level 1..5 | Sum |
+|---|---|---|
+| D | 2, 3, 4, 5, 6 | 20 |
+| C | 2, 3, 4, 6, 7 | 22 |
+| B | 2, 4, 5, 6, 6 | 23 |
+| A | 2, 3, 5, 6, 6 | 22 |
+| S | 2, 3, 4, 5, 6 | 20 |
+
+Costs are not part of this table (see `upgrades.json`). The test
+`tests/unit/upgrades_progression.test.ts` checks that each car rises strictly
+at every level and that `validateUpgrades` requires the `delta` key of its line's stat.
+
+The ranked variant (`computeStatsForRanked`) ignores upgrades and returns the
+car's `maxStats`, so ranked races compete on driver skill.
 
 ## D3 — what the player sees
 

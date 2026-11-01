@@ -310,7 +310,7 @@ The full, current list (14 codes) is in [`docs/unity-api.md`](./docs/unity-api.m
 
 | RPC | Inputs | Errors | Notes |
 |---|---|---|---|
-| `config_get` | `{}` | `INTERNAL` | returns serverTimeMs, catalogsHash, tracks, modes, cars, minClientVersion |
+| `config_get` | `{}` | `INTERNAL` | returns serverTimeMs, catalogsHash, tracks, modes, cars, upgrades, cosmetics, minClientVersion |
 | `race_session_create` | `{ matchId, mode, trackId, size, hostLoadout, hostUserId? }` | `BAD_REQUEST`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | the host is the session user; `hostUserId` optional and must match it (D-03); the car class comes from the garage (T-10) |
 | `race_session_join` | `{ sessionId, userId, callerUserId, loadout }` | `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED` | identity fields optional and must equal the session user (D-03); rejects double-join and started-state |
 | `race_session_start` | `{ sessionId, callerUserId? }` | `FORBIDDEN`, `CONFLICT`, `NOT_FOUND`, `RATE_LIMITED` | only host can start; only valid from `created` |
@@ -475,7 +475,7 @@ Eight new RPCs landed in Phase 3 (`wallet_get`, `garage_get`, `car_buy`, `car_up
 | `garage/rpcs.ts` | `garage_get/car_buy/car_upgrade/cosmetic_equip/loadout_set` | owner-only enforcement + D3 compensating refund |
 | `garage/after_auth.ts` | `registerGarageAutoCreate` | seeds the starter `viper` garage on first auth (4 channels) |
 | `store/rotation.ts` | `withDailyRotation` + `resolveDailyRotation` | FNV-1a daily rotation, deterministic per UTC day |
-| `store/filter.ts` | `filterOffersForSection` + `ownershipFromGarage` | drops expired/level_low/already_owned offers |
+| `store/filter.ts` | `filterOffersForSection` + `ownershipFromGarage` | drops expired/already_owned offers, flags level-gated ones as `locked` |
 | `store/packs.ts` | `PACK_TABLE` | 4 one-time entitlement packs |
 | `store/rpcs.ts` | `store_get/store_buy` | D3 compensating refund, refund-on-pack-CAS-conflict |
 

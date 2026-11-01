@@ -56,13 +56,13 @@ based on `dayIndexUtc(nowMs)`:
 
 1. Compute `dayIndex = floor(nowMs / 86400000)`.
 2. For each offer in the source daily pool, compute `fnv1a(${offerId}:${dayIndex})`.
-3. Sort descending by hash, take top `dailyRotationPoolSize`.
+3. Sort ascending by hash, take the first `dailyRotationPoolSize`.
 4. Replace the `daily` section's offers with the rotated list.
 
 Result: every player in the world sees the same daily offers at the
 same UTC instant. The `dailySeed` returned in the response is
 `dayKeyUtc(nowMs)` — base36 of the day index — for any client badge
-(`Día #12345`).
+(`Day #12345`).
 
 ### Why FNV-1a
 
@@ -75,16 +75,19 @@ same UTC instant. The `dailySeed` returned in the response is
 ## Filters applied to `store_get`
 
 `filterCatalog(catalog, ctx)` produces a list of `{ section, visible }`
-where `visible` contains the offers the player can actually buy:
+where `visible` contains the offers to list:
 
 | Reason | When |
 |---|---|
 | `expired` | `nowMs >= offer.expiresAt` |
-| `level_low` | `playerLevel < offer.requiredLevel` |
 | `already_owned` | `car ∈ garage.cars` OR `cosmetic ∈ garage.cosmeticsBag` OR `pack ∈ garage.purchasedPacks` |
 
+Level-gated offers are not hidden (D-10): when `playerLevel < offer.requiredLevel`
+the offer is listed with `locked: true`, shown greyed out by the client, and
+`store_buy` rejects it with `FORBIDDEN`.
+
 The `daily` section's offers are tagged `isDailyOffer: true` so the
-client can render them with a "Solo hoy" badge.
+client can render them with a "Today only" badge.
 
 ## Pack table — `packs.ts`
 
@@ -112,11 +115,15 @@ tab. See §16.7 of `docs/unity-api.md`. Maintenance-gated
 Unity client sends no `clientVersion` (T-14 owns the version gate).
 
 Each listed offer is `{ offer, isDailyOffer, basePrice, finalPrice,
-activeSpecialOfferId?, owned }`. Prices are `{coins, gems}`.
+activeSpecialOfferId?, owned, locked }`. Prices are `{coins, gems}`.
 `finalPrice` is what `store_buy` charges right now (plan T-12):
 `store/pricing.ts` computes it for both RPCs from the player's
 `activeSpecialOffers` and the **server** clock. `owned` is additive;
-owned offers are not listed, so a listed one says `false`.
+owned offers are not listed, so a listed one says `false`. `locked` is `true`
+for a level-gated offer the player cannot buy yet (see the filters above).
+
+Prices come from the store offer (`priceCoins` / `priceGems`), not from the
+cosmetics catalog, whose prices are informative only.
 
 ### Special offers
 
@@ -132,8 +139,9 @@ offers name SKUs that are not store offers, so today none applies.
 One transaction per purchase (plan T-11, `docs/economy.md`):
 
 1. Look up offer in catalog (`NOT_FOUND` if absent).
-2. Check expiry with the server clock (`BAD_REQUEST` if expired).
-   `nowMs` in the request is ignored.
+2. Check expiry with the server clock (`BAD_REQUEST` if expired). A `daily`
+   offer must be in today's rotation (`BAD_REQUEST`, `details.reason`
+   `NOT_IN_ROTATION`). `nowMs` in the request is ignored.
 3. Auto-create garage if absent (`INTERNAL` on write failure).
 4. Ownership check (`CONFLICT` if already).
 5. Level check (`FORBIDDEN` if below).
@@ -150,6 +158,7 @@ and answer what the winner delivered.
 |---|---|
 | `NOT_FOUND` | offer not in catalog |
 | `BAD_REQUEST` | offer expired |
+| `BAD_REQUEST` | `NOT_IN_ROTATION`: daily offer not in today's rotation (the client shows it as expired) |
 | `CONFLICT` | car/cosmetic/pack already owned OR concurrent garage update (nothing charged — retry) |
 | `INSUFFICIENT_FUNDS` | wallet balance < price |
 | `FORBIDDEN` | player level below `requiredLevel` |
