@@ -7,6 +7,7 @@ import {
   dayIndexUtc,
   resolveDailyRotation,
   withDailyRotation,
+  isDailyPoolOffer,
 } from '../../modules/src/store/rotation';
 import {
   filterOffersForSection,
@@ -103,6 +104,16 @@ describe('store/rotation', () => {
   });
 });
 
+describe('store/rotation isDailyPoolOffer', () => {
+  it('is true for every daily pool offer (rotating in or not) and false otherwise', () => {
+    expect(isDailyPoolOffer(CATALOG, 'd1')).toBe(true);
+    expect(isDailyPoolOffer(CATALOG, 'd5')).toBe(true);
+    expect(isDailyPoolOffer(CATALOG, 'perm_paint_matte_black')).toBe(false);
+    expect(isDailyPoolOffer(CATALOG, 'lg_civic_r')).toBe(false);
+    expect(isDailyPoolOffer(CATALOG, 'nope')).toBe(false);
+  });
+});
+
 describe('store/filter', () => {
   const baseCtx: FilterContext = {
     nowMs: Date.UTC(2026, 9, 6, 0, 0, 0),
@@ -126,7 +137,7 @@ describe('store/filter', () => {
     expect(hidden[0]?.reason).toBe('expired');
   });
 
-  it('drops offers that require a higher level than the player', () => {
+  it('lists offers that require a higher level as locked', () => {
     const section: StoreSection = {
       id: 'level_gated',
       displayName: 't',
@@ -135,8 +146,22 @@ describe('store/filter', () => {
       ],
     };
     const { visible, hidden } = filterOffersForSection(section, { ...baseCtx, playerLevel: 5 });
-    expect(visible).toEqual([]);
-    expect(hidden[0]?.reason).toBe('level_low');
+    expect(visible.map((v) => v.offer.offerId)).toEqual(['lg_civic_r']);
+    expect(visible[0]?.locked).toBe(true);
+    expect(hidden).toEqual([]);
+  });
+
+  it('unlocks an offer once the player reaches the required level and never locks ungated ones', () => {
+    const section: StoreSection = {
+      id: 'level_gated',
+      displayName: 't',
+      offers: [
+        mk('lg_civic_r', 'car', 'civic_r', { priceCoins: 8000, requiredLevel: 6 }),
+        mk('perm_x', 'cosmetic', 'paint_x', { priceCoins: 100 }),
+      ],
+    };
+    const { visible } = filterOffersForSection(section, { ...baseCtx, playerLevel: 6 });
+    expect(visible.map((v) => v.locked)).toEqual([false, false]);
   });
 
   it('drops cars already in the player\'s garage', () => {

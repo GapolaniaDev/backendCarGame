@@ -83,3 +83,9 @@ export function withDailyRotation(
   const rotated = resolveDailyRotation(catalog, nowMs);
   return catalog.sections.map((s) => (s.id === 'daily' ? { ...s, offers: rotated } : s));
 }
+
+/** True when `offerId` belongs to the `daily` section (whether or not it rotates in today). */
+export function isDailyPoolOffer(catalog: StoreCatalog, offerId: string): boolean {
+  const dailySection = catalog.sections.find((s) => s.id === 'daily');
+  return dailySection !== undefined && dailySection.offers.some((o) => o.offerId === offerId);
+}

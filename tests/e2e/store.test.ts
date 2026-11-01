@@ -11,12 +11,19 @@
 //                 compensating refund on CAS conflict (D3 caveat)
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import storeJson from '../../modules/src/catalogs/store.json';
+import type { StoreCatalog } from '../../modules/src/store/types';
+import { resolveDailyRotation } from '../../modules/src/store/rotation';
 import {
   FakeContext,
   loadBundleForTest,
 } from './_stubs';
 
 const HOST_ID = 'user-host';
+
+type StoreGetData = {
+  sections: ReadonlyArray<{ section: { id: string }; offers: ReadonlyArray<{ offer: { offerId: string }; locked: boolean }> }>;
+};
 
 type Resp<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string; details?: unknown } };
 
@@ -88,7 +95,7 @@ describe('store_get (Chunk 8)', () => {
     expect(offers.every((o) => o.offer.displayNameKey === 'store_offer.' + o.offer.offerId + '.name')).toBe(true);
   });
 
-  it('hides level-gated offers when the player is below the required level', () => {
+  it('lists every level-gated offer as locked for a level-1 player', () => {
     setLevel(env, HOST_ID, 1);
     const r = call<Resp<{ sections: ReadonlyArray<{ section: { id: string }; offers: ReadonlyArray<{ offer: { offerId: string } }> }> }>>(
       env, 'store_get', HOST_ID, { callerUserId: HOST_ID },
@@ -96,7 +103,31 @@ describe('store_get (Chunk 8)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const lg = r.data.sections.find((s) => s.section.id === 'level_gated');
-    expect(lg?.offers).toEqual([]);
+    expect(lg?.offers).toHaveLength(8);
+    expect(lg?.offers.every((o) => o.locked)).toBe(true);
+    const others = r.data.sections.filter((s) => s.section.id !== 'level_gated').flatMap((s) => s.offers);
+    expect(others.length).toBeGreaterThan(0);
+    expect(others.every((o) => o.locked === false)).toBe(true);
+  });
+
+  it('locks only the offers above the player level (level 12)', () => {
+    setLevel(env, HOST_ID, 12);
+    const r = call<Resp<StoreGetData>>(env, 'store_get', HOST_ID, { callerUserId: HOST_ID });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const lg = r.data.sections.find((s) => s.section.id === 'level_gated');
+    const lockedOf = (id: string) => lg?.offers.find((o) => o.offer.offerId === id)?.locked;
+    expect(lockedOf('lg_civic_r')).toBe(false);
+    expect(lockedOf('lg_coupe_gt')).toBe(false);
+    expect(lockedOf('lg_phantom_rsx')).toBe(true);
+  });
+
+  it('exposes locked right after owned and omits activeSpecialOfferId without a special offer', () => {
+    const r = call<Resp<StoreGetData>>(env, 'store_get', HOST_ID, { callerUserId: HOST_ID });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const first = r.data.sections.flatMap((s) => s.offers)[0];
+    expect(Object.keys(first as object)).toEqual(['offer', 'isDailyOffer', 'basePrice', 'finalPrice', 'owned', 'locked']);
   });
 
   it('hides already-owned cars from the level_gated section', () => {
@@ -249,6 +280,25 @@ describe('store_buy (Chunk 8)', () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('FORBIDDEN');
+    expect(r.error.details).toEqual({ requiredLevel: 6, currentLevel: 1 });
+  });
+
+  it('rejects a daily pool offer outside today\'s rotation without charging, and buys one inside it', () => {
+    setCoins(env, HOST_ID, 100000);
+    const catalog = storeJson as unknown as StoreCatalog;
+    const todayIds = new Set(resolveDailyRotation(catalog, Date.now()).map((o) => o.offerId));
+    const pool = catalog.sections.find((s) => s.id === 'daily')?.offers ?? [];
+    const outside = pool.find((o) => !todayIds.has(o.offerId));
+    const inside = pool.find((o) => todayIds.has(o.offerId));
+    if (!outside || !inside) throw new Error('daily pool must be larger than today\'s rotation');
+    const bad = call<Resp<unknown>>(env, 'store_buy', HOST_ID, { offerId: outside.offerId, callerUserId: HOST_ID });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.error.code).toBe('BAD_REQUEST');
+    expect((bad.error.details as { reason?: string }).reason).toBe('NOT_IN_ROTATION');
+    expect(env.fakeNakama.wallets.get(HOST_ID)).toEqual({ coins: 100000, gems: 0 });
+    const good = call<Resp<unknown>>(env, 'store_buy', HOST_ID, { offerId: inside.offerId, callerUserId: HOST_ID });
+    expect(good.ok).toBe(true);
   });
 
   it('returns NOT_FOUND for an unknown offer', () => {

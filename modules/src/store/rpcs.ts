@@ -5,8 +5,10 @@
 //
 // All decisions enforced here:
 //   - Daily offer deterministic per UTC day (D4 in the Phase 3 plan).
-//   - `store_get` hides already-owned cars/cosmetics/packs and
-//     level-gated offers the player doesn't yet qualify for.
+//   - `store_get` hides already-owned cars/cosmetics/packs and lists
+//     level-gated offers the player doesn't yet qualify for as `locked`.
+//   - `store_buy` of a `daily` pool offer outside today's rotation is
+//     rejected with NOT_IN_ROTATION (D-11).
 //   - `store_buy` is owner-only (caller identity enforced). Packs
 //     are one-time entitlements; cars and cosmetics are forever.
 
@@ -17,6 +19,7 @@ import { emit } from '../core/admin/analytics';
 import { getStoreCatalog } from './catalog';
 import {
   dayKeyUtc,
+  isDailyPoolOffer,
   resolveDailyRotation,
   withDailyRotation,
 } from './rotation';
@@ -81,6 +84,8 @@ export interface StoreGetOutput {
       activeSpecialOfferId?: string;
       /** Additive (T-12). Owned offers are hidden, so a listed one is false. */
       owned: boolean;
+      /** True when the player's level is below offer.requiredLevel: listed, not buyable (D-10). */
+      locked: boolean;
     }>;
   }>;
 }
@@ -184,6 +189,7 @@ export const store_get_impl: RpcHandler = (ctx, logger, nk, body) => {
           finalPrice: finalPrice(offer, pricingByOffer),
           ...(pricing ? { activeSpecialOfferId: pricing.eventId } : {}),
           owned: isOwned(offer, ctxFilter),
+          locked: v.locked,
         };
       }),
     };
@@ -227,6 +233,11 @@ export const store_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   // 2) Validity checks (mirror the store_get filter).
   if (offer.expiresAt !== undefined && offer.expiresAt !== null && nowMs >= offer.expiresAt) {
     return toJson(err('BAD_REQUEST', `offer expired at ${offer.expiresAt}`));
+  }
+  const catalog = getStoreCatalog();
+  if (isDailyPoolOffer(catalog, offer.offerId)
+      && !resolveDailyRotation(catalog, nowMs).some((o) => o.offerId === offer.offerId)) {
+    return toJson(err('BAD_REQUEST', "offer is not in today's rotation", { reason: 'NOT_IN_ROTATION' }));
   }
 
   // 3) Read garage (auto-create so the player can buy from a fresh

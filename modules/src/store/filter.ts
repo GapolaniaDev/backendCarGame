@@ -1,8 +1,8 @@
 // Phase 3 store filter. `store_get` returns the catalog sections
 // after applying:
 //   - per-offer expiry (offers past `expiresAt` are dropped)
-//   - per-player `requiredLevel` (level-gated offers hide when the
-//     player's level is below the threshold)
+//   - per-player `requiredLevel` (level-gated offers stay listed but
+//     are flagged `locked` when the player's level is below it; plan B3, D-10)
 //   - per-player ownership (cars in `garage.cars`, cosmetics in
 //     `garage.cosmeticsBag` — bought items are hidden so the client
 //     doesn't re-prompt for an already-owned item)
@@ -28,8 +28,10 @@ export interface FilteredOffer {
   offer: StoreOffer;
   /** True if the offer is one of today's daily-rotation winners. */
   isDailyOffer: boolean;
-  /** Diagnostic — why the offer is visible (or hidden) after filtering. */
-  reason?: 'expired' | 'level_low' | 'already_owned';
+  /** True when the player's level is below offer.requiredLevel: listed, not buyable (plan B3, D-10). */
+  locked: boolean;
+  /** Diagnostic — why the offer is hidden after filtering. */
+  reason?: 'expired' | 'already_owned';
 }
 
 /** Convert a Garage into the sets used by `filterOffersForSection`. */
@@ -57,20 +59,21 @@ export function filterOffersForSection(
   for (const offer of section.offers) {
     const reason = shouldHide(offer, ctx);
     if (reason === null) {
-      visible.push({ offer, isDailyOffer: section.id === 'daily' });
+      visible.push({
+        offer,
+        isDailyOffer: section.id === 'daily',
+        locked: offer.requiredLevel !== undefined && ctx.playerLevel < offer.requiredLevel,
+      });
     } else {
-      hidden.push({ offer, isDailyOffer: false, reason });
+      hidden.push({ offer, isDailyOffer: false, locked: false, reason });
     }
   }
   return { visible, hidden };
 }
 
-function shouldHide(offer: StoreOffer, ctx: FilterContext): 'expired' | 'level_low' | 'already_owned' | null {
+function shouldHide(offer: StoreOffer, ctx: FilterContext): 'expired' | 'already_owned' | null {
   if (offer.expiresAt !== undefined && offer.expiresAt !== null && ctx.nowMs >= offer.expiresAt) {
     return 'expired';
-  }
-  if (offer.requiredLevel !== undefined && ctx.playerLevel < offer.requiredLevel) {
-    return 'level_low';
   }
   if (offer.kind === 'car' && ctx.ownedCarIds.has(offer.refId)) {
     return 'already_owned';
