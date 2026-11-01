@@ -860,6 +860,8 @@ are one wallet transaction: a lost garage CAS answers `CONFLICT` and charges not
 **Output** — `{ garage: GarageView; costPaid: { coins: number; gems: number }; newBalance: { coins: number; gems: number } }`.
 `newBalance` is the wallet after the charge.
 
+After a lost response, call `garage_get`: repeating the same `newLevel` answers `BAD_REQUEST` with `details: {currentLevel, requestedLevel}`.
+
 ### 16.5 `cosmetic_equip`
 
 Equip a cosmetic on a specific slot of a specific car. Slots are
@@ -881,6 +883,7 @@ slot is `ok`.
 | Error | When |
 |---|---|
 | `BAD_REQUEST` | invalid slot |
+| `BAD_REQUEST` | cosmetic type does not match the slot |
 | `NOT_FOUND` | car not in catalog (or cosmetic not in catalog, when equipping) |
 | `FORBIDDEN` | car not owned, or cosmetic not in the bag / not compatible |
 
@@ -909,7 +912,7 @@ FNV-1a hash of `${offerId}:${dayIndex}`, and the first 3
 rotation on the same day. The rotation anchor changes at UTC midnight.
 
 **Input** — `{ nowMs?: number; callerUserId: string }`. `nowMs` is
-optional client-supplied "now" for deterministic tests.
+optional client-supplied "now" for deterministic tests. `nowMs` only affects what is listed; `store_buy` always uses the server clock and rejects daily offers outside today's UTC rotation.
 
 **Output**:
 

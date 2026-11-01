@@ -74,7 +74,7 @@ export function readOrCreateGarageObject(
   const read = readGarageObject(nk, userId);
   if (read) return read;
   try {
-    writeGarageCreate(nk, defaultGarage(userId, nowMs));
+    writeGarageCreateOnce(nk, defaultGarage(userId, nowMs));
   } catch (e) {
     logger.warn(
       'garage auto-create failed for %s: %s',
@@ -82,8 +82,27 @@ export function readOrCreateGarageObject(
       e instanceof Error ? e.message : String(e),
     );
   }
-  // A concurrent create is fine: read whatever exists.
+  // The create only succeeds when no garage exists. If a concurrent RPC
+  // created one first, the write fails and we read and return that garage.
   return readGarageObject(nk, userId);
+}
+
+/**
+ * Create-only write (`version: '*'`): succeeds only when no garage exists,
+ * so it can never overwrite a garage a concurrent RPC just wrote. Throws
+ * when the garage already exists.
+ */
+export function writeGarageCreateOnce(nk: INakama, garage: Garage): void {
+  const obj: IStorageObject = {
+    collection: GARAGE_COLLECTION,
+    key: garage.userId,
+    userId: garage.userId,
+    value: garage as unknown as Record<string, unknown>,
+    permissionRead: 0,
+    permissionWrite: 0,
+    version: '*',
+  };
+  nk.storageWrite([obj]);
 }
 
 /**

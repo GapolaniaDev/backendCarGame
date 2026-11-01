@@ -141,7 +141,7 @@ One transaction per purchase (plan T-11, `docs/economy.md`):
 1. Look up offer in catalog (`NOT_FOUND` if absent).
 2. Check expiry with the server clock (`BAD_REQUEST` if expired). A `daily`
    offer must be in today's rotation (`BAD_REQUEST`, `details.reason`
-   `NOT_IN_ROTATION`). `nowMs` in the request is ignored.
+   `NOT_IN_ROTATION`). `nowMs` only affects what is listed; `store_buy` always uses the server clock and rejects daily offers outside today's UTC rotation.
 3. Auto-create garage if absent (`INTERNAL` on write failure).
 4. Ownership check (`CONFLICT` if already).
 5. Level check (`FORBIDDEN` if below).

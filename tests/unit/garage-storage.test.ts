@@ -13,6 +13,7 @@ import {
   unequipCosmetic,
   setActiveCar,
   ensureCarNotOwned,
+  readOrCreateGarageObject,
   EMPTY_OWNED_COSMETICS,
 } from '../../modules/src/garage/storage';
 import {
@@ -116,6 +117,47 @@ describe('garage/storage — defaultGarage', () => {
   it('loadout stats mirror the active car\'s computedStats', () => {
     const g = defaultGarage('u-1', 1700000000000);
     expect(g.loadout?.stats).toEqual(g.cars[0]?.computedStats);
+  });
+});
+
+describe('garage/storage — readOrCreateGarageObject (create-once)', () => {
+  beforeEach(() => {
+    _resetGarageForTests();
+    loadGarageCatalog(SILENT_LOGGER, RAW, { localcachePut: () => {} } as unknown as Parameters<typeof loadGarageCatalog>[2]);
+  });
+
+  it('returns the garage a concurrent RPC created and leaves it untouched', () => {
+    const userId = 'u-race';
+    const existing = addCarToGarage(
+      defaultGarage(userId, 1700000000000),
+      RAW.cars.cars[1] as unknown as Parameters<typeof addCarToGarage>[1],
+    );
+    let stored: { value: unknown; version: string } | undefined;
+    let reads = 0;
+    // First read sees nothing; by the time of the write the other RPC has stored a garage.
+    const nk = {
+      storageRead: () => {
+        reads += 1;
+        if (reads === 1) return [];
+        return stored ? [{ value: stored.value, version: stored.version }] : [];
+      },
+      storageWrite: (writes: Array<{ value: unknown; version?: string }>) => {
+        if (reads === 1 && !stored) stored = { value: existing, version: 'v-other' };
+        for (const w of writes) {
+          if (w.version === '*' ? stored !== undefined : false) {
+            throw new Error('Storage write rejected - version check failed.');
+          }
+          stored = { value: w.value, version: 'v-new' };
+        }
+        return [];
+      },
+    } as unknown as Parameters<typeof readOrCreateGarageObject>[0];
+
+    const result = readOrCreateGarageObject(nk, SILENT_LOGGER, userId, 1700000000000);
+
+    expect(result?.value).toEqual(existing);
+    expect(result?.version).toBe('v-other');
+    expect(stored?.value).toEqual(existing);
   });
 });
 

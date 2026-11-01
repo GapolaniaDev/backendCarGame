@@ -36,6 +36,7 @@ const STAT_KEYS: ReadonlyArray<keyof CarStats> = [
   'nitro',
 ];
 
+// Also used by catalog.ts, at call time only (circular import: never read it at module level there).
 export const UPGRADE_LINE_TO_STAT: Readonly<Record<UpgradeLine, keyof CarStats>> = {
   engine: 'speed',
   tires: 'handling',

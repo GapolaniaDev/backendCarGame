@@ -472,12 +472,12 @@ Eight new RPCs landed in Phase 3 (`wallet_get`, `garage_get`, `car_buy`, `car_up
 | `progression/subscriber.ts` | `subscribeProgressionRewards` | wires XP grants into the `RaceCompleted` event bus |
 | `garage/storage.ts` | `readGarage/writeGarageCreate/writeGarageUpdate/addCarToGarage/applyUpgrade/equipCosmetic/setActiveCar/addCosmeticToBag/markPackPurchased` | CAS-pattern helpers for the garage doc |
 | `garage/stats.ts` | `computeStats + computeStatsRanked` | equalize-to-class-cap stat guarantees |
-| `garage/rpcs.ts` | `garage_get/car_buy/car_upgrade/cosmetic_equip/loadout_set` | owner-only enforcement + D3 compensating refund |
+| `garage/rpcs.ts` | `garage_get/car_buy/car_upgrade/cosmetic_equip/loadout_set` | owner-only enforcement + one wallet transaction; a lost CAS charges nothing |
 | `garage/after_auth.ts` | `registerGarageAutoCreate` | seeds the starter `viper` garage on first auth (4 channels) |
 | `store/rotation.ts` | `withDailyRotation` + `resolveDailyRotation` | FNV-1a daily rotation, deterministic per UTC day |
 | `store/filter.ts` | `filterOffersForSection` + `ownershipFromGarage` | drops expired/already_owned offers, flags level-gated ones as `locked` |
 | `store/packs.ts` | `PACK_TABLE` | 4 one-time entitlement packs |
-| `store/rpcs.ts` | `store_get/store_buy` | D3 compensating refund, refund-on-pack-CAS-conflict |
+| `store/rpcs.ts` | `store_get/store_buy` | one wallet transaction; a lost CAS charges nothing |
 
 ### Phase 3 decisions locked
 
@@ -498,11 +498,11 @@ Eight new RPCs landed in Phase 3 (`wallet_get`, `garage_get`, `car_buy`, `car_up
 |---|---|---|
 | `wallet_get` | `{ coins, gems, pending, ledger }` | sub-ms, no storage reads |
 | `garage_get` | `{ garage: GarageView }` | D2 — full garage |
-| `car_buy` | `{ garage, newBalance }` | D3 compensating refund |
-| `car_upgrade` | `{ garage, costPaid }` | D3 compensating refund |
+| `car_buy` | `{ garage, newBalance }` | one wallet transaction; a lost CAS charges nothing |
+| `car_upgrade` | `{ garage, costPaid, newBalance }` | one wallet transaction; a lost CAS charges nothing |
 | `cosmetic_equip` | `{ garage }` | D4 Strict validation |
 | `store_get` | `{ dailySeed, sections }` | daily rotation + filters |
-| `store_buy` | `{ delivery, newBalance }` | D3 + pack grant/reverse |
+| `store_buy` | `{ delivery, newBalance, pricePaid }` | one wallet transaction; a lost CAS charges nothing |
 | `loadout_set` | `{ loadout }` | owner-only storage write |
 
 See [`docs/economy.md`](./docs/economy.md), [`docs/garage.md`](./docs/garage.md), [`docs/store.md`](./docs/store.md), and `docs/unity-api.md` §16 for the full per-RPC contract.

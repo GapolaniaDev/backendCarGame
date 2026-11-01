@@ -215,14 +215,6 @@ function freezePerCarClass(
 const VALID_CLASSES = new Set(['D', 'C', 'B', 'A', 'S']);
 const VALID_UPGRADE_LINES = new Set(['engine', 'tires', 'nitro', 'handling']);
 
-// Each upgrade line raises exactly one stat (kept in sync with
-// UPGRADE_LINE_TO_STAT in stats.ts).
-const UPGRADE_LINE_STAT: Readonly<Record<string, string>> = {
-  engine: 'speed',
-  tires: 'handling',
-  nitro: 'nitro',
-  handling: 'acceleration',
-};
 const VALID_SLOTS = new Set(['paint', 'wheels', 'decal', 'trail', 'horn']);
 const VALID_RARITIES = new Set(['common', 'rare', 'epic', 'legendary']);
 const VALID_STATS = ['speed', 'acceleration', 'handling', 'nitro'] as const;
@@ -323,7 +315,7 @@ export function validateUpgrades(raw: unknown): asserts raw is RawUpgradesFile {
           fail(`perCarClass.${cls}.${line}[${idx}].delta must be an object`);
         }
         const deltaKeys = Object.keys(l['delta'] as Record<string, unknown>);
-        const statKey = UPGRADE_LINE_STAT[line];
+        const statKey = UPGRADE_LINE_TO_STAT[line as UpgradeLine];
         if (deltaKeys.length !== 1 || deltaKeys[0] !== statKey) {
           fail(`perCarClass.${cls}.${line}[${idx}].delta must have exactly the key "${statKey}"`);
         }
