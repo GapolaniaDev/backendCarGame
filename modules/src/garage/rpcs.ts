@@ -352,7 +352,7 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
   const read = readOrCreateGarageObject(nk, logger, userId, Date.now());
   if (!read) return toJson(err('INTERNAL', 'failed to create default garage'));
   const { value: garage, version } = read;
-  const owned =garage.cars.find((c) => c.carId === car.id);
+  const owned = garage.cars.find((c) => c.carId === car.id);
   if (!owned) return toJson(err('FORBIDDEN', `car not owned: ${car.id}`));
 
   // Cap check: must be exactly currentLevel + 1 (or any value up to max? — Decision: monotonic; reject non-monotonic).
