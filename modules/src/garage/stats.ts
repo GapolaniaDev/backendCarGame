@@ -36,7 +36,7 @@ const STAT_KEYS: ReadonlyArray<keyof CarStats> = [
   'nitro',
 ];
 
-const UPGRADE_LINE_TO_STAT: Readonly<Record<UpgradeLine, keyof CarStats>> = {
+export const UPGRADE_LINE_TO_STAT: Readonly<Record<UpgradeLine, keyof CarStats>> = {
   engine: 'speed',
   tires: 'handling',
   nitro: 'nitro',

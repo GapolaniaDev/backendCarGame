@@ -46,6 +46,35 @@ export interface CatalogCarView {
   displayNameKey: string;
 }
 
+/** One upgrade line and the car stat it improves, as `config_get` serves it (C-01). */
+export interface UpgradeLineView { line: UpgradeLine; stat: keyof CarStats; }
+/** One upgrade level of a line for a class (C-01). Property order is the wire order. */
+export interface UpgradeLevelView {
+  level: number;
+  cost: number;
+  /** Increment of the line's stat at this level (D-01). */
+  delta: number;
+}
+/** The upgrades catalog as `config_get` serves it (C-01). Property order is the wire order. */
+export interface UpgradesView {
+  maxLevel: number;
+  lines: UpgradeLineView[];
+  perCarClass: Record<ClassId, Record<UpgradeLine, UpgradeLevelView[]>>;
+}
+/** A catalog cosmetic as `config_get` serves it (C-02). Property order is the wire order. */
+export interface CatalogCosmeticView {
+  id: string;
+  displayName: string;
+  /** `cosmetic.<id>.name` */
+  displayNameKey: string;
+  type: CosmeticSlot;
+  rarity: CosmeticRarity;
+  compatibleClasses: ClassId[];
+  /** `0` when absent; informative (the store offer is what is charged). */
+  priceCoins: number;
+  priceGems: number;
+}
+
 export interface CarsCatalog {
   version: number;
   cars: ReadonlyArray<Readonly<CarCatalogEntry>>;

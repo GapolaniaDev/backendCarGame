@@ -169,6 +169,10 @@ export interface CatalogSources {
   modes: ModesCatalog;
   /** Raw cars.json, only hashed (the garage catalog validates and serves it). Absent: the hash covers tracks and modes only. */
   cars?: unknown;
+  /** Raw upgrades.json, only hashed (the garage catalog validates and serves it). */
+  upgrades?: unknown;
+  /** Raw cosmetics.json, only hashed (the garage catalog validates and serves it). */
+  cosmetics?: unknown;
 }
 
 /**

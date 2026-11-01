@@ -4,7 +4,7 @@
 // a migrator in `core/storage.ts` consumers if the shape ever changes.
 
 import type { ModeId } from '../core/catalog';
-import type { CatalogCarView } from '../garage/types';
+import type { CatalogCarView, CatalogCosmeticView, UpgradesView } from '../garage/types';
 
 // ─── Mode / state / confidence enums (string unions, kept narrow) ─────────────
 
@@ -380,6 +380,8 @@ export interface ConfigGetOutput {
   tracks: ReadonlyArray<unknown>;
   modes: ReadonlyArray<unknown>;
   cars: ReadonlyArray<CatalogCarView>;
+  upgrades: UpgradesView;
+  cosmetics: ReadonlyArray<CatalogCosmeticView>;
   minClientVersion: string;
 }
 

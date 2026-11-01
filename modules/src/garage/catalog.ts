@@ -5,6 +5,7 @@
 import type { ILogger, INakama } from '../nkruntime';
 import type { ClassId } from '../economy/types';
 import { locKey } from '../core/loc_keys';
+import { UPGRADE_LINE_TO_STAT } from './stats';
 import type {
   CarsCatalog,
   CosmeticsCatalog,
@@ -12,6 +13,9 @@ import type {
   CarCatalogEntry,
   CarStats,
   CatalogCarView,
+  CatalogCosmeticView,
+  UpgradeLevelView,
+  UpgradesView,
   CosmeticCatalogEntry,
   UpgradeLevelEntry,
   UpgradeLine,
@@ -77,6 +81,46 @@ export function toCatalogCarViews(cars: ReadonlyArray<Readonly<CarCatalogEntry>>
     requiredLevel: c.requiredLevel,
     isStarter: c.isStarter,
     displayNameKey: locKey('car', c.id, 'name'),
+  }));
+}
+
+const CLASS_ORDER: ReadonlyArray<ClassId> = ['D', 'C', 'B', 'A', 'S'];
+
+/** Client projection of the upgrades catalog (C-01): lines with their stat, then per class and line the cost and delta of each level. */
+export function toUpgradesView(catalog: UpgradesCatalog): UpgradesView {
+  const perCarClass = {} as Record<ClassId, Record<UpgradeLine, UpgradeLevelView[]>>;
+  for (const classId of CLASS_ORDER) {
+    const byLine = {} as Record<UpgradeLine, UpgradeLevelView[]>;
+    for (const line of catalog.lines) {
+      const stat = UPGRADE_LINE_TO_STAT[line];
+      byLine[line] = catalog.perCarClass[classId][line].map((e) => ({
+        level: e.level,
+        cost: e.cost,
+        delta: e.delta[stat] ?? 0,
+      }));
+    }
+    perCarClass[classId] = byLine;
+  }
+  return {
+    maxLevel: catalog.maxLevel,
+    lines: catalog.lines.map((line) => ({ line, stat: UPGRADE_LINE_TO_STAT[line] })),
+    perCarClass,
+  };
+}
+
+/** Client projection of the cosmetics catalog, in catalog order (C-02). */
+export function toCatalogCosmeticViews(
+  items: ReadonlyArray<Readonly<CosmeticCatalogEntry>>,
+): CatalogCosmeticView[] {
+  return items.map((c) => ({
+    id: c.id,
+    displayName: c.displayName,
+    displayNameKey: locKey('cosmetic', c.id, 'name'),
+    type: c.type,
+    rarity: c.rarity,
+    compatibleClasses: [...c.compatibleClasses],
+    priceCoins: c.priceCoins ?? 0,
+    priceGems: c.priceGems ?? 0,
   }));
 }
 

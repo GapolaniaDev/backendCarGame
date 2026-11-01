@@ -87,6 +87,17 @@ describe('loadCatalogs hash coverage', () => {
     expect(getCatalogsHash()).toContain('"cars":');
   });
 
+  it('covers upgrades and cosmetics after cars when they are given', () => {
+    loadCatalogs(
+      SILENT_LOGGER,
+      { tracks: TRACKS, modes: MODES, cars: carsJson, upgrades: { u: 1 }, cosmetics: { c: 1 } },
+      (s) => s,
+    );
+    expect(getCatalogsHash()).toBe(
+      JSON.stringify({ tracks: TRACKS, modes: MODES, cars: carsJson, upgrades: { u: 1 }, cosmetics: { c: 1 } }),
+    );
+  });
+
   it('covers tracks and modes only when cars are absent', () => {
     loadCatalogs(SILENT_LOGGER, { tracks: TRACKS, modes: MODES }, (s) => s);
     expect(getCatalogsHash()).toBe(JSON.stringify({ tracks: TRACKS, modes: MODES }));

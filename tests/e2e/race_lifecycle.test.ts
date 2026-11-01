@@ -7,6 +7,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import carsJson from '../../modules/src/catalogs/cars.json';
+import upgradesJson from '../../modules/src/catalogs/upgrades.json';
+import cosmeticsJson from '../../modules/src/catalogs/cosmetics.json';
+import { toCatalogCosmeticViews, toUpgradesView } from '../../modules/src/garage/catalog';
+import type { CosmeticCatalogEntry, UpgradesCatalog } from '../../modules/src/garage/types';
 import modesJson from '../../modules/src/catalogs/modes.json';
 import tracksJson from '../../modules/src/catalogs/tracks.json';
 import {
@@ -250,6 +254,8 @@ describe('race_lifecycle (Chunk 5)', () => {
         tracks: Array<{ id: string; displayNameKey: string }>;
         modes: Array<{ id: string; displayNameKey: string }>;
         cars: unknown[];
+        upgrades: unknown;
+        cosmetics: unknown[];
       };
       const expectedCars = (carsJson as unknown as { cars: Array<Record<string, any>> }).cars.map((c) => ({
         id: c.id,
@@ -264,11 +270,24 @@ describe('race_lifecycle (Chunk 5)', () => {
         displayNameKey: 'car.' + c.id + '.name',
       }));
       expect(data.cars).toEqual(expectedCars);
+      // T-04 (plan store-garage): upgrades (C-01) and cosmetics (C-02) built from the JSON.
+      expect(data.upgrades).toEqual(toUpgradesView(upgradesJson as unknown as UpgradesCatalog));
+      expect(data.cosmetics).toEqual(
+        toCatalogCosmeticViews((cosmeticsJson as unknown as { items: CosmeticCatalogEntry[] }).items),
+      );
       for (const t of data.tracks) expect(t.displayNameKey).toBe('track.' + t.id + '.name');
       for (const m of data.modes) expect(m.displayNameKey).toBe('mode.' + m.id + '.name');
       expect(data.catalogsHash).toBe(
         createHash('sha256')
-          .update(JSON.stringify({ tracks: tracksJson, modes: modesJson, cars: carsJson }))
+          .update(
+            JSON.stringify({
+              tracks: tracksJson,
+              modes: modesJson,
+              cars: carsJson,
+              upgrades: upgradesJson,
+              cosmetics: cosmeticsJson,
+            }),
+          )
           .digest('hex'),
       );
       expect(typeof (result.data as { serverTimeMs: number }).serverTimeMs).toBe('number');
