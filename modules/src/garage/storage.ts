@@ -7,7 +7,7 @@
 // stats snapshot after a level/upgrade change — the loadout returns
 // the cached value so the Unity client doesn't have to recompute.
 
-import type { IStorageObject, INakama } from '../nkruntime';
+import type { IStorageObject, ILogger, INakama } from '../nkruntime';
 import type {
   Garage,
   Loadout,
@@ -59,6 +59,31 @@ export function readGarageObject(
   const obj = result[0];
   if (!obj) return null;
   return { version: obj.version ?? '', value: obj.value as unknown as Garage };
+}
+
+/**
+ * The caller's garage with its storage version, creating the default one first when it is
+ * missing (plan B3, D-08). Returns null when the create fails (the RPC answers INTERNAL).
+ */
+export function readOrCreateGarageObject(
+  nk: INakama,
+  logger: ILogger,
+  userId: string,
+  nowMs: number,
+): { value: Garage; version: string } | null {
+  const read = readGarageObject(nk, userId);
+  if (read) return read;
+  try {
+    writeGarageCreate(nk, defaultGarage(userId, nowMs));
+  } catch (e) {
+    logger.warn(
+      'garage auto-create failed for %s: %s',
+      userId,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+  // A concurrent create is fine: read whatever exists.
+  return readGarageObject(nk, userId);
 }
 
 /**

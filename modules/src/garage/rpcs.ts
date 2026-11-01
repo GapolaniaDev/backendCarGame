@@ -21,11 +21,13 @@ import {
   garageWrite,
   readGarage,
   readGarageObject,
+  readOrCreateGarageObject,
   setActiveCar,
   writeGarageCreate,
   writeGarageUpdate,
 } from './storage';
 import { getCarsCatalog, getCosmeticsCatalog, getUpgradesCatalog } from './catalog';
+import { computeStats } from './stats';
 import { moveWallet } from '../economy/wallet';
 import type { LedgerMetadata } from '../economy/types';
 import type {
@@ -160,28 +162,32 @@ function toView(g: GarageRecord): GarageView {
     cars: g.cars.map(toOwnedCarView),
     cosmeticsBag: [...g.cosmeticsBag],
     purchasedPacks: [...g.purchasedPacks],
-    loadout: g.loadout ? toLoadoutView(g.loadout) : null,
+    loadout: g.loadout ? toLoadoutView(g.loadout, g) : null,
     lastDailyWin: g.lastDailyWin,
     dailyPrivateCount: g.dailyPrivateCount,
     dailyResetAt: g.dailyResetAt,
   };
 }
 
+// Stats are recomputed from the current catalogs when served (plan B3, D-03), so a stored
+// snapshot made with an older stat table never reaches the client.
 function toOwnedCarView(c: OwnedCar): OwnedCarView {
+  const car = getCarsCatalog().cars.find((x) => x.id === c.carId);
   return {
     carId: c.carId,
     classId: c.classId,
     upgrades: { ...c.upgrades },
     cosmetics: { ...c.cosmetics },
-    computedStats: { ...c.computedStats },
+    computedStats: car ? computeStats(car, getUpgradesCatalog(), c.upgrades) : { ...c.computedStats },
   };
 }
 
-function toLoadoutView(l: Loadout): LoadoutView {
+function toLoadoutView(l: Loadout, g: GarageRecord): LoadoutView {
+  const active = g.cars.find((x) => x.carId === l.activeCarId);
   return {
     activeCarId: l.activeCarId,
     equipped: { ...l.equipped },
-    stats: { ...l.stats },
+    stats: active ? toOwnedCarView(active).computedStats : { ...l.stats },
   };
 }
 
@@ -234,10 +240,8 @@ export const car_buy_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
 
   // 2) Read garage (capture version).
-  const read = readGarageObject(nk, userId);
-  if (!read) {
-    return toJson(err('NOT_FOUND', 'garage does not exist — call garage_get first'));
-  }
+  const read = readOrCreateGarageObject(nk, logger, userId, Date.now());
+  if (!read) return toJson(err('INTERNAL', 'failed to create default garage'));
   const { value: garage, version } = read;
 
   // 3) Already-owned check.
@@ -310,6 +314,8 @@ export interface CarUpgradeInput {
 export interface CarUpgradeOutput {
   garage: GarageView;
   costPaid: { coins: number; gems: number };
+  /** Wallet after the charge (plan B3, D-07). */
+  newBalance: { coins: number; gems: number };
 }
 
 /**
@@ -343,10 +349,10 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
   }
 
   // Read garage.
-  const read = readGarageObject(nk, userId);
-  if (!read) return toJson(err('NOT_FOUND', 'garage does not exist — call garage_get first'));
+  const read = readOrCreateGarageObject(nk, logger, userId, Date.now());
+  if (!read) return toJson(err('INTERNAL', 'failed to create default garage'));
   const { value: garage, version } = read;
-  const owned = garage.cars.find((c) => c.carId === car.id);
+  const owned =garage.cars.find((c) => c.carId === car.id);
   if (!owned) return toJson(err('FORBIDDEN', `car not owned: ${car.id}`));
 
   // Cap check: must be exactly currentLevel + 1 (or any value up to max? — Decision: monotonic; reject non-monotonic).
@@ -403,7 +409,7 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
     'car_upgrade user=%s car=%s line=%s newLevel=%d cost=%d',
     userId, car.id, parsed.value.line, newLevel, cost,
   );
-  return toJson(ok({ garage: toView(next), costPaid: { coins: cost, gems: 0 } }));
+  return toJson(ok({ garage: toView(next), costPaid: { coins: cost, gems: 0 }, newBalance: moved.data.balance }));
 };
 
 // ─── cosmetic_equip ──────────────────────────────────────────────────────────
@@ -455,8 +461,8 @@ export const cosmetic_equip_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!car) return toJson(err('NOT_FOUND', `car not in catalog: ${parsed.value.carId}`));
 
   // Read garage.
-  const read = readGarageObject(nk, userId);
-  if (!read) return toJson(err('NOT_FOUND', 'garage does not exist — call garage_get first'));
+  const read = readOrCreateGarageObject(nk, logger, userId, Date.now());
+  if (!read) return toJson(err('INTERNAL', 'failed to create default garage'));
   const { value: garage, version } = read;
 
   // 2) Owned?
@@ -527,8 +533,8 @@ export const loadout_set_impl: RpcHandler = (ctx, logger, nk, body) => {
   const car = getCarsCatalog().cars.find((c) => c.id === parsed.value.carId);
   if (!car) return toJson(err('NOT_FOUND', `car not in catalog: ${parsed.value.carId}`));
 
-  const read = readGarageObject(nk, userId);
-  if (!read) return toJson(err('NOT_FOUND', 'garage does not exist — call garage_get first'));
+  const read = readOrCreateGarageObject(nk, logger, userId, Date.now());
+  if (!read) return toJson(err('INTERNAL', 'failed to create default garage'));
   const { value: garage, version } = read;
   if (!garage.cars.find((c) => c.carId === car.id)) {
     return toJson(err('FORBIDDEN', `car not owned: ${car.id}`));
@@ -547,7 +553,7 @@ export const loadout_set_impl: RpcHandler = (ctx, logger, nk, body) => {
     if (!next.loadout) {
       return toJson(err('INTERNAL', 'loadout missing after setActiveCar'));
     }
-    return toJson(ok({ loadout: toLoadoutView(next.loadout), version }));
+    return toJson(ok({ loadout: toLoadoutView(next.loadout, next), version }));
   } catch (e) {
     logger.warn('loadout_set CAS conflict for %s: %s', userId, JSON.stringify(e));
     return toJson(err('CONFLICT', 'concurrent garage update — please retry'));

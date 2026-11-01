@@ -179,6 +179,12 @@ describe('garage mutations (Chunk 7)', () => {
       expect(r.data.costPaid.coins).toBe(500);
       // 20000 - 8000 - 500 = 11500
       expect(env.fakeNakama.wallets.get(HOST_ID)?.['coins']).toBe(11500);
+      // C-04: newBalance mirrors the wallet and the payload has exactly three keys.
+      expect(Object.keys(r.data)).toEqual(['garage', 'costPaid', 'newBalance']);
+      const wallet = call<Resp<{ coins: number; gems: number }>>(env, 'wallet_get', HOST_ID, { callerUserId: HOST_ID });
+      expect(wallet.ok).toBe(true);
+      if (!wallet.ok) return;
+      expect(r.data.newBalance).toEqual({ coins: wallet.data.coins, gems: wallet.data.gems });
     });
 
     it('rejects a non-monotonic newLevel', () => {
@@ -297,6 +303,76 @@ describe('garage mutations (Chunk 7)', () => {
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.error.code).toBe('NOT_FOUND');
+    });
+  });
+
+  describe('automatic garage (C-05)', () => {
+    const NEW_ID = 'user-no-garage';
+    let fresh: ReturnType<typeof loadBundleForTest>;
+
+    beforeEach(() => {
+      fresh = loadBundleForTest();
+      setLevel(fresh, NEW_ID, 10);
+      setCoins(fresh, NEW_ID, 100000);
+    });
+
+    it('car_buy creates the garage instead of answering NOT_FOUND', () => {
+      const r = call<Resp<{ garage: GarageView }>>(fresh, 'car_buy', NEW_ID, { carId: 'civic_r', callerUserId: NEW_ID });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.data.garage.cars.map((c) => c.carId)).toEqual(['starter_viper', 'civic_r']);
+    });
+
+    it('car_upgrade improves the starter car of the created garage', () => {
+      const r = call<Resp<{ garage: GarageView }>>(
+        fresh, 'car_upgrade', NEW_ID,
+        { carId: 'starter_viper', line: 'engine', newLevel: 1, callerUserId: NEW_ID },
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.data.garage.cars.find((c) => c.carId === 'starter_viper')?.upgrades.engine).toBe(1);
+    });
+
+    it('cosmetic_equip no longer answers NOT_FOUND for a missing garage', () => {
+      const r = call<Resp<unknown>>(
+        fresh, 'cosmetic_equip', NEW_ID,
+        { carId: 'starter_viper', slot: 'paint', cosmeticId: 'paint_red_flame', callerUserId: NEW_ID },
+      );
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe('FORBIDDEN');
+    });
+
+    it('loadout_set creates the garage and activates the starter car', () => {
+      const r = call<Resp<{ loadout: { activeCarId: string } }>>(
+        fresh, 'loadout_set', NEW_ID,
+        { carId: 'starter_viper', callerUserId: NEW_ID },
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.data.loadout.activeCarId).toBe('starter_viper');
+    });
+  });
+
+  describe('stats recomputed on serve (C-03)', () => {
+    it('garage_get serves C-01 stats for a seeded garage with stale computedStats', () => {
+      const key = `garage/${HOST_ID}/${HOST_ID}`;
+      const stored = env.fakeNakama.store.get(key);
+      if (!stored) throw new Error('seed garage missing');
+      const garage = stored.value as unknown as { cars: Array<{ carId: string; upgrades: Record<string, number>; computedStats: Record<string, number> }>; loadout: { stats: Record<string, number> } };
+      const starter = garage.cars.find((c) => c.carId === 'starter_viper');
+      if (!starter) throw new Error('starter car missing');
+      starter.upgrades['engine'] = 4;
+      starter.computedStats = { speed: 1, acceleration: 1, handling: 1, nitro: 1 };
+      garage.loadout.stats = { speed: 1, acceleration: 1, handling: 1, nitro: 1 };
+      env.fakeNakama.store.set(key, stored);
+
+      const r = call<Resp<{ garage: GarageView }>>(env, 'garage_get', HOST_ID, { callerUserId: HOST_ID });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const served = r.data.garage.cars.find((c) => c.carId === 'starter_viper');
+      expect(served?.computedStats.speed).toBe(64);
+      expect(r.data.garage.loadout?.stats.speed).toBe(64);
     });
   });
 });
