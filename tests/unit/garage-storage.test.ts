@@ -10,6 +10,7 @@ import {
   addCarToGarage,
   applyUpgrade,
   equipCosmetic,
+  unequipCosmetic,
   setActiveCar,
   ensureCarNotOwned,
   EMPTY_OWNED_COSMETICS,
@@ -213,6 +214,26 @@ describe('garage/storage — mutations (Chunk 7)', () => {
     const next = equipCosmetic(initial, 'starter_viper', 'paint', 'paint_red_flame');
     expect(next.cars[0]?.cosmetics.paint).toBe('paint_red_flame');
     expect(next.loadout?.equipped.paint).toBe('paint_red_flame');
+  });
+
+  it('unequipCosmetic empties only the slot on the car and the loadout, keeping the others', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const equipped = equipCosmetic(
+      equipCosmetic(initial, 'starter_viper', 'paint', 'paint_red_flame'),
+      'starter_viper', 'horn', 'horn_classic_beep',
+    );
+    const next = unequipCosmetic(equipped, 'starter_viper', 'paint');
+    expect(next.cars[0]?.cosmetics).not.toHaveProperty('paint');
+    expect(next.cars[0]?.cosmetics.horn).toBe('horn_classic_beep');
+    expect(next.loadout?.equipped).not.toHaveProperty('paint');
+    expect(next.loadout?.equipped.horn).toBe('horn_classic_beep');
+  });
+
+  it('unequipCosmetic is a no-op on an empty slot and throws for an unowned car', () => {
+    const initial = defaultGarage('u-1', 1700000000000);
+    const next = unequipCosmetic(initial, 'starter_viper', 'paint');
+    expect(next.cars[0]?.cosmetics).toEqual(initial.cars[0]?.cosmetics);
+    expect(() => unequipCosmetic(initial, 'civic_r', 'paint')).toThrow(/not owned/);
   });
 
   it('setActiveCar rejects a car the caller does not own', () => {

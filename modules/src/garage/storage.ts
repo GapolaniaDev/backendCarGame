@@ -296,6 +296,31 @@ export function equipCosmetic(
 }
 
 /**
+ * Empty `slot` on an owned car (and on the loadout when it is the active
+ * car). No-op when already empty. Throws when the car is not owned.
+ */
+export function unequipCosmetic(
+  garage: Garage,
+  carId: string,
+  slot: keyof OwnedCosmetics,
+): Garage {
+  const idx = garage.cars.findIndex((c) => c.carId === carId);
+  if (idx < 0) throw new Error(`car not owned: ${carId}`);
+  const owned = garage.cars[idx];
+  if (!owned) throw new Error(`car not owned: ${carId}`);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { [slot]: _removed, ...rest } = owned.cosmetics;
+  const updatedCosmetics: OwnedCosmetics = rest;
+  const updatedCar: OwnedCar = { ...owned, cosmetics: updatedCosmetics };
+  const cars = garage.cars.slice();
+  cars[idx] = updatedCar;
+  const loadout = garage.loadout && garage.loadout.activeCarId === carId
+    ? { ...garage.loadout, equipped: updatedCosmetics }
+    : garage.loadout;
+  return { ...garage, cars, loadout };
+}
+
+/**
  * Change the loadout's active car. Caller must already own the car.
  * The equipped cosmetics list is taken from the new active car's
  * `cosmetics` so the loadout always reflects the active car's choices.

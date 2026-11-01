@@ -267,6 +267,75 @@ describe('garage mutations (Chunk 7)', () => {
       const starter = r.data.garage.cars.find((c) => c.carId === 'starter_viper');
       expect(starter?.cosmetics['paint']).toBe('paint_red_flame');
     });
+
+    describe('unequip (C-06)', () => {
+      type EquipView = GarageView & {
+        cars: Array<{ carId: string; cosmetics: Record<string, string> }>;
+        loadout: { activeCarId: string; equipped: Record<string, string> } | null;
+      };
+
+      function equipBoth(): void {
+        const stored = env.fakeNakama.store.get(`garage/${HOST_ID}/${HOST_ID}`);
+        if (!stored) throw new Error('seed garage missing');
+        stored.value = { ...stored.value, cosmeticsBag: ['paint_red_flame', 'horn_classic_beep'] };
+        env.fakeNakama.store.set(`garage/${HOST_ID}/${HOST_ID}`, stored);
+        for (const [slot, cosmeticId] of [['paint', 'paint_red_flame'], ['horn', 'horn_classic_beep']] as const) {
+          const r = call<Resp<unknown>>(env, 'cosmetic_equip', HOST_ID,
+            { carId: 'starter_viper', slot, cosmeticId, callerUserId: HOST_ID });
+          expect(r.ok).toBe(true);
+        }
+      }
+
+      it.each([
+        ['null', { cosmeticId: null }],
+        ['empty string', { cosmeticId: '' }],
+        ['absent field', {}],
+      ])('empties the slot with %s and keeps the other slots', (_label, extra) => {
+        equipBoth();
+        const r = call<Resp<{ garage: EquipView }>>(env, 'cosmetic_equip', HOST_ID,
+          { carId: 'starter_viper', slot: 'paint', callerUserId: HOST_ID, ...extra });
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        const car = r.data.garage.cars.find((c) => c.carId === 'starter_viper');
+        expect(car?.cosmetics).not.toHaveProperty('paint');
+        expect(car?.cosmetics['horn']).toBe('horn_classic_beep');
+        expect(r.data.garage.loadout?.equipped).not.toHaveProperty('paint');
+        expect(r.data.garage.loadout?.equipped['horn']).toBe('horn_classic_beep');
+      });
+
+      it('is ok and unchanged when the slot is already empty', () => {
+        const r = call<Resp<{ garage: EquipView }>>(env, 'cosmetic_equip', HOST_ID,
+          { carId: 'starter_viper', slot: 'paint', cosmeticId: null, callerUserId: HOST_ID });
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        const car = r.data.garage.cars.find((c) => c.carId === 'starter_viper');
+        expect(car?.cosmetics).not.toHaveProperty('paint');
+      });
+
+      it('returns FORBIDDEN for a car the player does not own', () => {
+        const r = call<Resp<unknown>>(env, 'cosmetic_equip', HOST_ID,
+          { carId: 'civic_r', slot: 'paint', cosmeticId: null, callerUserId: HOST_ID });
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        expect(r.error.code).toBe('FORBIDDEN');
+      });
+
+      it('returns BAD_REQUEST for an invalid slot', () => {
+        const r = call<Resp<unknown>>(env, 'cosmetic_equip', HOST_ID,
+          { carId: 'starter_viper', slot: 'roof', cosmeticId: null, callerUserId: HOST_ID });
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        expect(r.error.code).toBe('BAD_REQUEST');
+      });
+
+      it('returns NOT_FOUND for a car outside the catalog', () => {
+        const r = call<Resp<unknown>>(env, 'cosmetic_equip', HOST_ID,
+          { carId: 'phantom_car', slot: 'paint', cosmeticId: null, callerUserId: HOST_ID });
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        expect(r.error.code).toBe('NOT_FOUND');
+      });
+    });
   });
 
   describe('loadout_set', () => {

@@ -18,6 +18,7 @@ import {
   applyUpgrade,
   defaultGarage,
   equipCosmetic,
+  unequipCosmetic,
   garageWrite,
   readGarage,
   readGarageObject,
@@ -417,7 +418,8 @@ export const car_upgrade_impl: RpcHandler = (ctx, logger, nk, body) => {
 export interface CosmeticEquipInput {
   carId: string;
   slot: CosmeticSlot;
-  cosmeticId: string;
+  /** null, absent or '' empties the slot (plan B3, D-09). */
+  cosmeticId?: string | null;
   callerUserId: string;
   clientVersion?: string;
   platform?: ClientPlatform;
@@ -450,9 +452,35 @@ export const cosmetic_equip_impl: RpcHandler = (ctx, logger, nk, body) => {
   if (!COSMETIC_SLOTS.includes(parsed.value.slot)) {
     return toJson(err('BAD_REQUEST', `invalid slot: ${parsed.value.slot}`));
   }
-  const cosmetic = getCosmeticsCatalog().items.find((c) => c.id === parsed.value.cosmeticId);
+  const rawCosmeticId = parsed.value.cosmeticId;
+  if (rawCosmeticId === undefined || rawCosmeticId === null || rawCosmeticId === '') {
+    // Unequip branch (D-09).
+    const unequipCar = getCarsCatalog().cars.find((c) => c.id === parsed.value.carId);
+    if (!unequipCar) return toJson(err('NOT_FOUND', `car not in catalog: ${parsed.value.carId}`));
+    const unequipRead = readOrCreateGarageObject(nk, logger, userId, Date.now());
+    if (!unequipRead) return toJson(err('INTERNAL', 'failed to create default garage'));
+    if (!unequipRead.value.cars.some((c) => c.carId === unequipCar.id)) {
+      return toJson(err('FORBIDDEN', `car not owned: ${unequipCar.id}`));
+    }
+    let unequipped: GarageRecord;
+    try {
+      unequipped = unequipCosmetic(unequipRead.value, unequipCar.id, parsed.value.slot);
+    } catch (e) {
+      logger.error('cosmetic_equip: unequipCosmetic threw: %s', JSON.stringify(e));
+      return toJson(err('INTERNAL', 'failed to unequip cosmetic'));
+    }
+    try {
+      writeGarageUpdate(nk, unequipped, unequipRead.version);
+    } catch (e) {
+      logger.warn('cosmetic_equip CAS conflict for %s: %s', userId, JSON.stringify(e));
+      return toJson(err('CONFLICT', 'concurrent garage update — please retry'));
+    }
+    logger.info('cosmetic_unequip user=%s car=%s slot=%s', userId, unequipCar.id, parsed.value.slot);
+    return toJson(ok({ garage: toView(unequipped) }));
+  }
+  const cosmetic = getCosmeticsCatalog().items.find((c) => c.id === rawCosmeticId);
   if (!cosmetic) {
-    return toJson(err('NOT_FOUND', `cosmetic not in catalog: ${parsed.value.cosmeticId}`));
+    return toJson(err('NOT_FOUND', `cosmetic not in catalog: ${rawCosmeticId}`));
   }
   if (cosmetic.type !== parsed.value.slot) {
     return toJson(err('BAD_REQUEST', `cosmetic slot mismatch: cosmetic.type=${cosmetic.type}, requested=${parsed.value.slot}`));
