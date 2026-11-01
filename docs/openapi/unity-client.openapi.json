@@ -1021,7 +1021,7 @@
         ],
         "summary": "Compra un coche del catálogo",
         "operationId": "car_buy",
-        "description": "Errores posibles (`error.code`): `INSUFFICIENT_FUNDS` (saldo insuficiente), `CONFLICT` (estado no permite la acción), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"car_buy\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CarBuyData>>(rpc.Payload)`.",
+        "description": "Creates the default garage when missing. Errores posibles (`error.code`): `INSUFFICIENT_FUNDS` (saldo insuficiente), `CONFLICT` (estado no permite la acción), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"car_buy\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CarBuyData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1105,7 +1105,7 @@
         ],
         "summary": "Sube una mejora de un coche",
         "operationId": "car_upgrade",
-        "description": "Errores posibles (`error.code`): `INSUFFICIENT_FUNDS` (saldo insuficiente), `BAD_REQUEST` (payload inválido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"car_upgrade\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CarUpgradeData>>(rpc.Payload)`.",
+        "description": "Creates the default garage when missing. Errores posibles (`error.code`): `INSUFFICIENT_FUNDS` (saldo insuficiente), `BAD_REQUEST` (payload inválido), `NOT_FOUND` (no existe).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"car_upgrade\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CarUpgradeData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1189,7 +1189,7 @@
         ],
         "summary": "Equipa un cosmético en un slot de un coche",
         "operationId": "cosmetic_equip",
-        "description": "Mantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"cosmetic_equip\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CosmeticEquipData>>(rpc.Payload)`.",
+        "description": "Creates the default garage when missing. Mantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"cosmetic_equip\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<CosmeticEquipData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1273,7 +1273,7 @@
         ],
         "summary": "Cambia el coche activo",
         "operationId": "loadout_set",
-        "description": "Mantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"loadout_set\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LoadoutSetData>>(rpc.Payload)`.",
+        "description": "Creates the default garage when missing. Mantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"loadout_set\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<LoadoutSetData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -1441,7 +1441,7 @@
         ],
         "summary": "Compra una oferta de la tienda",
         "operationId": "store_buy",
-        "description": "Errores posibles (`error.code`): `NOT_FOUND` (no existe), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `INSUFFICIENT_FUNDS` (saldo insuficiente), `FORBIDDEN` (no permitido).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"store_buy\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<StoreBuyData>>(rpc.Payload)`.",
+        "description": "BAD_REQUEST with details.reason NOT_IN_ROTATION: a daily offer that is not in today's rotation (UTC). Errores posibles (`error.code`): `NOT_FOUND` (no existe), `BAD_REQUEST` (payload inválido), `CONFLICT` (estado no permite la acción), `INSUFFICIENT_FUNDS` (saldo insuficiente), `FORBIDDEN` (no permitido).\n\nMantenimiento: **bloqueado** con `SERVICE_UNAVAILABLE`.\n\nUnity: `await client.RpcAsync(session, \"store_buy\", JsonUtility.ToJson(req))` y luego `JsonUtility.FromJson<Envelope<StoreBuyData>>(rpc.Payload)`.",
         "security": [
           {
             "BearerSession": []
@@ -8808,7 +8808,8 @@
             "type": "integer"
           },
           "catalogsHash": {
-            "type": "string"
+            "type": "string",
+            "description": "covers tracks, modes, cars, upgrades and cosmetics"
           },
           "tracks": {
             "type": "array",
@@ -8827,6 +8828,15 @@
             "description": "Car catalog in cars.json order (P-13); catalogsHash covers it.",
             "items": {
               "$ref": "#/components/schemas/CatalogCar"
+            }
+          },
+          "upgrades": {
+            "$ref": "#/components/schemas/UpgradesTable"
+          },
+          "cosmetics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogCosmetic"
             }
           },
           "minClientVersion": {
@@ -8884,6 +8894,52 @@
           "isStarter",
           "displayNameKey"
         ]
+      },
+      "UpgradesTable": {
+        "type": "object",
+        "description": "Upgrade table (plan B3). Stat of a line at level n = min(baseStats + sum(delta_1..n), maxStats).",
+        "properties": {
+          "maxLevel": { "type": "integer" },
+          "lines": { "type": "array", "items": { "$ref": "#/components/schemas/UpgradeLineInfo" } },
+          "perCarClass": {
+            "type": "object",
+            "description": "Keys D, C, B, A, S; each maps a line to its 5 levels.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "array", "items": { "$ref": "#/components/schemas/UpgradeLevelInfo" } }
+            }
+          }
+        },
+        "required": ["maxLevel", "lines", "perCarClass"]
+      },
+      "UpgradeLineInfo": {
+        "type": "object",
+        "properties": {
+          "line": { "type": "string", "enum": ["engine", "tires", "nitro", "handling"] },
+          "stat": { "type": "string", "enum": ["speed", "acceleration", "handling", "nitro"] }
+        }
+      },
+      "UpgradeLevelInfo": {
+        "type": "object",
+        "properties": {
+          "level": { "type": "integer" },
+          "cost": { "type": "integer", "description": "Coins to go from level-1 to this level." },
+          "delta": { "type": "integer", "description": "Increment of the line's stat at this level." }
+        }
+      },
+      "CatalogCosmetic": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "displayName": { "type": "string" },
+          "displayNameKey": { "type": "string", "description": "cosmetic.<id>.name" },
+          "type": { "type": "string", "enum": ["paint", "wheels", "decal", "trail", "horn"] },
+          "rarity": { "type": "string", "enum": ["common", "rare", "epic", "legendary"] },
+          "compatibleClasses": { "type": "array", "items": { "$ref": "#/components/schemas/CarClassId" } },
+          "priceCoins": { "type": "integer", "description": "0 when absent; informative (the store offer is charged)." },
+          "priceGems": { "type": "integer", "description": "0 when absent; informative." }
+        },
+        "required": ["id", "displayName", "displayNameKey", "type", "rarity", "compatibleClasses", "priceCoins", "priceGems"]
       },
       "LiveopsConfigGetRequest": {
         "type": "object",
@@ -9637,6 +9693,9 @@
           },
           "costPaid": {
             "$ref": "#/components/schemas/Wallet"
+          },
+          "newBalance": {
+            "$ref": "#/components/schemas/Wallet"
           }
         }
       },
@@ -9671,13 +9730,16 @@
             "$ref": "#/components/schemas/CosmeticSlot"
           },
           "cosmeticId": {
-            "type": "string"
+            "description": "null, absent or '' empties the slot (plan B3).",
+            "oneOf": [
+              { "type": "string" },
+              { "type": "null" }
+            ]
           }
         },
         "required": [
           "carId",
-          "slot",
-          "cosmeticId"
+          "slot"
         ]
       },
       "CosmeticEquipData": {
@@ -9816,6 +9878,10 @@
                       "owned": {
                         "type": "boolean",
                         "description": "Additive (T-12). Owned offers are not listed, so a listed one is false."
+                      },
+                      "locked": {
+                        "type": "boolean",
+                        "description": "True when the player's level is below offer.requiredLevel (listed, not buyable; plan B3)."
                       }
                     },
                     "required": [
