@@ -67,14 +67,19 @@ export interface UpgradeLevelEntry {
   level: number;
   /** Cost in `coins` to upgrade FROM level-1 to this level. */
   cost: number;
-  /** Stat delta applied to `baseStats` when this level is reached. */
+  /**
+   * Increment of this level (NOT cumulative): exactly one key, the stat of
+   * the line, with an integer > 0. The stat at level n is
+   * min(baseStats + sum(delta_1..n), maxStats).
+   */
   delta: Partial<CarStats>;
 }
 
 /**
  * Per-class upgrade table. Each class has UPGRADE_MAX rows per line.
- * The computeStats helper sums the deltas of all 4 lines at the
- * player's current upgrade levels and clamps to `maxStats`.
+ * The computeStats helper sums the per-level delta increments of each
+ * line up to the player's current level (level 0 = baseStats) and
+ * clamps to `maxStats`.
  */
 export interface UpgradesCatalog {
   version: number;

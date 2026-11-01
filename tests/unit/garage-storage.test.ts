@@ -65,9 +65,9 @@ const RAW: RawGarageFiles = {
     maxLevel: 5,
     perCarClass: {
       D: makeClassTable(2),
-      C: makeClassTable(2.5),
+      C: makeClassTable(3),
       B: makeClassTable(3),
-      A: makeClassTable(3.5),
+      A: makeClassTable(4),
       S: makeClassTable(4),
     },
   },

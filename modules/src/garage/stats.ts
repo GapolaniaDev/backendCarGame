@@ -10,6 +10,11 @@
 //     maxStats regardless of upgrades. Used for ranked mode so the
 //     only variable is driver skill, not wallet size.
 //
+// Upgrade semantics (plan B3, D-01): `delta` is the increment of
+// that level; the stat of a line at level n = min(baseStats + sum(delta_1..n), maxStats). Level 0 is
+// baseStats. upgrades.json keeps sum(delta_1..5) within every car's margin, so each level raises the
+// stat (tests/unit/upgrades_progression.test.ts).
+//
 // These functions don't touch storage and don't talk to Nakama; the
 // RPC layer (Chunk 7) wires them up by reading the catalog and the
 // OwnedCar record, then calling into here.
@@ -82,7 +87,8 @@ function clampLevel(level: number | undefined): number {
 
 /**
  * Compute the effective stats for a car at the given upgrade levels.
- * Result = baseStats + cumulativeDelta, clamped per-stat to maxStats.
+ * Result = baseStats + cumulativeDelta, clamped per-stat to maxStats
+ * (cumulativeDelta = sum of the per-level delta increments, D-01).
  */
 export function computeStats(
   car: CarCatalogEntry,
