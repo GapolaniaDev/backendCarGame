@@ -88,6 +88,7 @@
 //     claimable inbox reward; event_list is not empty and the liveops
 //     calendar is the events.json one;
 //     B2: club_mine, club_week in lb_get, displayName, block removes friendship, optional motto;
+//     B3: upgrades and cosmetics in config_get, locked offers, rotation-only store_buy, car_upgrade newBalance, unequip;
 //   - F7 IAP and ads (plan T-24, T-25), with fresh accounts: on the .env
 //     defaults (IAP_MOCK=false, no store credentials, empty LevelPlay
 //     secret) a forged Apple receipt, a forged Google receipt in both
@@ -924,7 +925,8 @@ const charges = (ledger, coins, keyPart) => ledger.filter((l) => l.changeset.coi
 async function storeOffers(acct) {
   const r = await rpc(acct.token, 'store_get', {});
   if (!r.envelope?.ok) return null;
-  return r.envelope.data.sections.flatMap((s) => s.offers);
+  // storeOffers: return only buyable offers (plan B3: locked ones are listed now)
+  return r.envelope.data.sections.flatMap((s) => s.offers).filter((o) => o.locked !== true);
 }
 
 /** Ten concurrent store_buy of one offer: one charge, every answer ok or "already owned". */
@@ -1020,6 +1022,38 @@ async function economyScenario(serverKey, env) {
     record('T-11 lost garage CAS → nothing charged; the rebuy charges (HT-73)', waveOk && rebuyOk && odd.length === 0,
       `wave of ${wave.length}: ${won.length} ok, ${lost.length} CONFLICT (charged ${start && afterWave ? start.coins - afterWave.coins : '?'} = delivered ${wonNet}); rebuys ${rebuys.map(errCode).join(',')} charged ${afterWave && end ? afterWave.coins - end.coins : '?'} = ${rebuyNet}`);
   }
+
+  // B3: E3 is a fresh level-1 account with funds.
+  const all = (await rpc(e.E3.token, 'store_get', {})).envelope?.data?.sections ?? [];
+  const listed = all.flatMap((s) => s.offers);
+  const lockedCar = listed.find((o) => o.offer.offerId === 'lg_civic_r');
+  record('B3 store_get lists level-gated offers as locked', lockedCar?.locked === true && listed.some((o) => o.locked === false),
+    `lg_civic_r locked=${lockedCar?.locked}`);
+  const buyLocked = await rpc(e.E3.token, 'store_buy', { offerId: 'lg_civic_r' });
+  record('B3 store_buy of a locked offer → FORBIDDEN with requiredLevel', errCode(buyLocked) === 'FORBIDDEN'
+    && buyLocked.envelope?.error?.details?.requiredLevel === 6, errCode(buyLocked));
+  const g3 = (await rpc(e.E3.token, 'garage_get', GATE)).envelope?.data?.garage;
+  const ownedRefs = new Set([...(g3?.cosmeticsBag ?? []), ...(g3?.purchasedPacks ?? [])]);
+  const todayDaily = new Set(listed.filter((o) => o.isDailyOffer).map((o) => o.offer.offerId));
+  // An owned offer of today's rotation is hidden too: skip owned refIds so the pick is really out of rotation.
+  const outOfRotation = [...STORE_OFFERS.keys()].find((id) => id.startsWith('daily_pool_') && !todayDaily.has(id)
+    && !ownedRefs.has(STORE_OFFERS.get(id)?.refId));
+  const buyOld = outOfRotation ? await rpc(e.E3.token, 'store_buy', { offerId: outOfRotation }) : null;
+  record('B3 store_buy of a daily offer out of today\'s rotation → BAD_REQUEST NOT_IN_ROTATION',
+    errCode(buyOld) === 'BAD_REQUEST' && buyOld.envelope?.error?.details?.reason === 'NOT_IN_ROTATION', `${outOfRotation} ${errCode(buyOld)}`);
+  const w0 = await walletOf(e.E3);
+  const upg = await rpc(e.E3.token, 'car_upgrade', { carId: 'starter_viper', line: 'engine', newLevel: 1 });
+  const w1 = await walletOf(e.E3);
+  record('B3 car_upgrade returns newBalance (= wallet) and costs 500',
+    upg.envelope?.ok === true && JSON.stringify(upg.envelope.data.newBalance) === JSON.stringify(w1) && w0 && w1 && w0.coins - w1.coins === 500,
+    `${errCode(upg)} newBalance=${JSON.stringify(upg.envelope?.data?.newBalance)}`);
+  const paint = (g3?.cosmeticsBag ?? []).find((id) => id.startsWith('paint_'));
+  const eq = paint ? await rpc(e.E3.token, 'cosmetic_equip', { carId: 'starter_viper', slot: 'paint', cosmeticId: paint }) : null;
+  const un = paint ? await rpc(e.E3.token, 'cosmetic_equip', { carId: 'starter_viper', slot: 'paint', cosmeticId: null }) : null;
+  const viper = un?.envelope?.data?.garage?.cars?.find((c) => c.carId === 'starter_viper');
+  record('B3 cosmetic_equip with cosmeticId null empties the slot',
+    paint === undefined || eq?.envelope?.ok !== true ? null : un?.envelope?.ok === true && viper && !('paint' in viper.cosmetics),
+    paint ? `${paint} equip=${errCode(eq)} unequip=${errCode(un)}` : 'no paint in the bag (T-12 bought another kind)');
 
   return { ct, e, race };
 }
@@ -2219,6 +2253,17 @@ async function main() {
       && cars.every((c) => typeof c.priceGems === 'number' && typeof c.isStarter === 'boolean'
         && c.displayNameKey === `car.${c.id}.name`),
     `${Array.isArray(cars) ? cars.length : 'no'} cars`);
+  // after the P-13 config_get record
+  const up = cfg.envelope?.data?.upgrades;
+  record('B3 config_get serves the upgrade table (D engine costs 500..2500, deltas 2..6)',
+    up?.maxLevel === 5 && Array.isArray(up?.lines) && up.lines.length === 4
+      && JSON.stringify(up?.perCarClass?.D?.engine?.map((l) => [l.cost, l.delta])) === JSON.stringify([[500, 2], [800, 3], [1200, 4], [1800, 5], [2500, 6]]),
+    `${up ? Object.keys(up.perCarClass ?? {}).join(',') : 'no upgrades'}`);
+  const cos = cfg.envelope?.data?.cosmetics;
+  record('B3 config_get serves the cosmetics catalog with keys',
+    Array.isArray(cos) && cos.length > 0 && cos.every((c) => c.displayNameKey === `cosmetic.${c.id}.name`
+      && typeof c.priceCoins === 'number' && typeof c.priceGems === 'number'),
+    `${Array.isArray(cos) ? cos.length : 'no'} cosmetics`);
   for (const id of ['profile_get', 'garage_get', 'wallet_get']) {
     const r = await rpc(a.token, id, { callerUserId: a.uid, clientVersion: '0.1.0', platform: 'android' });
     record(`${id} (own account) ok`, r.envelope?.ok === true, errCode(r));
