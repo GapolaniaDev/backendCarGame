@@ -40,3 +40,6 @@ modules/.tsc-out/
 
 # Vitest
 .vitest-cache/
+
+# Local output folder (not versioned)
+/outfiles/
